@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -29,6 +30,12 @@ public partial class ConfigWindow : Window
     private readonly ObservableCollection<RuleRowViewModel> _rules = new();
     private readonly CancellationTokenSource _closing = new();
 
+    // Name checks that are running, per row. Save waits for these (a click on Save first makes the cell lose focus,
+    // which starts a check; without waiting, Save would be refused with "still being checked").
+    private readonly Dictionary<ListRowViewModel, Task> _checks = new();
+    private bool _saving;
+    private bool _invalidFileCopied;
+
     private readonly string? _listName;
     private string _baseline;
 
@@ -53,7 +60,15 @@ public partial class ConfigWindow : Window
         RulesList.ItemsSource = _rules;
 
         _baseline = Snapshot();
-        Closed += (_, _) => _closing.Cancel();
+        Closed += (_, _) =>
+        {
+            _closing.Cancel();
+            _closing.Dispose();
+        };
+
+        // Check every loaded name now: fresh cache entries answer at once, the rest go through the shared RSI limiter.
+        foreach (var row in NameRows().ToList())
+            StartCheck(row);
     }
 
     private bool IsExcluded(string handle) => _services.Exclusions.IsExcluded(handle);
@@ -102,12 +117,12 @@ public partial class ConfigWindow : Window
     }
 
     /// <summary>After a removal, rows that were flagged "already in the list" may be fine now: check them again.</summary>
-    private void RecheckDuplicates(IEnumerable<ListRowViewModel> rows)
+    private void RecheckDuplicates(IEnumerable<ListRowViewModel> rows, ListRowViewModel? except = null)
     {
-        foreach (var row in rows.Where(r => r.IsFlaggedDuplicate).ToList())
+        foreach (var row in rows.Where(r => r.IsFlaggedDuplicate && !ReferenceEquals(r, except)).ToList())
         {
             row.ResetStatus();
-            _ = CheckRowAsync(row);
+            StartCheck(row);
         }
     }
 
@@ -144,8 +159,39 @@ public partial class ConfigWindow : Window
 
     private void OnValueLostFocus(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.DataContext is ListRowViewModel row)
-            _ = CheckRowAsync(row);
+        if ((sender as FrameworkElement)?.DataContext is not ListRowViewModel row)
+            return;
+
+        StartCheck(row);
+
+        // The edit may have removed a clash: rows of the same list that were flagged "already in the list" get another look.
+        RecheckDuplicates(row is OrgRowViewModel ? _orgs.Cast<ListRowViewModel>() : _players.Cast<ListRowViewModel>(), except: row);
+    }
+
+    /// <summary>Starts a check and remembers its task so Save can wait for it. A finished or skipped check is not tracked.</summary>
+    private void StartCheck(ListRowViewModel row)
+    {
+        var task = CheckRowAsync(row);
+        if (task.IsCompleted)
+            return;
+        _checks[row] = task;
+        _ = ForgetWhenDoneAsync(row, task);
+    }
+
+    /// <summary>Removes the task from <see cref="_checks"/> when it ends, unless a newer check for the same row replaced it.</summary>
+    private async Task ForgetWhenDoneAsync(ListRowViewModel row, Task task)
+    {
+        try
+        {
+            await task; // continues on the window's own thread
+        }
+        catch (Exception)
+        {
+            // CheckRowAsync reports its own problems; nothing to do here
+        }
+
+        if (_checks.TryGetValue(row, out var current) && ReferenceEquals(current, task))
+            _checks.Remove(row);
     }
 
     /// <summary>
@@ -204,7 +250,40 @@ public partial class ConfigWindow : Window
     // Save and Cancel
     // ---------------------------------------------------------------------------------------
 
-    private void OnSave(object sender, RoutedEventArgs e)
+    private async void OnSave(object sender, RoutedEventArgs e)
+    {
+        if (_saving)
+            return;
+        _saving = true;
+        try
+        {
+            var pending = _checks.Values.Where(t => !t.IsCompleted).ToList();
+            if (pending.Count > 0)
+            {
+                FooterStatus.Text = "Waiting for name checks…";
+                await Task.WhenAny(Task.WhenAll(pending), Task.Delay(TimeSpan.FromSeconds(25), _closing.Token));
+                if (_closing.IsCancellationRequested)
+                    return; // the window was closed meanwhile
+                FooterStatus.Text = string.Empty;
+            }
+
+            SaveCore();
+        }
+        catch (Exception ex)
+        {
+            if (!_closing.IsCancellationRequested)
+            {
+                FooterStatus.Text = "Not saved.";
+                MessageBox.Show(this, "The list could not be saved:\n\n" + ex.Message, "ASTRA", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private void SaveCore()
     {
         var problems = new List<string>();
         CollectNameProblems("Players", _players, RowValidator.CheckHandleFormat, problems);
@@ -253,6 +332,9 @@ public partial class ConfigWindow : Window
                 return;
         }
 
+        if (!KeepCopyOfInvalidFile())
+            return;
+
         var config = BuildConfig();
         var saved = SocialListStore.Save(_services.Paths.SocialListFile, config);
         if (!saved.Success)
@@ -265,6 +347,49 @@ public partial class ConfigWindow : Window
         _services.SetCurrentConfig(config);
         _baseline = Snapshot();
         FooterStatus.Text = "Saved at " + DateTime.Now.ToString("HH:mm:ss") + ".";
+    }
+
+    /// <summary>
+    /// The list file could not be read completely at startup, and the first save replaces it with what is on screen.
+    /// Asks first, then keeps a copy of the original beside it. Returns false when the user said no or the copy failed.
+    /// </summary>
+    private bool KeepCopyOfInvalidFile()
+    {
+        var load = _services.ListLoad;
+        if (load.IsValid || _invalidFileCopied)
+            return true;
+
+        var listFile = _services.Paths.SocialListFile;
+        if (!File.Exists(listFile))
+        {
+            _invalidFileCopied = true;
+            return true;
+        }
+
+        var copy = listFile + ".invalid-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        var answer = MessageBox.Show(
+            this,
+            $"Your list file ({Path.GetFileName(listFile)}) had {Plural(load.Errors.Count, "problem", "problems")} when ASTRA started.\n\n"
+            + "Saving replaces the file with what you see in this window. Entries in the file that could not be read will be dropped.\n\n"
+            + "A copy of the original file is kept as:\n" + Path.GetFileName(copy) + "\n\nSave now?",
+            "ASTRA", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+        if (answer != MessageBoxResult.Yes)
+            return false;
+
+        try
+        {
+            File.Copy(listFile, copy, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, "A copy of the original file could not be made, so nothing was saved:\n\n" + ex.Message,
+                "ASTRA", MessageBoxButton.OK, MessageBoxImage.Error);
+            FooterStatus.Text = "Not saved.";
+            return false;
+        }
+
+        _invalidFileCopied = true;
+        return true;
     }
 
     private void OnCancel(object sender, RoutedEventArgs e)

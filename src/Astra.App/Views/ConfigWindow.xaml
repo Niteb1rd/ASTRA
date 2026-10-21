@@ -249,8 +249,8 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <TextBlock x:Name="FooterStatus" Grid.Column="0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-            <Button Grid.Column="1" Content="Save" Width="80" Padding="0,4" Click="OnSave" />
-            <Button Grid.Column="2" Content="Cancel" Width="80" Padding="0,4" Margin="8,0,0,0" Click="OnCancel" />
+            <Button Grid.Column="1" Content="Save" Width="80" Padding="0,4" IsDefault="True" Click="OnSave" />
+            <Button Grid.Column="2" Content="Cancel" Width="80" Padding="0,4" Margin="8,0,0,0" IsCancel="True" Click="OnCancel" />
         </Grid>
     </Grid>
 </Window>

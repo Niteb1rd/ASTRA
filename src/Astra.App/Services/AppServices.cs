@@ -131,7 +131,7 @@ public sealed class AppServices : IDisposable
         if (notFound > 0)
             parts.Add($"Not found on RSI: {notFound}.");
         if (summary.Failures.Count > 0)
-            parts.Add($"Could not update: {summary.Failures.Count} (see the log).");
+            parts.Add($"Could not update: {summary.Failures.Count}.");
         return string.Join(" ", parts);
     }
 

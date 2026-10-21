@@ -25,6 +25,7 @@ public partial class App : Application
     private TrayIcon? _tray;
     private ConfigWindow? _configWindow;
     private bool _updateRunning;
+    private bool _shuttingDown;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -44,34 +45,57 @@ public partial class App : Application
 
         try
         {
-            _services = AppServices.Create(AppContext.BaseDirectory);
+            StartUp();
         }
         catch (Exception ex)
         {
             MessageBox.Show(
                 "ASTRA could not start:\n\n" + ex.Message + "\n\nData folder: " + Path.Combine(AppContext.BaseDirectory, "Data"),
                 "ASTRA", MessageBoxButton.OK, MessageBoxImage.Error);
-            Shutdown(1);
-            return;
+            Shutdown(1); // OnExit releases the mutex and removes the tray icon
         }
+    }
+
+    /// <summary>Everything that happens once this is the only running instance.</summary>
+    private void StartUp()
+    {
+        var services = AppServices.Create(AppContext.BaseDirectory);
+        _services = services;
 
         DispatcherUnhandledException += OnUnhandledException;
 
-        var services = _services;
-        _tray = new TrayIcon();
-        _tray.SettingsRequested += (_, _) => OpenSettings();
-        _tray.UpdateDatabaseRequested += (_, _) => StartDatabaseUpdate();
-        _tray.PauseChanged += (_, paused) => services.IsOverlayPaused = paused;
-        _tray.QuitRequested += (_, _) => Quit();
+        var tray = new TrayIcon();
+        _tray = tray;
+        tray.SettingsRequested += (_, _) => OpenSettings();
+        tray.UpdateDatabaseRequested += (_, _) => StartDatabaseUpdate();
+        tray.PauseChanged += (_, paused) => services.IsOverlayPaused = paused;
+        tray.QuitRequested += (_, _) => Quit();
 
         var load = services.ListLoad;
-        if (!load.IsValid || load.Warnings.Count > 0)
-            ShowListProblems(load.Errors.ToList(), load.Warnings.ToList());
+        if (!load.IsValid)
+            ShowListProblems(load.Errors.ToList(), load.Warnings.ToList()); // a dialog: the user has to act
+
+        // The dialog above is modal; the user may have chosen Quit in the tray meanwhile.
+        if (_shuttingDown)
+            return;
 
         if (load.IsValid)
-            _tray.ShowBalloon("ASTRA is running in the system tray. Right-click the icon for Settings.");
+        {
+            if (load.Warnings.Count > 0)
+            {
+                // Notes only (for example keys from a newer version): worth a mention, not a dialog.
+                var extra = load.Warnings.Count > 1 ? $" (and {load.Warnings.Count - 1} more)" : string.Empty;
+                _tray?.ShowBalloon("ASTRA is running in the system tray. Note about your list file: " + load.Warnings[0] + extra);
+            }
+            else
+            {
+                _tray?.ShowBalloon("ASTRA is running in the system tray. Right-click the icon for Settings.");
+            }
+        }
         else
+        {
             OpenSettings(); // let the user fix the list; the file itself is untouched until they press Save
+        }
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -103,7 +127,7 @@ public partial class App : Application
     /// <summary>Opens the config window, or brings the open one to the front (only one at a time).</summary>
     private void OpenSettings()
     {
-        if (_services is null)
+        if (_services is null || _shuttingDown)
             return;
 
         if (_configWindow is not null)
@@ -155,12 +179,24 @@ public partial class App : Application
 
     private void Quit()
     {
-        if (_configWindow is not null)
+        var window = _configWindow;
+        if (window is not null)
         {
-            _configWindow.Close(); // asks about unsaved changes; the user may say no
+            try
+            {
+                window.Close(); // asks about unsaved changes; the user may say no
+            }
+            catch (InvalidOperationException)
+            {
+                // the window is already closing (for example its "discard changes?" question is open): do not quit
+                window.Activate();
+                return;
+            }
             if (_configWindow is not null)
                 return;
         }
+
+        _shuttingDown = true;
         Shutdown();
     }
 

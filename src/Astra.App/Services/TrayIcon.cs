@@ -12,6 +12,7 @@ public sealed class TrayIcon : IDisposable
 {
     private const string DefaultTooltip = "ASTRA";
     private const int MaxTooltipLength = 63; // NotifyIcon.Text throws for longer text
+    private const int MaxBalloonLength = 200; // keeps the balloon readable (Windows cuts long text anyway)
 
     private readonly Forms.NotifyIcon _icon;
     private readonly Forms.ContextMenuStrip _menu;
@@ -73,7 +74,8 @@ public sealed class TrayIcon : IDisposable
     {
         if (_disposed)
             return;
-        _icon.ShowBalloonTip(8000, "ASTRA", text, Forms.ToolTipIcon.Info);
+        var shown = text.Length <= MaxBalloonLength ? text : text.Substring(0, MaxBalloonLength - 1) + "…";
+        _icon.ShowBalloonTip(8000, "ASTRA", shown, Forms.ToolTipIcon.Info);
     }
 
     private void SetTooltip(string text)

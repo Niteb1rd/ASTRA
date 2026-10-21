@@ -1,5 +1,6 @@
 using System;
 using Astra.Core.Config;
+using Astra.Core.Rsi;
 
 namespace Astra.App.ViewModels;
 
@@ -155,7 +156,7 @@ public sealed class PlayerRowViewModel : ListRowViewModel
     private void UpdateNote()
     {
         var text = Value.Trim();
-        Note = text.Length > 0 && _isExcluded(text) ? ExclusionNote : string.Empty;
+        Note = RsiNames.IsValidHandle(text) && _isExcluded(text) ? ExclusionNote : string.Empty;
     }
 }
 
