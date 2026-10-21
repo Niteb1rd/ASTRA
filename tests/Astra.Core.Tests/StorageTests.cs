@@ -171,6 +171,34 @@ public class SocialListStoreTests : IDisposable
     }
 
     [Fact]
+    public void FailedSave_PutsTheBackupBack_WhenTheRealFileIsMissing()
+    {
+        var path = _dir.File("list.toml");
+        File.WriteAllText(path + ".bak", "previous version");
+        Directory.CreateDirectory(path + ".tmp"); // a directory where the temp file must go: writing it fails on every OS
+
+        var result = SocialListStore.Save(path, Sample());
+
+        Assert.False(result.Success);
+        Assert.Equal("previous version", File.ReadAllText(path));
+        Assert.Equal("previous version", File.ReadAllText(path + ".bak"));
+    }
+
+    [Fact]
+    public void FailedSave_LeavesAnExistingFileAlone()
+    {
+        var path = _dir.File("list.toml");
+        File.WriteAllText(path, "current");
+        File.WriteAllText(path + ".bak", "older");
+        Directory.CreateDirectory(path + ".tmp");
+
+        var result = SocialListStore.Save(path, Sample());
+
+        Assert.False(result.Success);
+        Assert.Equal("current", File.ReadAllText(path));
+    }
+
+    [Fact]
     public void Save_InvalidConfig_IsRefused_AndDoesNotOverwrite()
     {
         var path = _dir.File("list.toml");

@@ -267,6 +267,20 @@ public class RowValidatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Org_FreshHotkeyEntry_IsPromotedToOrgList_WithoutARequest()
+    {
+        _env.Db.SaveOrgAttributes(CacheEnv.Org("J0K3R5", "PMC"), CacheSource.Hotkey, _env.Clock.UtcNow);
+
+        var result = await Validator().ValidateOrgAsync("J0K3R5", NoOthers);
+
+        Assert.Equal(RowCheckState.Valid, result.State);
+        Assert.Empty(_env.Rsi.Calls);
+        var cached = _env.Db.GetOrg("J0K3R5")!;
+        Assert.Equal(CacheSource.OrgList, cached.Source);
+        Assert.Equal(_env.Start, cached.LastRefreshed);
+    }
+
+    [Fact]
     public async Task Org_StaleInCache_AsksRsiAgain()
     {
         _env.Db.SaveOrgListEntry("J0K3R5", "Old name", new[] { "A_player" }, _env.Clock.UtcNow);

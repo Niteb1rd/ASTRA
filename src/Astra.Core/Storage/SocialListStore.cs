@@ -97,7 +97,13 @@ public static class SocialListStore
             if (!string.IsNullOrEmpty(directory))
                 Directory.CreateDirectory(directory);
 
-            File.WriteAllText(temp, text, Utf8NoBom);
+            // Write and flush to the disk before the swap, so a power cut cannot leave an empty "new" file.
+            using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                var bytes = Utf8NoBom.GetBytes(text);
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush(flushToDisk: true);
+            }
 
             // File.Replace needs an existing target; the very first save has none, so it is a plain move.
             if (File.Exists(path))
@@ -109,8 +115,22 @@ public static class SocialListStore
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            // A failed swap can leave the real file missing while the backup exists: put the backup back.
+            TryRestoreFromBackup(path, backup);
             TryDelete(temp);
             return SaveResult.Failed("The list could not be saved: " + ex.Message);
+        }
+    }
+
+    private static void TryRestoreFromBackup(string path, string backup)
+    {
+        try
+        {
+            if (!File.Exists(path) && File.Exists(backup))
+                File.Copy(backup, path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
         }
     }
 

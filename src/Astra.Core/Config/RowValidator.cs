@@ -141,7 +141,12 @@ public sealed class RowValidator
 
         var cached = _database.GetOrg(name);
         if (cached?.LongName is { } cachedName && !IsStale(cached.LastRefreshed, now))
+        {
+            // Same data, but now it is on the user's org list: promote the source, keep the refresh times.
+            if (CacheSources.Stronger(cached.Source, CacheSource.OrgList) != cached.Source)
+                _database.PromoteOrgSource(cached.Sid, CacheSource.OrgList);
             return Valid(cachedName);
+        }
 
         if (_database.IsKnownOrgNotFound(name, now))
             return NotFound();
