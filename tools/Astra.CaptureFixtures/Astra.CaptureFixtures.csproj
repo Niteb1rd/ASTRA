@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Developer tool: saves a few real RSI pages so the parser tests can run against them.
+       No packages, no reference to Astra.Core: it only needs HttpClient. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Astra.CaptureFixtures</RootNamespace>
+  </PropertyGroup>
+
+</Project>

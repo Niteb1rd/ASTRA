@@ -114,9 +114,11 @@ public sealed class RsiClient : IRsiClient
                 if (seen.Add(h))
                     handles.Add(h);
 
-            bool lastPage = members.TotalCount is { } total
-                ? entriesSoFar >= total
-                : members.EntryCount < MembersPageSize;
+            bool lastPage;
+            if (members.TotalCount is int total)
+                lastPage = entriesSoFar >= total;
+            else
+                lastPage = members.EntryCount < MembersPageSize;
             if (lastPage)
                 return RsiResult<OrgMembers>.Found(new OrgMembers(sid, handles));
         }
