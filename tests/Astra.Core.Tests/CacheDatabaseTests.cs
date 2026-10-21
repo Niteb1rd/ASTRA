@@ -146,7 +146,7 @@ public class CacheDatabaseTests
     {
         using var env = new CacheEnv();
 
-        env.Db.SaveOrgListEntry("J0K3R5", "Jokers Gambit", new[] { "Alice", "Bob", "alice" }, env.Start);
+        env.Db.SaveOrgListEntry("J0K3R5", "Jokers Gambit", new[] { "Alice", "Bobby", "alice" }, env.Start);
 
         var org = env.Db.GetOrg("j0k3r5")!;
         Assert.Equal("Jokers Gambit", org.LongName);
@@ -155,18 +155,18 @@ public class CacheDatabaseTests
         Assert.Null(org.AttributesRefreshed);
         Assert.False(org.HasAttributes);
         Assert.Null(org.Archetype);
-        Assert.Equal(new[] { "Alice", "Bob" }, env.Db.GetOrgMembers("J0K3R5"));   // duplicates (ignoring case) collapse
+        Assert.Equal(new[] { "Alice", "Bobby" }, env.Db.GetOrgMembers("J0K3R5"));   // duplicates (ignoring case) collapse
     }
 
     [Fact]
     public void OrgListEntry_Refreshed_ReplacesTheMemberList()
     {
         using var env = new CacheEnv();
-        env.Db.SaveOrgListEntry("J0K3R5", "Jokers Gambit", new[] { "Alice", "Bob" }, env.Start);
+        env.Db.SaveOrgListEntry("J0K3R5", "Jokers Gambit", new[] { "Alice", "Bobby" }, env.Start);
 
-        env.Db.SaveOrgListEntry("J0K3R5", "Jokers Gambit II", new[] { "Bob", "Carol" }, env.Start.AddDays(5));
+        env.Db.SaveOrgListEntry("J0K3R5", "Jokers Gambit II", new[] { "Bobby", "Carol" }, env.Start.AddDays(5));
 
-        Assert.Equal(new[] { "Bob", "Carol" }, env.Db.GetOrgMembers("J0K3R5"));
+        Assert.Equal(new[] { "Bobby", "Carol" }, env.Db.GetOrgMembers("J0K3R5"));
         var org = env.Db.GetOrg("J0K3R5")!;
         Assert.Equal("Jokers Gambit II", org.LongName);
         Assert.Equal(env.Start.AddDays(5), org.MembersRefreshed);

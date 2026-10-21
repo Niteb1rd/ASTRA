@@ -8,7 +8,8 @@ public class RsiNamesTests
     [Theory]
     [InlineData("Nitebird")]
     [InlineData("Love2Hate")]
-    [InlineData("a")]
+    [InlineData("abcd")]
+    [InlineData("a-_9")]
     [InlineData("Under_score-Dash")]
     public void ValidHandles_Accepted(string handle) => Assert.True(RsiNames.IsValidHandle(handle));
 
@@ -25,10 +26,14 @@ public class RsiNamesTests
     public void InvalidHandles_Rejected(string handle) => Assert.False(RsiNames.IsValidHandle(handle));
 
     [Fact]
-    public void Handle_LengthLimitIs60()
+    public void Handle_LengthLimitsAre4To25()
     {
-        Assert.True(RsiNames.IsValidHandle(new string('a', 60)));
-        Assert.False(RsiNames.IsValidHandle(new string('a', 61)));
+        Assert.Equal(4, RsiNames.MinHandleLength);
+        Assert.Equal(25, RsiNames.MaxHandleLength);
+        Assert.False(RsiNames.IsValidHandle(new string('a', 3)));
+        Assert.True(RsiNames.IsValidHandle(new string('a', 4)));
+        Assert.True(RsiNames.IsValidHandle(new string('a', 25)));
+        Assert.False(RsiNames.IsValidHandle(new string('a', 26)));
         Assert.False(RsiNames.IsValidHandle(null));
     }
 

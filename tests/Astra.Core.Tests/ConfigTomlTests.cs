@@ -115,6 +115,22 @@ public class ConfigTomlTests
         Assert.Contains(r.Config!.Players, p => p.Handle == "Ok_Name-1" && p.Color == OverlayColor.Red);
     }
 
+    [Theory]
+    [InlineData(3, false)]
+    [InlineData(4, true)]
+    [InlineData(25, true)]
+    [InlineData(26, false)]
+    public void Read_PlayerHandleLengthMustBe4To25(int length, bool valid)
+    {
+        var text = "format = \"sc-social-overlay\"\nformat_version = 1\n\n[[players]]\nhandle = \""
+                   + new string('a', length) + "\"\ncolor = \"Cyan\"\n";
+        var r = SocialConfigToml.Read(text);
+
+        Assert.Equal(valid, r.IsValid);
+        if (!valid)
+            Assert.Contains(r.Errors, e => e.StartsWith("players[1].handle") && e.Contains("4 to 25 characters"));
+    }
+
     [Fact]
     public void Read_WarnsAboutUnknownKeysButStaysValid()
     {
