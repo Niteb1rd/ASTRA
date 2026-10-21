@@ -9,7 +9,7 @@ namespace Astra.Core.Tests;
 public class CacheDatabaseTests
 {
     [Fact]
-    public void NewDatabase_HasTheFiveTables_AndSchemaVersion1()
+    public void NewDatabase_HasTheSixTables_AndSchemaVersion2()
     {
         using var env = new CacheEnv();
 
@@ -22,9 +22,50 @@ public class CacheDatabaseTests
                 tables.Add(reader.GetString(0));
         }
 
-        Assert.Equal(new[] { "not_found", "org_members", "orgs", "player_orgs", "players" }, tables);
-        Assert.Equal(1, env.Db.SchemaVersion);
+        Assert.Equal(new[] { "duplicate_name_counts", "not_found", "org_members", "orgs", "player_orgs", "players" }, tables);
+        Assert.Equal(2, env.Db.SchemaVersion);
         Assert.Equal(CacheDatabase.CurrentSchemaVersion, env.Db.SchemaVersion);
+    }
+
+    [Fact]
+    public void VersionOneDatabase_IsUpgradedToVersionTwo_KeepingItsData()
+    {
+        using var env = new CacheEnv();
+        env.Db.SavePlayer(Player("Nitebird", MainOrg("HEKATE")), CacheSource.PlayerList, env.Start);
+        // Turn the file back into what increment 2 wrote: no duplicate_name_counts table, user_version 1.
+        RunSql(env.Connection, "DROP TABLE duplicate_name_counts");
+        RunSql(env.Connection, "PRAGMA user_version = 1");
+
+        using var upgraded = new CacheDatabase(env.Connection);
+
+        Assert.Equal(2, upgraded.SchemaVersion);
+        Assert.Equal(0, upgraded.GetDuplicateFrames("Anything"));
+        Assert.Equal(1, upgraded.IncrementDuplicateFrames("Anything", env.Start));
+        Assert.Equal("HEKATE", upgraded.GetPlayer("Nitebird")!.Orgs[0].Sid);
+    }
+
+    [Fact]
+    public void DuplicateFrameCounts_IncrementGetAndDelete_IgnoringCase()
+    {
+        using var env = new CacheEnv();
+
+        Assert.Equal(0, env.Db.GetDuplicateFrames("Gold"));
+        Assert.Equal(1, env.Db.IncrementDuplicateFrames("Gold", env.Start));
+        Assert.Equal(2, env.Db.IncrementDuplicateFrames("GOLD", env.Start.AddMinutes(1)));
+        Assert.Equal(2, env.Db.GetDuplicateFrames("gold"));
+        Assert.Equal(1, env.Db.IncrementDuplicateFrames("Silver", env.Start));
+
+        env.Db.DeleteDuplicateFrames("Gold");
+
+        Assert.Equal(0, env.Db.GetDuplicateFrames("Gold"));
+        Assert.Equal(1, env.Db.GetDuplicateFrames("Silver"));
+    }
+
+    private static void RunSql(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.ExecuteNonQuery();
     }
 
     [Fact]

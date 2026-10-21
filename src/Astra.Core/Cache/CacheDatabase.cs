@@ -11,7 +11,7 @@ namespace Astra.Core.Cache;
 /// This class only stores and loads rows; it knows nothing about TTLs or refreshing
 /// (that is <see cref="CacheRefresher"/>) and it never touches the network.
 ///
-/// TABLES (schema version 1). Every row has last_refreshed, an ISO 8601 UTC time such as 2026-10-21T08:30:00.0000000Z.
+/// TABLES (schema version 2). Every row has last_refreshed, an ISO 8601 UTC time such as 2026-10-21T08:30:00.0000000Z.
 /// Handles and SIDs are compared case-insensitively (COLLATE NOCASE), stored as RSI shows them.
 ///
 ///   players        handle PK | source | last_refreshed
@@ -27,18 +27,21 @@ namespace Astra.Core.Cache;
 ///                  Visible members of an org that is on the user's org list.
 ///   not_found      kind ('player' or 'org') + name PK | source | last_refreshed
 ///                  The negative cache: RSI answered 404 for this name.
+///   duplicate_name_counts   name PK | frames | last_seen        (added in schema version 2)
+///                  For the exclusion list: in how many frames this name was seen on two separate nameplates
+///                  (see DuplicateNameTracker). The row is deleted once the name has been excluded.
 ///
 /// source is one of: 'player_list', 'org_list', 'org_list_member', 'hotkey' (see <see cref="CacheSource"/>).
 ///
 /// VERSIONING: the file's PRAGMA user_version holds the schema version. A fresh file is created at
 /// <see cref="CurrentSchemaVersion"/>. A file with a newer version is refused. Later increments migrate
-/// older files in <see cref="EnsureSchema"/> (if version = 1 then run the 1-to-2 changes, and so on).
+/// older files in <see cref="EnsureSchema"/> (version 1 gets the 1-to-2 changes, and so on).
 ///
 /// THREADING: one SQLite connection is not thread-safe, so every public method takes a lock.
 /// </summary>
 public sealed class CacheDatabase : IDisposable
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     private const string ActivitySeparator = "|";
 
@@ -357,6 +360,42 @@ public sealed class CacheDatabase : IDisposable
     }
 
     // ---------------------------------------------------------------------------------------
+    // Duplicate-name counts (exclusion list)
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>In how many frames this name has been seen on two separate nameplates so far (0 if never).</summary>
+    public int GetDuplicateFrames(string name)
+    {
+        lock (_gate)
+        {
+            var text = ScalarText("SELECT frames FROM duplicate_name_counts WHERE name = $name", ("$name", name));
+            return text is null ? 0 : int.Parse(text, CultureInfo.InvariantCulture);
+        }
+    }
+
+    /// <summary>Adds one frame to the name's count (starting at 1) and returns the new count.</summary>
+    public int IncrementDuplicateFrames(string name, DateTimeOffset now)
+    {
+        int frames = 0;
+        InTransaction(() =>
+        {
+            Execute(
+                "INSERT INTO duplicate_name_counts (name, frames, last_seen) VALUES ($name, 1, $time) "
+                + "ON CONFLICT(name) DO UPDATE SET frames = frames + 1, last_seen = $time",
+                ("$name", name), ("$time", FormatTime(now)));
+            var text = ScalarText("SELECT frames FROM duplicate_name_counts WHERE name = $name", ("$name", name));
+            frames = text is null ? 0 : int.Parse(text, CultureInfo.InvariantCulture);
+        });
+        return frames;
+    }
+
+    /// <summary>Forgets the name's count (used once the name has been put on the exclusion list).</summary>
+    public void DeleteDuplicateFrames(string name)
+    {
+        InTransaction(() => Execute("DELETE FROM duplicate_name_counts WHERE name = $name", ("$name", name)));
+    }
+
+    // ---------------------------------------------------------------------------------------
     // Schema
     // ---------------------------------------------------------------------------------------
 
@@ -404,6 +443,15 @@ public sealed class CacheDatabase : IDisposable
         + "PRIMARY KEY (kind, name))",
     };
 
+    // Added by schema version 2. IF NOT EXISTS keeps the migration safe to run twice.
+    private static readonly string[] Version2Statements =
+    {
+        "CREATE TABLE IF NOT EXISTS duplicate_name_counts ("
+        + "name TEXT NOT NULL PRIMARY KEY COLLATE NOCASE, "
+        + "frames INTEGER NOT NULL, "
+        + "last_seen TEXT NOT NULL)",
+    };
+
     private void EnsureSchema()
     {
         lock (_gate)
@@ -416,10 +464,14 @@ public sealed class CacheDatabase : IDisposable
             if (version == CurrentSchemaVersion)
                 return;
 
-            // version 0 = brand-new file. (Later increments: add "if (version == 1) { ...migrate to 2... }" here.)
+            // version 0 = brand-new file: create everything. version 1 = an older file: only the 1-to-2 changes.
+            // (Later increments: add the next step after the version 2 one.)
             InTransaction(() =>
             {
-                foreach (var statement in CreateStatements)
+                if (version == 0)
+                    foreach (var statement in CreateStatements)
+                        Execute(statement);
+                foreach (var statement in Version2Statements)
                     Execute(statement);
                 Execute("PRAGMA user_version = " + CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture));
             });
