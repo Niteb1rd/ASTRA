@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Platform-independent logic: config file, color rules, panel text.
+       No Windows-only code here, so it can be tested anywhere. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Astra.Core</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- TOML parser (MIT licence) -->
+    <PackageReference Include="Tomlyn" Version="0.17.0" />
+  </ItemGroup>
+
+</Project>

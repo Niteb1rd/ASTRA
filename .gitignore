@@ -1,0 +1,19 @@
+# build output
+bin/
+obj/
+.vs/
+*.user
+TestResults/
+
+# Game footage, screenshots and anything cut from them are CIG's copyrighted imagery.
+# Never commit them.
+*.mp4
+*.mkv
+*.mov
+*.jpg
+*.jpeg
+*.png
+*.pkl
+spike/
+frames/
+training-data/
