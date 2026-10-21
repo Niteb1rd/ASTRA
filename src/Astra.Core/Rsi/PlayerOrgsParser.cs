@@ -129,18 +129,14 @@ public static class PlayerOrgsParser
         if (!isMain)
             return new OrgMembership(sid, false);
 
-        // main org: the page also shows its attributes as labeled rows
+        // main org: its attributes are labeled rows on today's page ("Archetype", "Prim. Activity",
+        // "Sec. Activity"). For each part that has no labeled row, fall back to scanning the block for known words.
         var labeled = ValueForLabel(block, ArchetypeLabel);
-        var activities = ValuesForLabel(block, ActivityLabel);
-        if (labeled is not null || activities.Count > 0)
-        {
-            var archetypeText = labeled is null ? null : (OrgVocabulary.MatchArchetype(labeled) ?? labeled);
-            return new OrgMembership(sid, true, archetypeText, activities);
-        }
-
-        // no labeled rows (layout changed?): fall back to scanning the block for known words
+        var labeledActivities = ValuesForLabel(block, ActivityLabel);
         var scan = OrgAttributeScanner.Scan(block);
-        return new OrgMembership(sid, true, scan.Archetype, scan.Activities);
+        var archetype = labeled is null ? scan.Archetype : (OrgVocabulary.MatchArchetype(labeled) ?? labeled);
+        IReadOnlyList<string> activities = labeledActivities.Count > 0 ? labeledActivities : scan.Activities;
+        return new OrgMembership(sid, true, archetype, activities);
     }
 
     private static string? SidFromLabel(IElement block)
