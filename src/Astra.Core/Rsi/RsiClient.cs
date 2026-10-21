@@ -82,8 +82,8 @@ public sealed class RsiClient : IRsiClient
 
         var handles = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        int entriesSoFar = 0;
 
+        int entriesSoFar = 0;
         for (int page = 1; page <= MaxMemberPages; page++)
         {
             var body = JsonSerializer.Serialize(new { symbol = sid, search = "", pagesize = MembersPageSize, page });
@@ -109,17 +109,16 @@ public sealed class RsiClient : IRsiClient
                 return RsiResult<OrgMembers>.Found(new OrgMembers(sid, handles));
             }
 
-            entriesSoFar += members.EntryCount;
             foreach (var h in members.Handles)
                 if (seen.Add(h))
                     handles.Add(h);
 
-            bool lastPage;
-            if (members.TotalCount is int total)
-                lastPage = entriesSoFar >= total;
-            else
-                lastPage = members.EntryCount < MembersPageSize;
-            if (lastPage)
+            // A full page always continues, so a stale or low totalrows can never cut the list short.
+            // A short page ends the list once the reported total is reached (or when no total is given).
+            entriesSoFar += members.EntryCount;
+            bool shortPage = members.EntryCount < MembersPageSize;
+            bool totalReached = members.TotalCount is not int total || entriesSoFar >= total;
+            if (shortPage && totalReached)
                 return RsiResult<OrgMembers>.Found(new OrgMembers(sid, handles));
         }
 
@@ -160,6 +159,8 @@ public sealed class RsiClient : IRsiClient
                 }
 
                 using var httpResponse = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, timeout.Token).ConfigureAwait(false);
+                if (httpResponse.RequestMessage?.RequestUri is { } final && !RsiUrls.IsAllowed(final))
+                    return new Response(final.AbsoluteUri, null, null, "blocked: only https://robertsspaceindustries.com may be contacted");
                 int code = (int)httpResponse.StatusCode;
 
                 if (code is 301 or 302 or 303 or 307 or 308)
@@ -168,7 +169,7 @@ public sealed class RsiClient : IRsiClient
                     if (method != HttpMethod.Get || location is null)
                         return new Response(uri.AbsoluteUri, code, null, $"unexpected redirect (HTTP {code})");
 
-                    var next = location.IsAbsoluteUri ? location : new Uri(uri, location);
+                    var next = location.IsAbsoluteUri && !location.IsFile ? location : new Uri(uri, location.OriginalString);
                     Log($"{method} {uri.AbsoluteUri} -> redirect (HTTP {code}) to {next.AbsoluteUri}");
                     current = next.AbsoluteUri;
                     continue;
@@ -177,7 +178,12 @@ public sealed class RsiClient : IRsiClient
                 var text = await httpResponse.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
                 return new Response(uri.AbsoluteUri, code, text, null);
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                Log($"{method} {uri.AbsoluteUri} -> cancelled");
+                throw;
+            }
+            catch (OperationCanceledException)
             {
                 return new Response(uri.AbsoluteUri, null, null, $"timeout after {RequestTimeout.TotalSeconds:0} s");
             }
@@ -188,6 +194,10 @@ public sealed class RsiClient : IRsiClient
             catch (IOException ex)
             {
                 return new Response(uri.AbsoluteUri, null, null, $"network error: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                return new Response(uri.AbsoluteUri, null, null, $"error: {ex.GetType().Name}: {ex.Message}");
             }
         }
 

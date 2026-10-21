@@ -71,7 +71,7 @@ public sealed class CacheDatabase : IDisposable
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
 
-        var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path }.ToString());
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString());
         connection.Open();
         try
         {

@@ -334,6 +334,25 @@ public class CacheRefresherTests
     }
 
     [Fact]
+    public async Task Hotkey_404ForAnOrgOnTheOrgList_LeavesTheListOrgUntouched()
+    {
+        using var env = new CacheEnv();
+        env.Rsi.OrgInfos["J0K3R5"] = Found(Org("J0K3R5"));
+        env.Rsi.Members["J0K3R5"] = Found(new OrgMembers("J0K3R5", new[] { "Alice", "Bob" }));
+        await env.Refresher().UpdateDatabaseNowAsync(ConfigWith(Array.Empty<string>(), new[] { "J0K3R5" }));
+        Assert.Equal(CacheSource.OrgList, env.Db.GetOrg("J0K3R5")!.Source);
+
+        // a later hotkey lookup gets a (wrong or temporary) 404 for that org's page
+        env.Rsi.Players["Nitebird"] = Found(Player("Nitebird", MainOrg("HEKATE"), Affiliate("J0K3R5")));
+        env.Rsi.OrgInfos["J0K3R5"] = RsiResult<OrgInfo>.NotFound();
+        await env.Refresher().LookupPlayerForHotkeyAsync("Nitebird");
+
+        Assert.False(env.Db.IsKnownOrgNotFound("J0K3R5", env.Clock.UtcNow));
+        Assert.Equal(CacheSource.OrgList, env.Db.GetOrg("J0K3R5")!.Source);
+        Assert.Equal(2, env.Db.GetOrgMembers("J0K3R5").Count);
+    }
+
+    [Fact]
     public async Task Hotkey_AffiliateOrg404_IsNegativeCached()
     {
         using var env = new CacheEnv();

@@ -338,7 +338,9 @@ public sealed class CacheRefresher
                 return _database.GetOrg(sid);
 
             case RsiStatus.NotFound:
-                _database.SaveNotFound(NotFoundKind.Org, sid, CacheSource.Hotkey, _clock.UtcNow);
+                // Orgs on the user's org list are only changed by the list refresh, never by a hotkey lookup.
+                if (cached?.Source != CacheSource.OrgList)
+                    _database.SaveNotFound(NotFoundKind.Org, sid, CacheSource.Hotkey, _clock.UtcNow);
                 return null;
 
             default:

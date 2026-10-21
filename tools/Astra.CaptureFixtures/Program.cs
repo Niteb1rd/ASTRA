@@ -23,7 +23,7 @@ string outputFolder = folder;
 Directory.CreateDirectory(outputFolder);
 Console.WriteLine($"Saving into {outputFolder}");
 
-using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = true }) { Timeout = TimeSpan.FromSeconds(30) };
+using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(30) };
 bool firstRequest = true;
 int problems = 0;
 
@@ -65,24 +65,32 @@ async Task Capture(string fileName, string url, string? jsonBody = null, bool st
     Console.Write($"{method} {url} ... ");
     try
     {
-        using var request = new HttpRequestMessage(method, uri);
-        request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
-        request.Headers.TryAddWithoutValidation("Accept-Language", "en");
-        if (jsonBody is not null)
+        // Redirects are followed by hand, only within https://robertsspaceindustries.com,
+        // with the same pause before each hop. Nothing else is ever contacted.
+        HttpResponseMessage response = await Send(method, uri, jsonBody);
+        for (int hop = 0; (int)response.StatusCode is >= 300 and < 400; hop++)
         {
-            request.Headers.TryAddWithoutValidation("Accept", "application/json");
-            request.Headers.TryAddWithoutValidation("X-Requested-With", "XMLHttpRequest");
-            request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+            var location = response.Headers.Location;
+            response.Dispose();
+            if (location is null || method != HttpMethod.Get || hop >= 3)
+            {
+                Console.WriteLine("unexpected redirect; not saved");
+                problems++;
+                return;
+            }
+            var next = location.IsAbsoluteUri && !location.IsFile ? location : new Uri(uri, location.OriginalString);
+            if (next.Scheme != Uri.UriSchemeHttps || !string.Equals(next.Host, Host, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine($"redirect to {next.Host} refused; not saved");
+                problems++;
+                return;
+            }
+            Console.Write($"redirect -> {next.AbsoluteUri} ... ");
+            await Task.Delay(pause);
+            uri = next;
+            response = await Send(method, uri, jsonBody);
         }
-
-        using var response = await http.SendAsync(request);
-        var finalHost = response.RequestMessage?.RequestUri?.Host;
-        if (!string.Equals(finalHost, Host, StringComparison.OrdinalIgnoreCase))
-        {
-            Console.WriteLine($"redirected to {finalHost}; not saved");
-            problems++;
-            return;
-        }
+        using var _ = response;
 
         int code = (int)response.StatusCode;
         var path = Path.Combine(outputFolder, fileName);
@@ -109,6 +117,20 @@ async Task Capture(string fileName, string url, string? jsonBody = null, bool st
         Console.WriteLine($"failed: {ex.Message}");
         problems++;
     }
+}
+
+async Task<HttpResponseMessage> Send(HttpMethod method, Uri uri, string? jsonBody)
+{
+    using var request = new HttpRequestMessage(method, uri);
+    request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+    request.Headers.TryAddWithoutValidation("Accept-Language", "en");
+    if (jsonBody is not null)
+    {
+        request.Headers.TryAddWithoutValidation("Accept", "application/json");
+        request.Headers.TryAddWithoutValidation("X-Requested-With", "XMLHttpRequest");
+        request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+    }
+    return await http.SendAsync(request);
 }
 
 static string? FindOutputFolder()
