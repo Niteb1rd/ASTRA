@@ -5,6 +5,9 @@ obj/
 *.user
 TestResults/
 
+# ASTRA's own data (lists, cache, logs) lives in a Data folder next to the exe. Personal, never commit.
+Data/
+
 # Game footage, screenshots and anything cut from them are CIG's copyrighted imagery.
 # Never commit them.
 *.mp4
