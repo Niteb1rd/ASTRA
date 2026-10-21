@@ -16,4 +16,9 @@
     <PackageReference Include="AngleSharp" Version="1.1.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The shipped exclusion list. ExclusionList copies it next to the user's settings the first time ASTRA runs. -->
+    <EmbeddedResource Include="Detection\exclusions.default.txt" LogicalName="Astra.Core.Detection.exclusions.default.txt" />
+  </ItemGroup>
+
 </Project>

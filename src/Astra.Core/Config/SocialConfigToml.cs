@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using Astra.Core.Rsi;
 using Tomlyn;
 using Tomlyn.Model;
 
@@ -49,7 +50,8 @@ public static class SocialConfigToml
     public const int FormatVersion = 1;
 
     // RSI handles and SIDs: letters, digits, hyphen, underscore. No spaces or other symbols.
-    private static readonly Regex HandleRe = new("^[A-Za-z0-9_-]{1,60}$", RegexOptions.Compiled);
+    private static readonly Regex HandleRe = new(
+        "^[A-Za-z0-9_-]{" + RsiNames.MinHandleLength + "," + RsiNames.MaxHandleLength + "}$", RegexOptions.Compiled);
     private static readonly Regex SidRe = new("^[A-Za-z0-9_-]{1,20}$", RegexOptions.Compiled);
 
     // ------------------------------------------------------------------ write
@@ -173,7 +175,7 @@ public static class SocialConfigToml
             WarnUnknown(t, path, warnings, "handle", "color");
             if (handle is null || color is null) continue;
             if (!HandleRe.IsMatch(handle))
-                errors.Add($"{path}.handle: \"{handle}\" is not a valid handle (letters, digits, - and _ only).");
+                errors.Add($"{path}.handle: \"{handle}\" is not a valid handle (4 to 25 characters: letters, digits, - and _ only).");
             else if (!seenHandles.Add(handle))
                 errors.Add($"{path}.handle: \"{handle}\" is listed more than once.");
             else

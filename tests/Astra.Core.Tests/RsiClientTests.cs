@@ -186,8 +186,8 @@ public class RsiClientTests
             return Ok(PlayerPage);
         };
 
-        await s.Client.GetPlayerOrgsAsync("One");
-        await s.Client.GetPlayerOrgsAsync("Two");
+        await s.Client.GetPlayerOrgsAsync("Oneone");
+        await s.Client.GetPlayerOrgsAsync("Twotwo");
         await s.Client.GetPlayerOrgsAsync("Three");
 
         Assert.Equal(3, times.Count);
@@ -246,13 +246,13 @@ public class RsiClientTests
         var s = new Setup();
         s.Handler.Respond = (r, body) => body!.Contains("\"page\":2", StringComparison.Ordinal)
             ? Ok(MembersJson(Fragment("Carol"), 3), "application/json")
-            : Ok(MembersJson(Fragment("Alice", "Bob"), 3), "application/json");
+            : Ok(MembersJson(Fragment("Alice", "Bobby"), 3), "application/json");
 
         var result = await s.Client.GetOrgMembersAsync("J0K3R5");
 
         Assert.True(result.IsFound, result.ToString());
         Assert.Equal("J0K3R5", result.Data!.Sid);
-        Assert.Equal(new[] { "Alice", "Bob", "Carol" }, result.Data.Handles);
+        Assert.Equal(new[] { "Alice", "Bobby", "Carol" }, result.Data.Handles);
 
         Assert.Equal(2, s.Handler.Requests.Count);
         Assert.All(s.Handler.Requests, q =>
@@ -306,7 +306,7 @@ public class RsiClientTests
         var s = new Setup();
         s.Handler.Respond = (r, body) => body!.Contains("\"page\":2", StringComparison.Ordinal)
             ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
-            : Ok(MembersJson(Fragment("Alice", "Bob"), 5), "application/json");
+            : Ok(MembersJson(Fragment("Alice", "Bobby"), 5), "application/json");
 
         var result = await s.Client.GetOrgMembersAsync("J0K3R5");
 

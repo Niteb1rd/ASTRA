@@ -8,11 +8,18 @@ namespace Astra.Core.Rsi;
 /// </summary>
 public static class RsiNames
 {
+    /// <summary>Shortest player handle ASTRA accepts. Shorter text on a nameplate is treated as noise.</summary>
+    public const int MinHandleLength = 4;
+
+    /// <summary>Longest player handle ASTRA accepts.</summary>
+    public const int MaxHandleLength = 25;
+
     // \z (not $) on purpose: "$" would also accept a trailing newline.
-    private static readonly Regex HandlePattern = new(@"^[A-Za-z0-9_-]{1,60}\z", RegexOptions.CultureInvariant);
+    private static readonly Regex HandlePattern = new(
+        "^[A-Za-z0-9_-]{" + MinHandleLength + "," + MaxHandleLength + "}\\z", RegexOptions.CultureInvariant);
     private static readonly Regex SidPattern = new(@"^[A-Za-z0-9_-]{1,20}\z", RegexOptions.CultureInvariant);
 
-    /// <summary>Player handle: letters, digits, "_" and "-", 1 to 60 characters.</summary>
+    /// <summary>Player handle: letters, digits, "_" and "-", 4 to 25 characters.</summary>
     public static bool IsValidHandle(string? handle) => handle is not null && HandlePattern.IsMatch(handle);
 
     /// <summary>Org SID: letters, digits, "_" and "-", 1 to 20 characters.</summary>

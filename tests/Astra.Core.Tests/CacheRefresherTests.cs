@@ -67,9 +67,9 @@ public class CacheRefresherTests
     public async Task AutomaticRefresh_OnlyFetchesStaleEntries()
     {
         using var env = new CacheEnv();
-        var config = ConfigWith(new[] { "Fresh", "Old" }, Array.Empty<string>());
-        env.Rsi.Players["Old"] = Found(Player("Old", MainOrg("A")));
-        await env.Refresher().RefreshStaleAsync(ConfigWith(new[] { "Old" }, Array.Empty<string>()));
+        var config = ConfigWith(new[] { "Fresh", "Oldie" }, Array.Empty<string>());
+        env.Rsi.Players["Oldie"] = Found(Player("Oldie", MainOrg("A")));
+        await env.Refresher().RefreshStaleAsync(ConfigWith(new[] { "Oldie" }, Array.Empty<string>()));
         env.Clock.Advance(TimeSpan.FromDays(40));
         env.Rsi.Players["Fresh"] = Found(Player("Fresh", MainOrg("B")));
         await env.Refresher().RefreshStaleAsync(ConfigWith(new[] { "Fresh" }, Array.Empty<string>()));
@@ -77,7 +77,7 @@ public class CacheRefresherTests
 
         await env.Refresher().RefreshStaleAsync(config);
 
-        Assert.Equal(new[] { "player:Old" }, env.Rsi.Calls);
+        Assert.Equal(new[] { "player:Oldie" }, env.Rsi.Calls);
     }
 
     // ------------------------------------------------------------------ manual "Update database now"
@@ -148,7 +148,7 @@ public class CacheRefresherTests
         using var env = new CacheEnv();
         env.Rsi.Players["Nitebird"] = Found(Player("Nitebird", MainOrg("HEKATE", "Organization", "Social"), Affiliate("J0K3R5"), Affiliate("VNGD")));
         env.Rsi.OrgInfos["J0K3R5"] = Found(Org("J0K3R5", "PMC", "Freelancing"));
-        env.Rsi.Members["J0K3R5"] = Found(new OrgMembers("J0K3R5", new[] { "Alice", "Bob" }));
+        env.Rsi.Members["J0K3R5"] = Found(new OrgMembers("J0K3R5", new[] { "Alice", "Bobby" }));
 
         await env.Refresher().UpdateDatabaseNowAsync(ConfigWith(new[] { "Nitebird" }, new[] { "J0K3R5" }));
 
@@ -338,7 +338,7 @@ public class CacheRefresherTests
     {
         using var env = new CacheEnv();
         env.Rsi.OrgInfos["J0K3R5"] = Found(Org("J0K3R5"));
-        env.Rsi.Members["J0K3R5"] = Found(new OrgMembers("J0K3R5", new[] { "Alice", "Bob" }));
+        env.Rsi.Members["J0K3R5"] = Found(new OrgMembers("J0K3R5", new[] { "Alice", "Bobby" }));
         await env.Refresher().UpdateDatabaseNowAsync(ConfigWith(Array.Empty<string>(), new[] { "J0K3R5" }));
         Assert.Equal(CacheSource.OrgList, env.Db.GetOrg("J0K3R5")!.Source);
 
