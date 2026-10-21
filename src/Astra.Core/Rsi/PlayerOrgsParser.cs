@@ -15,10 +15,22 @@ namespace Astra.Core.Rsi;
 public static class PlayerOrgsParser
 {
     // ======================================================================================
-    // PAGE LAYOUT ASSUMPTIONS. Every CSS selector and label string used by this parser is here.
-    // They are educated guesses and MUST be checked against the captured fixtures
-    // (tests/Astra.Core.Tests/Fixtures/rsi/player-*.html, see tools/Astra.CaptureFixtures).
+    // PAGE LAYOUT. Every CSS selector and label string used by this parser is here.
+    // Checked against real pages saved on 2026-10-21 (Nitebird, Bqnzai, Love2Hate):
+    //   <div class="box-content org main visibility-V">           main org, visible
+    //   <div class="box-content org affiliation  visibility-R ">  affiliation, hidden (text blanked out)
+    //     <div class="title">Main organization</div> / "Affiliation"
+    //     <p class="entry"><span class="label">Spectrum Identification (SID)</span><strong class="value">HEKATE</strong></p>
+    //     main block only: labels "Archetype", "Prim. Activity", "Sec. Activity", "Commitment", ...
     // ======================================================================================
+
+    /// <summary>Block classes: which kind of org, and whether it is hidden ("R" = redacted, "H" treated the same).</summary>
+    private const string MainClass = "main";
+    private const string AffiliationClass = "affiliation";
+    private static readonly string[] HiddenClasses = { "visibility-R", "visibility-H" };
+
+    /// <summary>Labels of the main org's activity rows ("Prim. Activity", "Sec. Activity"), "contains" match.</summary>
+    private const string ActivityLabel = "Activity";
 
     /// <summary>Something that proves this is a citizen profile page (used only when no org block is found).</summary>
     private const string ProfileMarkerSelector = ".profile, .profile-content";
@@ -27,7 +39,7 @@ public static class PlayerOrgsParser
     private const string OrgBlockSelector = ".box-content.org";
 
     /// <summary>The block's heading ("Main organization" / "Affiliation").</summary>
-    private const string BlockHeadingSelector = ".heading, h3";
+    private const string BlockHeadingSelector = ".title, .heading, h3";
 
     /// <summary>A label/value row inside a block, and its two parts.</summary>
     private const string EntrySelector = ".entry";
@@ -62,9 +74,11 @@ public static class PlayerOrgsParser
         int blocksSeen = 0;
         foreach (var block in doc.QuerySelectorAll(OrgBlockSelector))
         {
+            // The block's classes say which kind it is; the visible title is the fallback.
             var heading = HtmlText.Of(block.QuerySelector(BlockHeadingSelector)).ToLowerInvariant();
-            bool isMain = heading.Contains(MainHeading, StringComparison.Ordinal);
-            bool isAffiliation = !isMain && heading.Contains(AffiliationHeading, StringComparison.Ordinal);
+            bool isMain = block.ClassList.Contains(MainClass) || heading.Contains(MainHeading, StringComparison.Ordinal);
+            bool isAffiliation = !isMain && (block.ClassList.Contains(AffiliationClass)
+                                             || heading.Contains(AffiliationHeading, StringComparison.Ordinal));
             if (!isMain && !isAffiliation)
                 continue;
 
@@ -95,6 +109,10 @@ public static class PlayerOrgsParser
     /// <summary>Turns one block into a membership. Null means "this block shows no org at all".</summary>
     private static OrgMembership? ReadBlock(IElement block, bool isMain)
     {
+        // A hidden org: RSI marks the block and blanks out its text.
+        if (HiddenClasses.Any(c => block.ClassList.Contains(c)))
+            return new OrgMembership(null, isMain);
+
         var sid = SidFromLabel(block) ?? SidFromLink(block);
 
         if (sid is null)
@@ -111,11 +129,18 @@ public static class PlayerOrgsParser
         if (!isMain)
             return new OrgMembership(sid, false);
 
-        // main org: the page also shows its attributes
-        var scan = OrgAttributeScanner.Scan(block);
+        // main org: the page also shows its attributes as labeled rows
         var labeled = ValueForLabel(block, ArchetypeLabel);
-        var archetype = labeled is null ? scan.Archetype : (OrgVocabulary.MatchArchetype(labeled) ?? labeled);
-        return new OrgMembership(sid, true, archetype, scan.Activities);
+        var activities = ValuesForLabel(block, ActivityLabel);
+        if (labeled is not null || activities.Count > 0)
+        {
+            var archetypeText = labeled is null ? null : (OrgVocabulary.MatchArchetype(labeled) ?? labeled);
+            return new OrgMembership(sid, true, archetypeText, activities);
+        }
+
+        // no labeled rows (layout changed?): fall back to scanning the block for known words
+        var scan = OrgAttributeScanner.Scan(block);
+        return new OrgMembership(sid, true, scan.Archetype, scan.Activities);
     }
 
     private static string? SidFromLabel(IElement block)
@@ -132,6 +157,21 @@ public static class PlayerOrgsParser
         var path = href.Split('?', '#')[0].TrimEnd('/');
         var segment = path.Substring(path.LastIndexOf('/') + 1);
         return RsiNames.IsValidSid(segment) ? segment : null;
+    }
+
+    /// <summary>All non-empty values of rows whose label contains <paramref name="label"/>, in page order, without duplicates.</summary>
+    private static List<string> ValuesForLabel(IElement scope, string label)
+    {
+        var values = new List<string>();
+        foreach (var entry in scope.QuerySelectorAll(EntrySelector))
+        {
+            if (!HtmlText.Of(entry.QuerySelector(LabelSelector)).Contains(label, StringComparison.OrdinalIgnoreCase))
+                continue;
+            var value = HtmlText.Of(entry.QuerySelector(ValueSelector));
+            if (value.Length > 0 && !values.Contains(value, StringComparer.OrdinalIgnoreCase))
+                values.Add(value);
+        }
+        return values;
     }
 
     /// <summary>Finds the row whose label contains <paramref name="label"/> and returns its value text (null if none or empty).</summary>
