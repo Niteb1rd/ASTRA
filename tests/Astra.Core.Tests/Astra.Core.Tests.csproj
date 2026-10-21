@@ -13,6 +13,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Saved RSI pages for the parser tests. Captured locally by tools/Astra.CaptureFixtures
+         (not committed). When the folder is empty the fixture tests are skipped. -->
+    <None Update="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Astra.Core\Astra.Core.csproj" />
   </ItemGroup>
 

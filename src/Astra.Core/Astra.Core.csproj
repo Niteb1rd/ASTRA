@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Platform-independent logic: config file, color rules, panel text.
+  <!-- Platform-independent logic: config file, color rules, panel text, RSI client, lookup cache.
        No Windows-only code here, so it can be tested anywhere. -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -10,6 +10,10 @@
   <ItemGroup>
     <!-- TOML parser (MIT licence) -->
     <PackageReference Include="Tomlyn" Version="0.17.0" />
+    <!-- SQLite database for the RSI lookup cache (MIT licence) -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <!-- HTML parser for RSI pages (MIT licence) -->
+    <PackageReference Include="AngleSharp" Version="1.1.2" />
   </ItemGroup>
 
 </Project>

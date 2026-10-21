@@ -17,3 +17,6 @@ TestResults/
 spike/
 frames/
 training-data/
+
+# Copies of RSI pages captured by tools/Astra.CaptureFixtures. Third-party content: keep local.
+tests/Astra.Core.Tests/Fixtures/rsi/
