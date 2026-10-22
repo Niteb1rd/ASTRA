@@ -6,13 +6,16 @@ namespace Iris.Core.Social;
 /// - the org that caused the match goes first; an attribute match adds "(attribute)"; a No Match result marks no org;
 /// - otherwise RSI page order (main org first);
 /// - the main org ends with "*"; hidden orgs show as REDACTED (REDACTED* for a hidden main org);
-/// - no orgs: "Orgs: none found";
+/// - no orgs: "Orgs: none found"; a player that was never looked up: "Orgs: not looked up" (<see cref="NotLookedUp"/>);
 /// - at most 40 characters including "Orgs: "; if longer, cut after the last org that fits and add ", etc."
 /// </summary>
 public static class PanelText
 {
     public const int MaxLineLength = 40;
     private const string Prefix = "Orgs: ";
+
+    /// <summary>The orgs line of a player the cache knows nothing about (no lookup has been made, so "none found" would be a lie).</summary>
+    public const string NotLookedUp = "Orgs: not looked up";
     private const string Etc = ", etc.";
 
     public static string OrgLine(IReadOnlyList<OrgMembership> orgs, ColorMatch? match)

@@ -82,6 +82,19 @@ public static class ColorResolver
         return new ColorMatch(MatchKind.NoMatch, noMatch?.Color ?? NoMatchRule.DefaultColor, null, null);
     }
 
+    /// <summary>
+    /// The color decision for a player whose orgs are not known (never looked up, nothing in the cache). Without orgs only the player list can
+    /// match; everything else is No Match. (Resolving with an empty org list instead would wrongly count as "belongs to no org".)
+    /// </summary>
+    public static ColorMatch ResolveUnknown(string handle, SocialConfig config)
+    {
+        var player = config.Players.FirstOrDefault(p => string.Equals(p.Handle, handle, StringComparison.OrdinalIgnoreCase));
+        if (player is not null)
+            return new ColorMatch(MatchKind.PlayerList, player.Color, null, null);
+        var noMatch = NoMatchRule.Find(config);
+        return new ColorMatch(MatchKind.NoMatch, noMatch?.Color ?? NoMatchRule.DefaultColor, null, null);
+    }
+
     private static (bool hit, string? sid, string? text) RuleHits(OrgAttributeRule rule, IReadOnlyList<OrgMembership> orgs)
     {
         switch (rule.Kind)
