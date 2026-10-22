@@ -11,8 +11,9 @@ public readonly record struct BackoffChange(TimeSpan Before, TimeSpan After, Tim
 
 /// <summary>
 /// The one shared speed limit for RSI: normally at most one request per second across the whole app.
-/// Callers await <see cref="WaitForTurnAsync"/> right before sending; turns are handed out in the order
-/// the calls arrive, so requests queue up first-come first-served.
+/// Callers await <see cref="WaitForTurnAsync"/> right before sending. Slots are reserved in the order the calls arrive, so requests
+/// normally go out first-come first-served. That order is NOT guaranteed after a bad answer: the callers that are already waiting
+/// give their slot back when they wake up and queue again (each still waits its full time), so they may swap places.
 ///
 /// How it works: each call reserves the next free time slot (slots are one gap apart) immediately,
 /// then sleeps until its slot. The clock and the sleeping are injected so tests run instantly.
@@ -21,6 +22,9 @@ public readonly record struct BackoffChange(TimeSpan Before, TimeSpan After, Tim
 /// <see cref="ReportThrottled"/>. The gap between requests then doubles (1, 2, 4, 8, 16, 30 s; 30 s is the cap) and the next request
 /// waits that long, counted from the moment the bad answer arrived. A Retry-After from RSI makes the next wait longer if it asks for
 /// more (cap 120 s). Every good answer (<see cref="ReportSuccess"/>) halves the gap again, back down to the normal 1 s.
+/// A good answer to a request that was sent BEFORE the latest bad answer says nothing about how RSI is doing now, so it is ignored:
+/// every bad answer starts a new "generation", <see cref="WaitForTurnAsync"/> returns the generation a request was sent in, and
+/// <see cref="ReportSuccess"/> only counts when that is still the current one.
 /// Requests that were already waiting for their slot when the bad answer arrived wait the new, longer time as well.
 /// </summary>
 public sealed class RsiRateLimiter
@@ -48,6 +52,9 @@ public sealed class RsiRateLimiter
     // No request may be sent before this time (set by a throttled answer).
     private DateTimeOffset _notBefore = DateTimeOffset.MinValue;
 
+    // Bumped by every throttled answer. A request remembers the value from the moment its turn came.
+    private long _generation;
+
     /// <param name="clock">Source of "now".</param>
     /// <param name="delay">How to wait. Null means a real <see cref="Task.Delay(TimeSpan, CancellationToken)"/>. A fake must move the fake clock forward by the wait.</param>
     /// <param name="interval">Normal gap between requests. Null means 1 second.</param>
@@ -69,12 +76,21 @@ public sealed class RsiRateLimiter
         }
     }
 
-    /// <summary>RSI answered normally (a page, or a definite 404): halves the gap, down to the normal interval.</summary>
-    public BackoffChange ReportSuccess()
+    /// <summary>
+    /// RSI answered normally (a page, or a definite 404): halves the gap, down to the normal interval.
+    /// </summary>
+    /// <param name="turn">
+    /// The value <see cref="WaitForTurnAsync"/> returned for the request that got this answer. If a bad answer was reported after that
+    /// turn came, the good answer is ignored (nothing changes). Null always counts.
+    /// </param>
+    public BackoffChange ReportSuccess(long? turn = null)
     {
         lock (_gate)
         {
             var before = _gap;
+            if (turn is { } sentIn && sentIn != _generation)
+                return new BackoffChange(before, before, TimeSpan.Zero);
+
             var halved = TimeSpan.FromTicks(_gap.Ticks / 2);
             _gap = halved < _interval ? _interval : halved;
             return new BackoffChange(before, _gap, TimeSpan.Zero);
@@ -90,6 +106,7 @@ public sealed class RsiRateLimiter
         lock (_gate)
         {
             var before = _gap;
+            _generation++;
             var doubled = TimeSpan.FromTicks(_gap.Ticks * 2);
             _gap = doubled > MaxBackoff ? MaxBackoff : doubled;
             if (_gap < _interval)
@@ -106,20 +123,25 @@ public sealed class RsiRateLimiter
         }
     }
 
-    /// <summary>Completes when it is this caller's turn to send one request.</summary>
-    public async Task WaitForTurnAsync(CancellationToken ct = default)
+    /// <summary>
+    /// Completes when it is this caller's turn to send one request. The result is the generation at that moment: pass it to
+    /// <see cref="ReportSuccess"/> together with the answer to this request.
+    /// </summary>
+    public async Task<long> WaitForTurnAsync(CancellationToken ct = default)
     {
         Reservation? previous = null;
         while (true)
         {
             Reservation reservation;
+            long generation;
             lock (_gate)
             {
                 var now = _clock.UtcNow;
+                generation = _generation;
 
                 // Back after a wait: if a bad answer arrived meanwhile and pushed the allowed time further out, queue up again behind it.
                 if (previous is not null && _notBefore <= now)
-                    return;
+                    return generation;
 
                 // Our old slot is no use any more; hand it back first so it does not hold up our own new slot.
                 if (previous is { } old)
@@ -130,7 +152,7 @@ public sealed class RsiRateLimiter
             previous = reservation;
 
             if (reservation.Wait <= TimeSpan.Zero)
-                return; // the slot is now, and a slot is never earlier than the allowed time
+                return generation; // the slot is now, and a slot is never earlier than the allowed time
 
             try
             {

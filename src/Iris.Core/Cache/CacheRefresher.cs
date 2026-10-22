@@ -119,28 +119,27 @@ public sealed class CacheRefresher
     public StaleEntries FindStale(SocialConfig config)
     {
         var now = _clock.UtcNow;
-
-        var players = new List<string>();
-        foreach (var handle in ListedHandles(config))
-        {
-            if (_database.GetNotFoundTime(NotFoundKind.Player, handle) is not null)
-                continue;
-            var cached = _database.GetPlayer(handle);
-            if (cached is null || IsStale(cached.LastRefreshed, now))
-                players.Add(handle);
-        }
-
-        var orgs = new List<string>();
-        foreach (var sid in ListedSids(config))
-        {
-            if (_database.GetNotFoundTime(NotFoundKind.Org, sid) is not null)
-                continue;
-            var cached = _database.GetOrg(sid);
-            if (cached?.MembersRefreshed is not { } refreshed || IsStale(refreshed, now))
-                orgs.Add(sid);
-        }
-
+        var players = ListedHandles(config).Where(handle => NeedsPlayerFetch(handle, now)).ToList();
+        var orgs = ListedSids(config).Where(sid => NeedsOrgFetch(sid, now)).ToList();
         return new StaleEntries(players, orgs);
+    }
+
+    // A listed player needs fetching when it has no "not found" note and no cache entry, or an entry older than the TTL.
+    private bool NeedsPlayerFetch(string handle, DateTimeOffset now)
+    {
+        if (_database.GetNotFoundTime(NotFoundKind.Player, handle) is not null)
+            return false;
+        var cached = _database.GetPlayer(handle);
+        return cached is null || IsStale(cached.LastRefreshed, now);
+    }
+
+    // A listed org needs fetching when it has no "not found" note and no member list, or a member list older than the TTL.
+    private bool NeedsOrgFetch(string sid, DateTimeOffset now)
+    {
+        if (_database.GetNotFoundTime(NotFoundKind.Org, sid) is not null)
+            return false;
+        var cached = _database.GetOrg(sid);
+        return cached?.MembersRefreshed is not { } refreshed || IsStale(refreshed, now);
     }
 
     /// <summary>
@@ -151,7 +150,7 @@ public sealed class CacheRefresher
     public Task<RefreshSummary> RefreshMissingOrStaleAsync(SocialConfig config, CancellationToken ct = default)
     {
         var stale = FindStale(config);
-        return RefreshListEntriesAsync(stale.Players, stale.Orgs, ct);
+        return RefreshListEntriesAsync(stale.Players, stale.Orgs, onlyStale: true, ct);
     }
 
     /// <summary>
@@ -161,15 +160,22 @@ public sealed class CacheRefresher
     /// Stops with <see cref="OperationCanceledException"/> when <paramref name="ct"/> is cancelled.
     /// </summary>
     public Task<RefreshSummary> RefreshAllAsync(SocialConfig config, CancellationToken ct = default) =>
-        RefreshListEntriesAsync(ListedHandles(config).ToList(), ListedSids(config).ToList(), ct);
+        RefreshListEntriesAsync(ListedHandles(config).ToList(), ListedSids(config).ToList(), onlyStale: false, ct);
 
-    private async Task<RefreshSummary> RefreshListEntriesAsync(IReadOnlyList<string> handles, IReadOnlyList<string> sids, CancellationToken ct)
+    /// <summary>
+    /// With <paramref name="onlyStale"/> (fill missing) each entry is looked at again right before it is fetched: the run can take minutes
+    /// (one request per second), and a hotkey lookup or another run may have filled the entry meanwhile. Such an entry is skipped.
+    /// </summary>
+    private async Task<RefreshSummary> RefreshListEntriesAsync(
+        IReadOnlyList<string> handles, IReadOnlyList<string> sids, bool onlyStale, CancellationToken ct)
     {
         var summary = new RefreshSummary();
 
         foreach (var handle in handles)
         {
             ct.ThrowIfCancellationRequested();
+            if (onlyStale && !NeedsPlayerFetch(handle, _clock.UtcNow))
+                continue;
             var result = await FetchAndStorePlayerAsync(handle, CacheSource.PlayerList, ct).ConfigureAwait(false);
             switch (result.Status)
             {
@@ -188,6 +194,8 @@ public sealed class CacheRefresher
         foreach (var sid in sids)
         {
             ct.ThrowIfCancellationRequested();
+            if (onlyStale && !NeedsOrgFetch(sid, _clock.UtcNow))
+                continue;
             await RefreshOrgListEntryAsync(sid, summary, ct).ConfigureAwait(false);
         }
 

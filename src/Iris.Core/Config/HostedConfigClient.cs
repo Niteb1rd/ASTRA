@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using Iris.Core.Rsi;
 
@@ -84,6 +85,7 @@ public sealed class HostedConfigClient
 
         for (int hop = 0; hop <= MaxRedirects; hop++)
         {
+            var stopwatch = Stopwatch.StartNew(); // this one request, for the log
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, uri);
@@ -97,28 +99,28 @@ public sealed class HostedConfigClient
                 {
                     var location = response.Headers.Location;
                     if (location is null)
-                        return Fail(uri, "The URL redirects without saying where to.");
+                        return Fail(uri, "The URL redirects without saying where to.", stopwatch.Elapsed);
 
                     // A relative Location ("/final.toml") is resolved against the current address. On Linux a path starting with "/"
                     // parses as an absolute file:// address, so file addresses are treated as relative too.
                     var next = location.IsAbsoluteUri && !location.IsFile ? location : new Uri(uri, location.OriginalString);
-                    Log($"GET {Display(uri)} -> redirect (HTTP {code}) to {Display(next)}");
+                    Log($"GET {Display(uri)} -> redirect (HTTP {code}) to {Display(next)} ({RsiClient.FormatDuration(stopwatch.Elapsed)})");
                     if (!string.Equals(next.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
-                        return Fail(uri, "The URL redirects to an address that is not https; only https:// is allowed.");
+                        return Fail(uri, "The URL redirects to an address that is not https; only https:// is allowed.", stopwatch.Elapsed);
                     if (!string.Equals(next.Host, startHost, StringComparison.OrdinalIgnoreCase) || next.Port != startPort)
-                        return Fail(uri, $"The URL redirects to another site ({next.Authority}); use the final address instead.");
+                        return Fail(uri, $"The URL redirects to another site ({next.Authority}); use the final address instead.", stopwatch.Elapsed);
                     uri = next;
                     continue;
                 }
 
                 if (code == 404)
-                    return Fail(uri, "The URL returned HTTP 404 (not found). Check the address.");
+                    return Fail(uri, "The URL returned HTTP 404 (not found). Check the address.", stopwatch.Elapsed);
                 if (code < 200 || code > 299)
-                    return Fail(uri, $"The server answered HTTP {code}.");
+                    return Fail(uri, $"The server answered HTTP {code}.", stopwatch.Elapsed);
 
                 var announced = response.Content.Headers.ContentLength;
                 if (announced is > ConfigImporter.MaxFileBytes)
-                    return Fail(uri, "The file is too large (over 1 MB). A config file is normally a few KB.");
+                    return Fail(uri, "The file is too large (over 1 MB). A config file is normally a few KB.", stopwatch.Elapsed);
 
                 using var body = new MemoryStream();
                 await using (var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false))
@@ -129,35 +131,35 @@ public sealed class HostedConfigClient
                     {
                         body.Write(chunk, 0, read);
                         if (body.Length > ConfigImporter.MaxFileBytes)
-                            return Fail(uri, "The file is too large (over 1 MB). A config file is normally a few KB.");
+                            return Fail(uri, "The file is too large (over 1 MB). A config file is normally a few KB.", stopwatch.Elapsed);
                     }
                 }
 
                 var bytes = body.ToArray();
                 var hash = Sha256Hex(bytes);
-                Log($"GET {Display(uri)} -> ok (HTTP {code}, {bytes.Length} bytes, sha256 {hash.Substring(0, 12)}...)");
+                Log($"GET {Display(uri)} -> ok (HTTP {code}, {bytes.Length} bytes, sha256 {hash.Substring(0, 12)}...) ({RsiClient.FormatDuration(stopwatch.Elapsed)})");
                 return HostedConfigResult.Ok(Display(uri), ConfigImporter.DecodeUtf8(bytes), hash);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                Log($"GET {Display(uri)} -> cancelled");
+                Log($"GET {Display(uri)} -> cancelled ({RsiClient.FormatDuration(stopwatch.Elapsed)})");
                 throw;
             }
             catch (OperationCanceledException)
             {
-                return Fail(uri, $"The server did not answer within {RequestTimeout.TotalSeconds:0} seconds.");
+                return Fail(uri, $"The server did not answer within {RequestTimeout.TotalSeconds:0} seconds.", stopwatch.Elapsed);
             }
             catch (HttpRequestException ex)
             {
-                return Fail(uri, "Network error: " + ex.Message);
+                return Fail(uri, "Network error: " + ex.Message, stopwatch.Elapsed);
             }
             catch (IOException ex)
             {
-                return Fail(uri, "Network error: " + ex.Message);
+                return Fail(uri, "Network error: " + ex.Message, stopwatch.Elapsed);
             }
             catch (UriFormatException)
             {
-                return Fail(uri, "The URL redirects to an address that is not valid.");
+                return Fail(uri, "The URL redirects to an address that is not valid.", stopwatch.Elapsed);
             }
         }
 
@@ -167,9 +169,9 @@ public sealed class HostedConfigClient
     /// <summary>SHA-256 of <paramref name="bytes"/> as lower-case hex.</summary>
     public static string Sha256Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
-    private HostedConfigResult Fail(Uri uri, string error)
+    private HostedConfigResult Fail(Uri uri, string error, TimeSpan? elapsed = null)
     {
-        Log($"GET {Display(uri)} -> error: {error}");
+        Log($"GET {Display(uri)} -> error: {error}" + (elapsed is { } took ? $" ({RsiClient.FormatDuration(took)})" : string.Empty));
         return HostedConfigResult.Failed(Display(uri), error);
     }
 

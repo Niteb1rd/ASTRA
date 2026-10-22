@@ -260,6 +260,36 @@ public class RsiRateLimiterTests
     }
 
     [Fact]
+    public async Task ASuccessForARequestSentBeforeTheLatestBadAnswer_IsIgnored()
+    {
+        var clock = new FakeClock();
+        var limiter = Realistic(clock, new List<TimeSpan>());
+        var early = await limiter.WaitForTurnAsync();      // sent before the bad answer below
+        var other = await limiter.WaitForTurnAsync();      // also sent before it
+
+        limiter.ReportThrottled();                         // gap 2 s, a new generation
+        var stale = limiter.ReportSuccess(early);          // its good answer arrives late: says nothing about now
+        Assert.False(stale.Changed);
+        Assert.Equal(Seconds(2), limiter.CurrentGap);
+        Assert.Equal(Seconds(2), limiter.ReportSuccess(other).After);
+
+        var fresh = await limiter.WaitForTurnAsync();      // sent after the bad answer
+        var good = limiter.ReportSuccess(fresh);
+        Assert.True(good.Changed);
+        Assert.Equal(One, limiter.CurrentGap);
+    }
+
+    [Fact]
+    public async Task ASuccessWithoutATurn_AlwaysCounts()
+    {
+        var limiter = new RsiRateLimiter(new FakeClock());
+        await limiter.WaitForTurnAsync();
+        limiter.ReportThrottled();
+
+        Assert.Equal(One, limiter.ReportSuccess().After);
+    }
+
+    [Fact]
     public async Task RetryAfter_WinsWhenLongerThanTheBackoff_AndIsCappedAt120Seconds()
     {
         var clock = new FakeClock();

@@ -142,9 +142,10 @@ public sealed class RsiClient : IRsiClient
     /// <param name="Elapsed">How long the request took, from sending it until the whole answer was read (or it failed).</param>
     /// <param name="RetryAfter">The Retry-After RSI sent with an HTTP 429 or 503, if any.</param>
     /// <param name="NetworkProblem">True for a timeout or network error: RSI did not answer.</param>
+    /// <param name="Turn">The limiter's generation when this request's turn came (see <see cref="RsiRateLimiter.WaitForTurnAsync"/>). Null when there was no request.</param>
     private sealed record Response(
         string Url, int? StatusCode, string? Body, string? Error,
-        TimeSpan Elapsed = default, TimeSpan? RetryAfter = null, bool NetworkProblem = false);
+        TimeSpan Elapsed = default, TimeSpan? RetryAfter = null, bool NetworkProblem = false, long? Turn = null);
 
     private async Task<Response> SendAsync(HttpMethod method, string url, string? jsonBody, CancellationToken ct)
     {
@@ -154,7 +155,7 @@ public sealed class RsiClient : IRsiClient
             if (!Uri.TryCreate(current, UriKind.Absolute, out var uri) || !RsiUrls.IsAllowed(uri))
                 return new Response(current, null, null, "blocked: only https://robertsspaceindustries.com may be contacted");
 
-            await _limiter.WaitForTurnAsync(ct).ConfigureAwait(false);
+            var turn = await _limiter.WaitForTurnAsync(ct).ConfigureAwait(false);
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(RequestTimeout);
@@ -173,7 +174,7 @@ public sealed class RsiClient : IRsiClient
 
                 using var httpResponse = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, timeout.Token).ConfigureAwait(false);
                 if (httpResponse.RequestMessage?.RequestUri is { } final && !RsiUrls.IsAllowed(final))
-                    return new Response(final.AbsoluteUri, null, null, "blocked: only https://robertsspaceindustries.com may be contacted");
+                    return new Response(final.AbsoluteUri, null, null, "blocked: only https://robertsspaceindustries.com may be contacted", stopwatch.Elapsed);
                 int code = (int)httpResponse.StatusCode;
 
                 if (code is 301 or 302 or 303 or 307 or 308)
@@ -183,18 +184,18 @@ public sealed class RsiClient : IRsiClient
                         return new Response(uri.AbsoluteUri, code, null, $"unexpected redirect (HTTP {code})");
 
                     var next = location.IsAbsoluteUri && !location.IsFile ? location : new Uri(uri, location.OriginalString);
-                    Log($"{method} {uri.AbsoluteUri} -> redirect (HTTP {code}) to {next.AbsoluteUri}");
+                    Log($"{method} {uri.AbsoluteUri} -> redirect (HTTP {code}) to {next.AbsoluteUri} ({FormatDuration(stopwatch.Elapsed)})");
                     current = next.AbsoluteUri;
                     continue;
                 }
 
                 var retryAfter = code is 429 or 503 ? ReadRetryAfter(httpResponse.Headers.RetryAfter) : null;
                 var text = await httpResponse.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
-                return new Response(uri.AbsoluteUri, code, text, null, stopwatch.Elapsed, retryAfter);
+                return new Response(uri.AbsoluteUri, code, text, null, stopwatch.Elapsed, retryAfter, Turn: turn);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                Log($"{method} {uri.AbsoluteUri} -> cancelled");
+                Log($"{method} {uri.AbsoluteUri} -> cancelled ({FormatDuration(stopwatch.Elapsed)})");
                 throw;
             }
             catch (OperationCanceledException)
@@ -258,7 +259,7 @@ public sealed class RsiClient : IRsiClient
     }
 
     /// <summary>"0.42 s". Invariant culture, so the log reads the same on every PC.</summary>
-    internal static string FormatDuration(TimeSpan elapsed) =>
+    public static string FormatDuration(TimeSpan elapsed) =>
         elapsed.TotalSeconds.ToString("0.00", CultureInfo.InvariantCulture) + " s";
 
     /// <summary>
@@ -274,7 +275,7 @@ public sealed class RsiClient : IRsiClient
             if (code == 429 || code >= 500)
                 change = _limiter.ReportThrottled(response.RetryAfter);
             else if ((code >= 200 && code <= 299) || code == 404)
-                change = _limiter.ReportSuccess();
+                change = _limiter.ReportSuccess(response.Turn);
             else
                 return;
         }

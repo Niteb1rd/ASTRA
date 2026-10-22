@@ -324,6 +324,24 @@ public class HostedConfigClientTests
     }
 
     [Fact]
+    public async Task EveryRequestLine_EndsWithItsDuration()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (request, _) => request.RequestUri!.AbsolutePath == "/squad/iris-config.toml"
+            ? Redirect("/final.toml")
+            : request.RequestUri.AbsolutePath == "/final.toml"
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Body, Encoding.UTF8, "text/plain") }
+                : new HttpResponseMessage(HttpStatusCode.NotFound);
+
+        await s.Client.FetchAsync(Url);
+        s.Handler.Respond = (_, _) => new HttpResponseMessage(HttpStatusCode.NotFound);
+        await s.Client.FetchAsync(Url);
+
+        Assert.Equal(3, s.Log.Entries.Count);
+        Assert.All(s.Log.Entries, e => Assert.Matches(@"\(\d+\.\d\d s\)$", e.Message));
+    }
+
+    [Fact]
     public async Task Cancelling_ThrowsOperationCanceled()
     {
         var s = new Setup();

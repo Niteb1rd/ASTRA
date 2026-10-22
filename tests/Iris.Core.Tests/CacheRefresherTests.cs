@@ -80,6 +80,38 @@ public class CacheRefresherTests
         Assert.Equal(new[] { "player:Oldie" }, env.Rsi.Calls);
     }
 
+    [Fact]
+    public async Task FillMissing_SkipsAnEntryThatBecameFreshWhileTheRunWasBusy_ButFullRefreshFetchesEverything()
+    {
+        using var env = new CacheEnv();
+        var config = ConfigWith(new[] { "Alpha", "Bravo" }, new[] { "J0K3R5" });
+        env.Rsi.Players["Alpha"] = Found(Player("Alpha", MainOrg("A")));
+        env.Rsi.Players["Bravo"] = Found(Player("Bravo", MainOrg("B")));
+        env.Rsi.OrgInfos["J0K3R5"] = Found(Org("J0K3R5"));
+        env.Rsi.Members["J0K3R5"] = Found(new OrgMembers("J0K3R5", new[] { "Alice" }));
+
+        // While Alpha is being fetched, something else (a hotkey lookup, another run) fills Bravo and the org.
+        env.Rsi.OnCall = call =>
+        {
+            if (call != "player:Alpha")
+                return;
+            env.Db.SavePlayer(Player("Bravo", MainOrg("B")), CacheSource.Hotkey, env.Clock.UtcNow);
+            env.Db.SaveOrgListEntry("J0K3R5", "Long name of J0K3R5", new[] { "Alice" }, env.Clock.UtcNow);
+        };
+
+        var summary = await env.Refresher().RefreshMissingOrStaleAsync(config);
+
+        Assert.Equal(new[] { "player:Alpha" }, env.Rsi.Calls);   // Bravo and the org were fresh by the time their turn came
+        Assert.Equal(1, summary.PlayersRefreshed);
+        Assert.Equal(0, summary.OrgsRefreshed);
+
+        env.Rsi.OnCall = null;
+        env.Rsi.Calls.Clear();
+        await env.Refresher().RefreshAllAsync(config);
+
+        Assert.Equal(new[] { "player:Alpha", "player:Bravo", "org:J0K3R5", "members:J0K3R5" }, env.Rsi.Calls);
+    }
+
     // ------------------------------------------------------------------ full "Refresh Cache"
 
     [Fact]
