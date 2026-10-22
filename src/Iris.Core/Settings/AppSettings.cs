@@ -22,4 +22,13 @@ public sealed record AppSettings
 
     /// <summary>SHA-256 (lower-case hex) of the last hosted file that was applied or declined, or empty.</summary>
     public string HostedConfigLastHash { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Opt-in: look at the hosted config address in the background every 24 hours and offer the update when the file changed
+    /// (see <see cref="Iris.Core.Config.HostedConfigSchedule"/>). Off by default. Only meaningful with a valid <see cref="HostedConfigUrl"/>.
+    /// </summary>
+    public bool HostedConfigAutoCheck { get; init; }
+
+    /// <summary>When the last automatic check was made (UTC, whole seconds; success or failure), or null if there was none yet.</summary>
+    public DateTimeOffset? HostedConfigLastCheck { get; init; }
 }

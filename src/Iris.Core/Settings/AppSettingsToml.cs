@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using Iris.Core.Config;
 using Iris.Core.Storage;
@@ -41,6 +42,8 @@ public sealed class AppSettingsLoadResult
 /// check_for_updates = true
 /// hosted_config_url = ""
 /// hosted_config_last_hash = ""
+/// hosted_config_auto_check = false
+/// hosted_config_last_check = "2026-10-22T09:30:00Z"   # optional; written as text, UTC
 /// </code>
 /// Rules: a missing file means defaults (and nothing is written until the user saves); unknown keys are warnings;
 /// a value of the wrong type or out of range is a warning and that one setting falls back to its default;
@@ -51,7 +54,10 @@ public static class AppSettingsToml
     private static readonly string[] KnownKeys =
     {
         "format_version", "cache_ttl_days", "session_log_enabled", "check_for_updates", "hosted_config_url", "hosted_config_last_hash",
+        "hosted_config_auto_check", "hosted_config_last_check",
     };
+
+    private const string TimestampFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'";
 
     // ------------------------------------------------------------------ write
 
@@ -66,6 +72,9 @@ public static class AppSettingsToml
         sb.AppendLine($"check_for_updates = {Bool(settings.CheckForUpdates)}");
         sb.AppendLine($"hosted_config_url = {SocialConfigToml.Quote(settings.HostedConfigUrl ?? string.Empty)}");
         sb.AppendLine($"hosted_config_last_hash = {SocialConfigToml.Quote(settings.HostedConfigLastHash ?? string.Empty)}");
+        sb.AppendLine($"hosted_config_auto_check = {Bool(settings.HostedConfigAutoCheck)}");
+        if (settings.HostedConfigLastCheck is { } lastCheck)
+            sb.AppendLine($"hosted_config_last_check = {SocialConfigToml.Quote(lastCheck.UtcDateTime.ToString(TimestampFormat, CultureInfo.InvariantCulture))}");
         return sb.ToString();
     }
 
@@ -167,6 +176,37 @@ public static class AppSettingsToml
                 warnings.Add("hosted_config_last_hash: must be text; ignored.");
         }
 
+        var autoCheck = ReadBool(root, "hosted_config_auto_check", defaults.HostedConfigAutoCheck, warnings);
+        if (autoCheck && url.Length == 0)
+        {
+            // The automatic check needs an address to look at (the Settings tab unticks it when the address is cleared, too).
+            autoCheck = false;
+            warnings.Add("hosted_config_auto_check: needs a valid hosted_config_url; switched off.");
+        }
+
+        DateTimeOffset? lastCheck = defaults.HostedConfigLastCheck;
+        if (root.TryGetValue("hosted_config_last_check", out var checkRaw))
+        {
+            switch (checkRaw)
+            {
+                case string checkText when checkText.Trim().Length == 0:
+                    break; // empty means "never"
+                case string checkText when TryParseTimestamp(checkText, out var parsed):
+                    lastCheck = parsed;
+                    break;
+                case DateTimeOffset offsetValue:
+                    lastCheck = TruncateToSeconds(offsetValue.ToUniversalTime());
+                    break;
+                case DateTime dateValue:
+                    lastCheck = TruncateToSeconds(new DateTimeOffset(dateValue.Kind == DateTimeKind.Unspecified
+                        ? DateTime.SpecifyKind(dateValue, DateTimeKind.Utc) : dateValue.ToUniversalTime()));
+                    break;
+                default:
+                    warnings.Add("hosted_config_last_check: must be a date and time as text, like \"2026-10-22T09:30:00Z\"; ignored (treated as never checked).");
+                    break;
+            }
+        }
+
         var settings = new AppSettings
         {
             CacheTtlDays = ttl,
@@ -174,10 +214,32 @@ public static class AppSettingsToml
             CheckForUpdates = checkUpdates,
             HostedConfigUrl = url,
             HostedConfigLastHash = hash,
+            HostedConfigAutoCheck = autoCheck,
+            HostedConfigLastCheck = lastCheck,
         };
         var result = new AppSettingsLoadResult(settings, isNew: false);
         result.Warnings.AddRange(warnings);
         return result;
+    }
+
+    /// <summary>Parses an ISO 8601 date and time; a text without a zone is taken as UTC. The result is UTC, in whole seconds.</summary>
+    public static bool TryParseTimestamp(string? text, out DateTimeOffset value)
+    {
+        if (DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed))
+        {
+            value = TruncateToSeconds(parsed);
+            return true;
+        }
+        value = default;
+        return false;
+    }
+
+    /// <summary>The same moment without fractions of a second (that is all the settings file keeps), as UTC.</summary>
+    public static DateTimeOffset TruncateToSeconds(DateTimeOffset value)
+    {
+        var utc = value.ToUniversalTime();
+        return new DateTimeOffset(utc.Ticks - utc.Ticks % TimeSpan.TicksPerSecond, TimeSpan.Zero);
     }
 
     /// <summary>True for a SHA-256 written as 64 hex characters (either case).</summary>
