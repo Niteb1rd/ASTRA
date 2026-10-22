@@ -44,6 +44,11 @@ public sealed class AppSettingsLoadResult
 /// hosted_config_last_hash = ""
 /// hosted_config_auto_check = false
 /// hosted_config_last_check = "2026-10-22T09:30:00Z"   # optional; written as text, UTC
+/// panel_enabled = true
+/// panel_width_percent = 16       # 8 to 40
+/// panel_text_size = 18           # 10 to 40, pixels at 1440p
+/// panel_right_gap_percent = 10   # 0 to 40
+/// panel_top_gap_percent = 15     # 0 to 60
 /// </code>
 /// Rules: a missing file means defaults (and nothing is written until the user saves); unknown keys are warnings;
 /// a value of the wrong type or out of range is a warning and that one setting falls back to its default;
@@ -55,6 +60,7 @@ public static class AppSettingsToml
     {
         "format_version", "cache_ttl_days", "session_log_enabled", "check_for_updates", "hosted_config_url", "hosted_config_last_hash",
         "hosted_config_auto_check", "hosted_config_last_check",
+        "panel_enabled", "panel_width_percent", "panel_text_size", "panel_right_gap_percent", "panel_top_gap_percent",
     };
 
     private const string TimestampFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'";
@@ -75,6 +81,11 @@ public static class AppSettingsToml
         sb.AppendLine($"hosted_config_auto_check = {Bool(settings.HostedConfigAutoCheck)}");
         if (settings.HostedConfigLastCheck is { } lastCheck)
             sb.AppendLine($"hosted_config_last_check = {SocialConfigToml.Quote(lastCheck.UtcDateTime.ToString(TimestampFormat, CultureInfo.InvariantCulture))}");
+        sb.AppendLine($"panel_enabled = {Bool(settings.PanelEnabled)}");
+        sb.AppendLine($"panel_width_percent = {Math.Clamp(settings.PanelWidthPercent, AppSettings.PanelWidthPercentMin, AppSettings.PanelWidthPercentMax)}");
+        sb.AppendLine($"panel_text_size = {Math.Clamp(settings.PanelTextSize, AppSettings.PanelTextSizeMin, AppSettings.PanelTextSizeMax)}");
+        sb.AppendLine($"panel_right_gap_percent = {Math.Clamp(settings.PanelRightGapPercent, AppSettings.PanelRightGapPercentMin, AppSettings.PanelRightGapPercentMax)}");
+        sb.AppendLine($"panel_top_gap_percent = {Math.Clamp(settings.PanelTopGapPercent, AppSettings.PanelTopGapPercentMin, AppSettings.PanelTopGapPercentMax)}");
         return sb.ToString();
     }
 
@@ -210,8 +221,23 @@ public static class AppSettingsToml
             }
         }
 
+        var panelEnabled = ReadBool(root, "panel_enabled", defaults.PanelEnabled, warnings);
+        var panelWidth = ReadInt(root, "panel_width_percent", defaults.PanelWidthPercent,
+            AppSettings.PanelWidthPercentMin, AppSettings.PanelWidthPercentMax, warnings);
+        var panelText = ReadInt(root, "panel_text_size", defaults.PanelTextSize,
+            AppSettings.PanelTextSizeMin, AppSettings.PanelTextSizeMax, warnings);
+        var panelRightGap = ReadInt(root, "panel_right_gap_percent", defaults.PanelRightGapPercent,
+            AppSettings.PanelRightGapPercentMin, AppSettings.PanelRightGapPercentMax, warnings);
+        var panelTopGap = ReadInt(root, "panel_top_gap_percent", defaults.PanelTopGapPercent,
+            AppSettings.PanelTopGapPercentMin, AppSettings.PanelTopGapPercentMax, warnings);
+
         var settings = new AppSettings
         {
+            PanelEnabled = panelEnabled,
+            PanelWidthPercent = panelWidth,
+            PanelTextSize = panelText,
+            PanelRightGapPercent = panelRightGap,
+            PanelTopGapPercent = panelTopGap,
             CacheTtlDays = ttl,
             SessionLogEnabled = logEnabled,
             CheckForUpdates = checkUpdates,
@@ -263,6 +289,17 @@ public static class AppSettingsToml
         if (raw is bool value)
             return value;
         warnings.Add($"{key}: must be true or false; using {Bool(fallback)}.");
+        return fallback;
+    }
+
+    /// <summary>Reads a whole number that must lie in min..max (both included); anything else is a warning and the default.</summary>
+    private static int ReadInt(TomlTable root, string key, int fallback, int min, int max, List<string> warnings)
+    {
+        if (!root.TryGetValue(key, out var raw))
+            return fallback;
+        if (raw is long value && value >= min && value <= max)
+            return (int)value;
+        warnings.Add($"{key}: must be a whole number from {min} to {max}; using {fallback}.");
         return fallback;
     }
 
