@@ -53,7 +53,7 @@ public sealed class FileChange
 /// touched: the new time and length are remembered and the answer is Unchanged. Otherwise the answer is Changed, with the text.
 /// A changed version is reported once: it becomes the remembered one, so a broken file is not reported again every check.
 ///
-/// IRIS's own saves must call <see cref="RememberWritten"/> (or <see cref="RememberFromDisk"/>) so they are never mistaken for outside edits.
+/// IRIS's own saves must call <see cref="RememberWritten"/> (or <see cref="RememberBytes"/> / <see cref="RememberFromDisk"/>) so they are never mistaken for outside edits.
 /// Reading uses FileShare.ReadWrite, so an editor that keeps the file open does not block it; if the file is still locked the read is tried up to
 /// 3 more times, 100 ms apart, and then given up quietly for this round (<see cref="FileChangeKind.Locked"/>).
 /// Safe to call from several threads; the file is never read while holding the lock that <see cref="RememberWritten"/> needs.
@@ -174,9 +174,17 @@ public sealed class FileChangeDetector
     /// IRIS just wrote <paramref name="text"/> to the file (UTF-8, no byte-order mark, as <see cref="AtomicFile"/> does):
     /// remember that version so the next check does not see it as an outside edit.
     /// </summary>
-    public void RememberWritten(string text)
+    public void RememberWritten(string text) => Remember(HashOf(text));
+
+    /// <summary>
+    /// IRIS just changed the file and knows its complete content as bytes (for example the exclusion list after an append, read back through
+    /// the stream that wrote it): remember that version. Unlike <see cref="RememberFromDisk"/> the file is not opened again, so
+    /// the remembered hash is exactly the content that was written and read back (only the time and length are looked up now).
+    /// </summary>
+    public void RememberBytes(byte[] bytes) => Remember(HostedConfigClient.Sha256Hex(bytes));
+
+    private void Remember(string hash)
     {
-        var hash = HashOf(text);
         lock (_gate)
         {
             _generation++;

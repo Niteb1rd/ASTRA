@@ -24,6 +24,14 @@ public sealed class WatchedFile
     private readonly IClock _clock;
     private readonly ILog _log;
 
+    // One thread at a time writes the last-good file (a poll on a background thread and a save on the UI thread can meet here).
+    private readonly object _lastGoodGate = new();
+
+    // Guards the two hashes below, which are read on a background thread (the poll) and written on the UI thread (saves, applies).
+    private readonly object _hashGate = new();
+    private string? _appliedHash;
+    private string? _ownWriteHash;
+
     public WatchedFile(string path, string lastGoodPath, IClock clock, ILog? log = null, FileChangeDetector? detector = null)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -46,10 +54,29 @@ public sealed class WatchedFile
     public FileChangeDetector Detector { get; }
 
     /// <summary>Hash of the version of the file the app is using now (loaded, imported, saved or applied from an outside edit). Null if none.</summary>
-    public string? AppliedHash { get; set; }
+    public string? AppliedHash
+    {
+        get
+        {
+            lock (_hashGate)
+                return _appliedHash;
+        }
+        set
+        {
+            lock (_hashGate)
+                _appliedHash = value;
+        }
+    }
 
     /// <summary>Hash of what IRIS itself last wrote to the file, or null.</summary>
-    public string? OwnWriteHash { get; private set; }
+    public string? OwnWriteHash
+    {
+        get
+        {
+            lock (_hashGate)
+                return _ownWriteHash;
+        }
+    }
 
     /// <summary>
     /// IRIS just saved <paramref name="text"/> (valid by construction) to the main file: remember it so it is not seen as an outside edit,
@@ -59,8 +86,11 @@ public sealed class WatchedFile
     {
         Detector.RememberWritten(text);
         var hash = FileChangeDetector.HashOf(text);
-        OwnWriteHash = hash;
-        AppliedHash = hash;
+        lock (_hashGate)
+        {
+            _ownWriteHash = hash;
+            _appliedHash = hash;
+        }
         WriteLastGood(text);
     }
 
@@ -70,15 +100,18 @@ public sealed class WatchedFile
     /// </summary>
     public void WriteLastGood(string text)
     {
-        try
+        lock (_lastGoodGate)
         {
-            if (File.Exists(LastGoodPath) && string.Equals(File.ReadAllText(LastGoodPath, Utf8NoBom), text, StringComparison.Ordinal))
-                return;
-            AtomicFile.WriteText(LastGoodPath, text, keepBackup: false);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _log.Write(_clock.UtcNow, "Could not write " + System.IO.Path.GetFileName(LastGoodPath) + ": " + ex.Message);
+            try
+            {
+                if (File.Exists(LastGoodPath) && string.Equals(File.ReadAllText(LastGoodPath, Utf8NoBom), text, StringComparison.Ordinal))
+                    return;
+                AtomicFile.WriteText(LastGoodPath, text, keepBackup: false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _log.Write(_clock.UtcNow, "Could not write " + System.IO.Path.GetFileName(LastGoodPath) + ": " + ex.Message);
+            }
         }
     }
 

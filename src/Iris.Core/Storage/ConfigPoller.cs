@@ -1,3 +1,4 @@
+using System.Globalization;
 using Iris.Core.Config;
 using Iris.Core.Detection;
 using Iris.Core.Settings;
@@ -113,6 +114,27 @@ public static class ConfigPoller
         return new ConfigPoll(list, settings, reloaded, exclusions.Count);
     }
 
+    /// <summary>
+    /// A poll runs on a background thread and is applied later on the UI thread (or parked for a while). If IRIS saved or imported a file
+    /// in between, a result about an OLDER version of that file must not be applied. This replaces such a list or settings result by
+    /// "nothing to do": a result with a hash that is not the version the file's detector knows now. (Missing results have no hash and stay.)
+    /// Returns <paramref name="poll"/> itself when nothing is outdated.
+    /// </summary>
+    public static ConfigPoll DropOutdated(ConfigPoll poll, WatchedFile listFile, WatchedFile settingsFile)
+    {
+        var list = poll.List;
+        if (list.Hash is not null && list.Hash != listFile.Detector.KnownHash)
+            list = new SocialListPoll(PollKind.Nothing);
+
+        var settings = poll.Settings;
+        if (settings.Hash is not null && settings.Hash != settingsFile.Detector.KnownHash)
+            settings = new SettingsPoll(PollKind.Nothing);
+
+        if (ReferenceEquals(list, poll.List) && ReferenceEquals(settings, poll.Settings))
+            return poll;
+        return new ConfigPoll(list, settings, poll.ExclusionsReloaded, poll.ExclusionCount);
+    }
+
     public static SocialListPoll PollSocialList(WatchedFile file)
     {
         var change = file.Detector.Check();
@@ -178,7 +200,13 @@ public static class ConfigMessages
         $"{fileName} has errors — still using the previous version. Open the config window for details.";
 
     public static string UsingLastGood(string fileName, DateTimeOffset lastGoodUtc) =>
-        $"{fileName} has errors — using the last good version (from {lastGoodUtc.ToLocalTime():yyyy-MM-dd HH:mm})";
+        $"{fileName} has errors — using the last good version (from {lastGoodUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)})";
+
+    public static string ListFileMissing(string fileName) =>
+        $"{fileName} is missing — IRIS keeps using the list it has. Saving writes the file again.";
+
+    /// <summary>The answer to "Import from URL" when the hosted file is the one imported last time.</summary>
+    public const string HostedConfigUnchanged = "Your hosted config has not changed.";
 
     private static string Count(int n, string noun) => n == 1 ? $"1 {noun}" : $"{n} {noun}s";
 }

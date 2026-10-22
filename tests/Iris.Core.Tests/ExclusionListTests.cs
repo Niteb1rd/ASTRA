@@ -239,4 +239,50 @@ public class ExclusionListTests : IDisposable
 
         Assert.EndsWith("# auto-added 2027-03-09 UTC: why\nZincite\n", File.ReadAllText(path));
     }
+
+    [Fact]
+    public void AddAutomatic_IsNotReportedAsAChange_ButALaterOutsideEditIs()
+    {
+        var path = PathOf();
+        WriteRaw(path, "Gold\n");
+        var list = Load(path);
+
+        Assert.True(list.AddAutomatic("Zinc", "why"));
+        Assert.False(list.ReloadIfChanged());   // our own append
+
+        WriteRaw(path, "Gold\nZinc\nLead and more\n");
+        Assert.True(list.ReloadIfChanged());
+        Assert.True(list.IsExcluded("Lead and more"));
+        Assert.False(list.ReloadIfChanged());   // reported once
+    }
+
+    [Fact]
+    public void AddAutomatic_DoesNotSwallowTheNotificationOfAnOutsideChangeItNoticed()
+    {
+        var path = PathOf();
+        WriteRaw(path, "Gold\n");
+        var list = Load(path);
+        WriteRaw(path, "Gold\nCopper\n");   // edited by hand; nobody has looked yet
+
+        Assert.True(list.AddAutomatic("Zinc", "why"));   // looks at the file first, and finds Copper
+
+        Assert.True(list.IsExcluded("Copper"));
+        Assert.True(list.IsExcluded("Zinc"));
+        Assert.True(list.ReloadIfChanged());    // the poll still reports the hand edit
+        Assert.False(list.ReloadIfChanged());
+    }
+
+    [Fact]
+    public void ReloadIfChanged_ReportsAChangeOnlyOnce_AndNotTheFirstLoad()
+    {
+        var path = PathOf();
+        WriteRaw(path, "Gold\n");
+        var list = Load(path);
+
+        Assert.False(list.ReloadIfChanged());   // LoadOrCreate already took the first load
+
+        WriteRaw(path, "Gold\nCopper\n");
+        Assert.True(list.ReloadIfChanged());
+        Assert.False(list.ReloadIfChanged());
+    }
 }

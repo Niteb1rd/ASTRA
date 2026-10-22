@@ -69,6 +69,21 @@ public class DataPathsLastGoodTests
         Assert.Equal(Path.Combine(dir.Path, "Data", "social-overlay.lastgood.toml"), paths.SocialListLastGoodFile);
         Assert.Equal(Path.Combine(dir.Path, "Data", "settings.lastgood.toml"), paths.SettingsLastGoodFile);
     }
+
+    [Fact]
+    public void IsOwnConfigFile_RecognisesTheListAndSettingsFiles_ByFullPath_IgnoringCase()
+    {
+        using var dir = new TempDir();
+        var paths = DataPaths.FromBaseDirectory(dir.Path);
+
+        Assert.True(paths.IsOwnConfigFile(paths.SocialListFile));
+        Assert.True(paths.IsOwnConfigFile(paths.SettingsFile));
+        Assert.True(paths.IsOwnConfigFile(paths.SocialListFile.ToUpperInvariant()));
+        Assert.True(paths.IsOwnConfigFile(Path.Combine(dir.Path, "Data", "..", "Data", "settings.toml")));
+        Assert.False(paths.IsOwnConfigFile(Path.Combine(dir.Path, "iris-config.toml")));
+        Assert.False(paths.IsOwnConfigFile(paths.SocialListLastGoodFile));
+        Assert.False(paths.IsOwnConfigFile(string.Empty));
+    }
 }
 
 public class LastGoodWritingTests
@@ -409,6 +424,8 @@ public class StartupFallbackTests
             "social-overlay.toml has errors — still using the previous version. Open the config window for details.",
             ConfigMessages.StillUsingPrevious("social-overlay.toml"));
         Assert.StartsWith("settings.toml has errors — using the last good version (from ", ConfigMessages.UsingLastGood("settings.toml", DateTimeOffset.UtcNow));
+        Assert.Matches(@"\(from \d{4}-\d\d-\d\d \d\d:\d\d\)$", ConfigMessages.UsingLastGood("settings.toml", DateTimeOffset.UtcNow));
+        Assert.Equal("Your hosted config has not changed.", ConfigMessages.HostedConfigUnchanged);
     }
 }
 
@@ -684,5 +701,62 @@ public class ConfigPollerTests
         Assert.True(exclusions.ReloadIfChanged());
         Assert.False(exclusions.ReloadIfChanged());
         Assert.Equal(2, exclusions.Count);
+    }
+
+    // ------------------------------------------------------------------ results that are out of date by the time they are applied
+
+    [Fact]
+    public void DropOutdated_KeepsAFreshResult_AndReplacesOneThatOurOwnSaveOvertook()
+    {
+        using var env = new WatchEnv();
+        var list = LoadedList(env, WatchEnv.ListText("Nitebird"));
+        var settings = LoadedSettings(env, WatchEnv.SettingsText());
+        var exclusions = ExclusionList.LoadOrCreate(env.Paths.ExclusionsFile, env.Clock, env.Log);
+
+        WatchEnv.Edit(env.Paths.SocialListFile, WatchEnv.ListText("Nitebird", "Otherone"));
+        var poll = Poll(env, list, settings, exclusions);
+        Assert.Equal(PollKind.Applied, poll.List.Kind);
+        Assert.Same(poll, ConfigPoller.DropOutdated(poll, list, settings));   // nothing happened since
+
+        var config = new SocialConfig();
+        config.Players.Add(new PlayerEntry("Thirdone", OverlayColor.Red));
+        SocialListStore.Save(env.Paths.SocialListFile, config, list);          // the window saved while the result was parked
+
+        var dropped = ConfigPoller.DropOutdated(poll, list, settings);
+        Assert.Equal(PollKind.Nothing, dropped.List.Kind);
+        Assert.Equal(poll.Settings.Kind, dropped.Settings.Kind);
+        Assert.Equal(poll.ExclusionsReloaded, dropped.ExclusionsReloaded);
+    }
+
+    [Fact]
+    public void DropOutdated_AlsoDropsAnOutdatedRejectedSettingsResult()
+    {
+        using var env = new WatchEnv();
+        var list = LoadedList(env, WatchEnv.ListText("Nitebird"));
+        var settings = LoadedSettings(env, WatchEnv.SettingsText());
+        var exclusions = ExclusionList.LoadOrCreate(env.Paths.ExclusionsFile, env.Clock, env.Log);
+
+        WatchEnv.Edit(env.Paths.SettingsFile, WatchEnv.NotToml);
+        var poll = Poll(env, list, settings, exclusions);
+        Assert.Equal(PollKind.Rejected, poll.Settings.Kind);
+
+        AppSettingsToml.Save(env.Paths.SettingsFile, new AppSettings { CacheTtlDays = 7 }, settings);   // the user fixed it in the window
+
+        Assert.Equal(PollKind.Nothing, ConfigPoller.DropOutdated(poll, list, settings).Settings.Kind);
+    }
+
+    [Fact]
+    public void DropOutdated_LeavesAMissingResultAlone()
+    {
+        using var env = new WatchEnv();
+        var list = LoadedList(env, WatchEnv.ListText("Nitebird"));
+        var settings = LoadedSettings(env, WatchEnv.SettingsText());
+        var exclusions = ExclusionList.LoadOrCreate(env.Paths.ExclusionsFile, env.Clock, env.Log);
+        File.Delete(env.Paths.SocialListFile);
+
+        var poll = Poll(env, list, settings, exclusions);
+
+        Assert.Equal(PollKind.Missing, poll.List.Kind);
+        Assert.Same(poll, ConfigPoller.DropOutdated(poll, list, settings));
     }
 }

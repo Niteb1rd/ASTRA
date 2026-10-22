@@ -52,6 +52,24 @@ public sealed class DataPaths
     /// <summary>Session log files.</summary>
     public string LogsFolder => Path.Combine(DataFolder, LogsFolderName);
 
+    /// <summary>
+    /// True when <paramref name="path"/> is IRIS's own list file or settings file (full path compared, upper/lower case ignored).
+    /// An export must not be written onto either of them. A path that cannot be made into a full path is not one of them.
+    /// </summary>
+    public bool IsOwnConfigFile(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            return string.Equals(full, Path.GetFullPath(SocialListFile), StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(full, Path.GetFullPath(SettingsFile), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Creates the Data folder and the logs folder if they are missing. Safe to call every start.</summary>
     public void EnsureCreated()
     {

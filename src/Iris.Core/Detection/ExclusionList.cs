@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Reflection;
 using System.Text;
+using Iris.Core.Config;
 using Iris.Core.Storage;
 
 namespace Iris.Core.Detection;
@@ -36,6 +37,10 @@ public sealed class ExclusionList
 
     // True while a problem (locked or missing file) has already been logged, so we log it only once.
     private bool _problemLogged;
+
+    // True when the list was replaced by a changed file (or an outside edit was found while appending) and ReloadIfChanged has not
+    // reported it yet. Whoever happens to read the file first (a poll, or AddAutomatic) only sets it; the next ReloadIfChanged reports it.
+    private bool _changePending;
 
     private ExclusionList(string path, IClock clock, ILog log)
     {
@@ -109,12 +114,18 @@ public sealed class ExclusionList
     /// <summary>
     /// Re-reads the file if it changed from outside since IRIS last read or wrote it (see <see cref="FileChangeDetector"/>).
     /// If the file is locked or missing at the moment, the previous list is kept and the problem is logged once.
-    /// Returns true when the list was reloaded from a changed file (even if the names turned out to be the same).
+    /// Returns true when the list was reloaded from a changed file since the last call (even if the names turned out to be the same):
+    /// a change that <see cref="AddAutomatic"/> noticed on its own is reported here too, once.
     /// </summary>
     public bool ReloadIfChanged()
     {
         lock (_gate)
-            return ReloadCore();
+        {
+            ReloadCore();
+            var changed = _changePending;
+            _changePending = false;
+            return changed;
+        }
     }
 
     /// <summary>
@@ -133,7 +144,8 @@ public sealed class ExclusionList
 
         lock (_gate)
         {
-            // The user may have added this name by hand since the last read.
+            // The user may have added this name by hand since the last read. (If the file changed, ReloadCore leaves the "changed"
+            // flag set for the next ReloadIfChanged; this call must not swallow that notification.)
             ReloadCore();
             if (_names.Contains(trimmed))
                 return false;
@@ -142,6 +154,8 @@ public sealed class ExclusionList
             var cleanReason = (reason ?? string.Empty).Replace("\r", " ").Replace("\n", " ").Trim();
             var text = "# auto-added " + date + " UTC: " + cleanReason + "\n" + trimmed + "\n";
 
+            // What the file holds after our append, read back through the stream that wrote it (null if that read failed).
+            byte[]? written = null;
             try
             {
                 var directory = Path.GetDirectoryName(Path.GetFullPath(_path));
@@ -159,6 +173,19 @@ public sealed class ExclusionList
                 stream.Seek(0, SeekOrigin.End);
                 var bytes = Utf8NoBom.GetBytes(text);
                 stream.Write(bytes, 0, bytes.Length);
+                stream.Flush();
+
+                try
+                {
+                    stream.Seek(0, SeekOrigin.Begin);
+                    using var all = new MemoryStream();
+                    stream.CopyTo(all);
+                    written = all.ToArray();
+                }
+                catch (IOException)
+                {
+                    // the append worked; only the read-back did not (handled below)
+                }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -166,8 +193,23 @@ public sealed class ExclusionList
                 return false;
             }
 
-            _detector.RememberFromDisk(); // our own append is not an outside edit
-            _names.Add(trimmed);
+            if (written is null)
+            {
+                _detector.RememberFromDisk(); // our own append is not an outside edit
+                _names.Add(trimmed);
+            }
+            else
+            {
+                // Remember exactly what we wrote and read back, and take the names from the same bytes. If the file also holds something
+                // the previous read did not know (an outside edit that came in between), that is a change to report at the next poll.
+                _detector.RememberBytes(written);
+                var onDisk = ParseNames(ConfigImporter.DecodeUtf8(written));
+                var expected = new HashSet<string>(_names, StringComparer.OrdinalIgnoreCase) { trimmed };
+                if (!onDisk.SetEquals(expected))
+                    _changePending = true;
+                _names = onDisk;
+            }
+
             _log.Write(_clock.UtcNow, "Exclusion list: added \"" + trimmed + "\" automatically (" + cleanReason + ").");
             return true;
         }
@@ -180,21 +222,9 @@ public sealed class ExclusionList
         switch (change.Kind)
         {
             case FileChangeKind.Changed:
-                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                using (var reader = new StringReader(change.Text!))
-                {
-                    string? line;
-                    while ((line = reader.ReadLine()) is not null)
-                    {
-                        var trimmed = line.Trim();
-                        if (trimmed.Length == 0 || trimmed[0] == '#')
-                            continue;
-                        names.Add(trimmed);
-                    }
-                }
-
-                _names = names;
+                _names = ParseNames(change.Text!);
                 _problemLogged = false;
+                _changePending = true;
                 return true;
 
             case FileChangeKind.Missing:
@@ -209,6 +239,22 @@ public sealed class ExclusionList
                 _problemLogged = false;
                 return false;
         }
+    }
+
+    /// <summary>The names in the text of an exclusion file: one per line, trimmed; blank lines and # comments are skipped.</summary>
+    private static HashSet<string> ParseNames(string text)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using var reader = new StringReader(text);
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0 || trimmed[0] == '#')
+                continue;
+            names.Add(trimmed);
+        }
+        return names;
     }
 
     private void LogProblemOnce(string what)

@@ -332,6 +332,27 @@ public class FileChangeDetectorTests : IDisposable
     }
 
     [Fact]
+    public void RememberBytes_TakesTheGivenContent_WithoutReadingTheFile()
+    {
+        var path = PathOf();
+        Write(path, "old\n", T1);
+        var detector = Detector(path);
+        detector.Check();
+        var readsBefore = _reads;
+
+        File.AppendAllText(path, "added by IRIS\n");
+        detector.RememberBytes(Encoding.UTF8.GetBytes("old\nadded by IRIS\n"));
+
+        Assert.Equal(readsBefore, _reads);
+        Assert.Equal(FileChangeDetector.HashOf("old\nadded by IRIS\n"), detector.KnownHash);
+        Assert.Equal(FileChangeKind.Unchanged, detector.Check().Kind);
+        Assert.Equal(readsBefore, _reads);
+
+        File.AppendAllText(path, "an outside edit\n");
+        Assert.Equal(FileChangeKind.Changed, detector.Check().Kind);
+    }
+
+    [Fact]
     public void AnOwnSave_DuringARead_WinsOverTheStaleRead()
     {
         var path = PathOf();
