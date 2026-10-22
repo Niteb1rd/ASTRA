@@ -1,0 +1,79 @@
+# Star Citizen Social Overlay list. Shareable: contains no personal settings.
+format = "sc-social-overlay"
+format_version = 1
+
+[[players]]
+handle = "nitebird"
+color = "Pink"
+
+[[players]]
+handle = "jettt"
+color = "Cyan"
+
+[[players]]
+handle = "kaileris"
+color = "Green"
+
+[[players]]
+handle = "Sphyco"
+color = "Red"
+
+[[players]]
+handle = "some_trey"
+color = "Red"
+
+[[players]]
+handle = "10gauge"
+color = "Cyan"
+
+[[players]]
+handle = "titan33m"
+color = "Cyan"
+
+[[players]]
+handle = "loftwolf"
+color = "Cyan"
+
+[[players]]
+handle = "lotus-zero"
+color = "Cyan"
+
+[[players]]
+handle = "kobrablack"
+color = "Cyan"
+
+[[players]]
+handle = "mimifuwafuwa"
+color = "Cyan"
+
+[[players]]
+handle = "gotye"
+color = "Cyan"
+
+[[orgs]]
+sid = "ASTROMERCS"
+priority = 5
+color = "Green"
+
+[[orgs]]
+sid = "AVOCADO"
+priority = 5
+color = "Red"
+
+[[org_rules]]
+kind = "archetype"
+value = "Syndicate"
+priority = 5
+color = "Orange"
+
+[[org_rules]]
+kind = "activity"
+value = "Piracy"
+priority = 5
+color = "Orange"
+
+[[org_rules]]
+kind = "activity"
+value = "Smuggling"
+priority = 5
+color = "Orange"
