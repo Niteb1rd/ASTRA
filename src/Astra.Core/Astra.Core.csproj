@@ -13,7 +13,7 @@
     <!-- SQLite database for the RSI lookup cache (MIT licence) -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
     <!-- HTML parser for RSI pages (MIT licence) -->
-    <PackageReference Include="AngleSharp" Version="1.1.2" />
+    <PackageReference Include="AngleSharp" Version="1.5.0" />
   </ItemGroup>
 
   <ItemGroup>
