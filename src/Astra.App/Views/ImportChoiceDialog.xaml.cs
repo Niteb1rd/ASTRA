@@ -18,7 +18,7 @@ public partial class ImportChoiceDialog : Window
     }
 
     /// <summary>Shows the dialog and returns the chosen mode, or null for Cancel.</summary>
-    /// <param name="owner">The window to center on, or null for the middle of the screen.</param>
+    /// <param name="owner">The window to center on, or null for the middle of the screen (then the dialog is shown on top, with a taskbar button).</param>
     /// <param name="imported">The parsed file, for the summary line.</param>
     /// <param name="hasExistingFile">False when there is no list file yet (no choice to make).</param>
     /// <param name="headline">Heading text, e.g. "Your hosted config has changed".</param>
@@ -32,13 +32,17 @@ public partial class ImportChoiceDialog : Window
         dialog.NoExistingPanel.Visibility = hasExistingFile ? Visibility.Collapsed : Visibility.Visible;
         dialog.DeclineNote.Visibility = showDeclineNote ? Visibility.Visible : Visibility.Collapsed;
 
-        if (owner is not null && owner.IsLoaded)
+        if (owner is not null && DialogHelper.PrepareOwner(owner))
         {
+            // The owner is restored (if it was minimized) and in front, so the dialog is seen.
             dialog.Owner = owner;
             dialog.WindowStartupLocation = WindowStartupLocation.CenterOwner;
         }
         else
         {
+            // No window to belong to (or it is gone): the dialog stands on its own, in the taskbar and on top, so it cannot get lost.
+            dialog.ShowInTaskbar = true;
+            dialog.Topmost = true;
             dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen;
         }
 

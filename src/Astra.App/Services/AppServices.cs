@@ -25,6 +25,10 @@ public sealed class AppServices : IDisposable
     private readonly HostedConfigClient _hostedClient;
     private readonly CancellationTokenSource _shutdown = new();
 
+    // True while settings.toml exists but could not be read at startup and the user has not saved settings since:
+    // the file is then left alone (a background change must not overwrite what the user may want to repair by hand).
+    private bool _settingsFileUnreadable;
+
     private AppServices(
         DataPaths paths, ILog log, FileLog fileLog, CacheDatabase database, ExclusionList exclusions, HttpClient http,
         HttpClient hostedHttp, IRsiClient rsi, SocialListLoadResult listLoad, AppSettingsLoadResult settingsLoad)
@@ -42,6 +46,7 @@ public sealed class AppServices : IDisposable
         CurrentConfig = listLoad.Config;
         SettingsLoad = settingsLoad;
         Settings = settingsLoad.Settings;
+        _settingsFileUnreadable = !settingsLoad.IsValid;
 
         CacheSettings = new CacheSettings(Settings.CacheTtlDays);
         Validator = new RowValidator(database, rsi, Clock, CacheSettings, log);
@@ -73,6 +78,12 @@ public sealed class AppServices : IDisposable
 
     /// <summary>What the settings file looked like at startup (problems to mention once).</summary>
     public AppSettingsLoadResult SettingsLoad { get; }
+
+    /// <summary>
+    /// True when settings.toml could not be read at startup and has not been replaced since: the settings in use may differ from
+    /// the file even when nothing was edited, so the next Save must write the file.
+    /// </summary>
+    public bool SettingsFileNeedsSave => _settingsFileUnreadable;
 
     public RowValidator Validator { get; }
 
@@ -145,14 +156,31 @@ public sealed class AppServices : IDisposable
     {
         var saved = AppSettingsToml.Save(Paths.SettingsFile, settings);
         if (saved.Success)
+        {
+            _settingsFileUnreadable = false; // the user's own save replaced the unreadable file (the old one stays as settings.toml.bak)
             ApplySettings(settings);
+        }
         else
             Log.Write(Clock.UtcNow, "Settings not saved: " + saved.Error);
         return saved;
     }
 
-    /// <summary>Saves a changed copy of the current settings (for example the hosted config hash).</summary>
-    public SaveResult UpdateSettings(Func<AppSettings, AppSettings> change) => SaveSettings(change(Settings));
+    /// <summary>
+    /// Saves a changed copy of the current settings (for example the hosted config hash or address, after an import).
+    /// If settings.toml could not be read at startup the file is NOT touched: the change only lives in memory (and in the log)
+    /// until the user presses Save in the Settings tab, which writes the file.
+    /// </summary>
+    public SaveResult UpdateSettings(Func<AppSettings, AppSettings> change)
+    {
+        var changed = change(Settings);
+        if (!_settingsFileUnreadable)
+            return SaveSettings(changed);
+
+        ApplySettings(changed);
+        Log.Write(Clock.UtcNow,
+            "settings.toml could not be read at startup, so it was not overwritten; the hosted config address/version is kept in memory only until you save in the Settings tab.");
+        return SaveResult.Ok();
+    }
 
     private void ApplySettings(AppSettings settings)
     {
@@ -221,6 +249,18 @@ public sealed class AppServices : IDisposable
     }
 
     private static string Count(int n, string noun) => n == 1 ? $"1 {noun}" : $"{n} {noun}s";
+
+    /// <summary>Tells everything that is running (an RSI refresh, a hosted config download) to stop. Dispose does the same.</summary>
+    public void RequestShutdown()
+    {
+        try
+        {
+            _shutdown.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
 
     public void Dispose()
     {

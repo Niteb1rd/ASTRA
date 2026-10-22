@@ -30,6 +30,8 @@ public partial class App : Application
     private DatabaseUpdater? _updater;
     private bool _shuttingDown;
 
+    private const string AnswerFirstText = "Answer the open ASTRA question first.";
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -146,6 +148,13 @@ public partial class App : Application
         if (_services is null || _shuttingDown)
             return;
 
+        // An import is waiting for an answer (its question may be hidden behind other windows): no second window on top of it.
+        if (_imports?.IsBusy == true)
+        {
+            _tray?.ShowBalloon(AnswerFirstText);
+            return;
+        }
+
         if (_configWindow is not null)
         {
             if (_configWindow.WindowState == WindowState.Minimized)
@@ -224,6 +233,16 @@ public partial class App : Application
 
     private void Quit()
     {
+        if (_shuttingDown)
+            return;
+
+        // An import question is open: the services must not be disposed under it. The user answers first.
+        if (_imports?.IsBusy == true)
+        {
+            _tray?.ShowBalloon(AnswerFirstText);
+            return;
+        }
+
         var window = _configWindow;
         if (window is not null)
         {
@@ -238,10 +257,19 @@ public partial class App : Application
                 return;
             }
             if (_configWindow is not null)
+            {
+                // The window stayed open. Either the user said "keep my changes" (nothing to add), or it is busy with an import,
+                // an export or a save and cannot be closed right now.
+                if (window.IsBusy)
+                    _tray?.ShowBalloon(AnswerFirstText);
                 return;
+            }
         }
 
         _shuttingDown = true;
+        if (_imports is not null)
+            _imports.IsQuitting = true; // no new import question from here on
+        _services?.RequestShutdown(); // a running database update (no question open) stops cleanly: its RSI requests are cancelled
         Shutdown();
     }
 

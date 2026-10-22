@@ -19,8 +19,12 @@ public interface IImportHost
     /// <summary>True when the window holds changes that are not saved yet. With <paramref name="ignoreHostedUrl"/> a changed hosted address alone does not count.</summary>
     bool HasUnsavedChanges(bool ignoreHostedUrl);
 
-    /// <summary>Validates and saves the lists and settings in the window (without closing it). False when nothing was saved.</summary>
-    Task<bool> SaveChangesAsync();
+    /// <summary>
+    /// Validates and saves the lists and settings in the window (without closing it). False when nothing was saved.
+    /// With <paramref name="ignoreHostedUrl"/> the stored hosted address and version stay as they are (the caller stores the address
+    /// itself, and only after a successful import), so an address typed but not yet used is not written.
+    /// </summary>
+    Task<bool> SaveChangesAsync(bool ignoreHostedUrl);
 
     /// <summary>Marks the window busy (it cannot be closed, import buttons are off). Calls must be paired with <see cref="EndBusy"/>.</summary>
     void BeginBusy();
@@ -31,19 +35,6 @@ public interface IImportHost
     void ReloadAfterImport(string status);
 }
 
-/// <summary>How an import attempt ended.</summary>
-public enum ImportOutcome
-{
-    /// <summary>The file list was changed.</summary>
-    Imported,
-
-    /// <summary>The user said no (or closed a dialog); nothing was changed.</summary>
-    Cancelled,
-
-    /// <summary>The text had errors, or writing failed; nothing was changed. The user has been told.</summary>
-    Failed,
-}
-
 /// <summary>The result of <see cref="ImportCoordinator.ImportTextAsync"/>.</summary>
 public sealed record ImportAttempt(ImportOutcome Outcome, string Message);
 
@@ -51,6 +42,7 @@ public sealed record ImportAttempt(ImportOutcome Outcome, string Message);
 /// The whole "bring in a config" flow, used by the Settings tab buttons and by the hosted-config check of "Update database now":
 /// check the text, ask about warnings, ask to save unsaved window changes, ask which mode, write the file, update the app.
 /// Everything here runs on the UI thread (dialogs); the entry points hop onto it if they are called from another thread.
+/// Only one import runs at a time (<see cref="IsBusy"/>).
 /// If the config window is open it is the <see cref="Host"/> (it reloads its rows); if not, the file and the app's config are updated directly.
 /// </summary>
 public sealed class ImportCoordinator
@@ -59,6 +51,9 @@ public sealed class ImportCoordinator
 
     private readonly AppServices _services;
 
+    // True from the start of an import until it ends, dialogs included. Only touched on the UI thread.
+    private bool _active;
+
     public ImportCoordinator(AppServices services)
     {
         _services = services;
@@ -66,6 +61,15 @@ public sealed class ImportCoordinator
 
     /// <summary>The open config window, or null. Set by the window itself.</summary>
     public IImportHost? Host { get; set; }
+
+    /// <summary>
+    /// True while an import is running, including any question it has open. While it is true no second import starts, the Settings
+    /// window is not opened and ASTRA is not quit (the services must not go away under an open dialog).
+    /// </summary>
+    public bool IsBusy => _active;
+
+    /// <summary>Set by the app when it starts quitting: no new import (or question) starts after that.</summary>
+    public bool IsQuitting { get; set; }
 
     /// <summary>
     /// Imports <paramref name="text"/> (the content of a config file). The text is only ever parsed as data.
@@ -84,18 +88,24 @@ public sealed class ImportCoordinator
             return await inner;
         }
 
+        if (IsQuitting)
+            return new ImportAttempt(ImportOutcome.Cancelled, "Import cancelled: ASTRA is quitting.");
+        if (_active)
+            return new ImportAttempt(ImportOutcome.Busy, "Another import is already running.");
+
+        _active = true;
         var host = Host;
         var owner = host?.DialogOwner;
-
-        host?.BeginBusy();
         try
         {
+            host?.BeginBusy();
+
             // 1. Parse. Errors stop everything; notes let the user decide.
-            var read = SocialConfigToml.Read(text);
+            var read = ConfigImporter.ParseForImport(text);
             if (!read.IsValid || read.Config is null)
             {
                 Tell(owner, "This config cannot be imported. Nothing was changed.\n\n" + BulletList(read.Errors), MessageBoxImage.Warning);
-                return new ImportAttempt(ImportOutcome.Failed, "Import failed: the config has problems.");
+                return new ImportAttempt(ImportOutcome.Rejected, "Import failed: the config has problems.");
             }
 
             if (read.Warnings.Count > 0)
@@ -110,12 +120,16 @@ public sealed class ImportCoordinator
             // 2. Unsaved changes in the window: save them, throw them away, or stop.
             if (host is not null && host.HasUnsavedChanges(ignoreHostedUrl))
             {
-                var answer = Ask(owner, "Save your changes first?",
+                var answer = Ask(owner,
+                    "You have unsaved changes in the Settings window.\n\n"
+                    + "Yes: save them, then import.\n"
+                    + "No: discard your changes and import.\n"
+                    + "Cancel: stop; nothing is imported.",
                     MessageBoxButton.YesNoCancel, MessageBoxImage.Question, MessageBoxResult.Cancel);
-                if (answer == MessageBoxResult.Cancel)
+                if (answer != MessageBoxResult.Yes && answer != MessageBoxResult.No)
                     return new ImportAttempt(ImportOutcome.Cancelled, "Import cancelled.");
-                if (answer == MessageBoxResult.Yes && !await host.SaveChangesAsync())
-                    return new ImportAttempt(ImportOutcome.Cancelled, "Import cancelled: your changes were not saved.");
+                if (answer == MessageBoxResult.Yes && !await host.SaveChangesAsync(ignoreHostedUrl))
+                    return new ImportAttempt(ImportOutcome.NotSaved, "Import cancelled: your changes were not saved.");
             }
 
             // 3. Which mode? (Asked after the save above, because saving may have just created the list file.)
@@ -129,22 +143,26 @@ public sealed class ImportCoordinator
             if (!result.Success)
             {
                 Tell(owner, "The config was not imported. Nothing was changed.\n\n" + result.Error, MessageBoxImage.Error);
-                return new ImportAttempt(ImportOutcome.Failed, "Import failed: " + result.Error);
+                return new ImportAttempt(ImportOutcome.WriteFailed, "Import failed: " + result.Error);
             }
 
-            host?.ReloadAfterImport(result.Summary);
+            // The window that is open NOW (not necessarily the one from the start) shows the new rows.
+            Host?.ReloadAfterImport(result.Summary);
             return new ImportAttempt(ImportOutcome.Imported, result.Summary);
         }
         finally
         {
             host?.EndBusy();
+            _active = false;
         }
     }
 
     /// <summary>
     /// The first half of "Update database now": when a hosted config address is set, fetch it, and if it is a version ASTRA has not
-    /// applied or declined yet, offer it through the normal import flow. Whatever the user decides, the version's hash is stored so the
-    /// same version is never offered twice. Returns a short note for the result message, or null when there is nothing to report.
+    /// applied or declined yet, offer it through the normal import flow. The version's hash is stored when the user applied it,
+    /// declined it, or it has problems (<see cref="ImportOutcomes.ShouldRememberHostedVersion"/>); in every other case (the save-first
+    /// step failed, the file could not be written, another import was running) it is offered again next time.
+    /// Returns a short note for the result message, or null when there is nothing to report.
     /// Problems become the note; they never stop the caller (the RSI refresh goes on).
     /// </summary>
     public async Task<string?> CheckHostedConfigAsync()
@@ -163,6 +181,9 @@ public sealed class ImportCoordinator
         try
         {
             var fetched = await _services.FetchHostedConfigAsync(url);
+            if (IsQuitting)
+                throw new OperationCanceledException(); // ASTRA is quitting: no question now
+
             if (!fetched.Success || fetched.Text is null || fetched.Hash is null)
             {
                 _services.Log.Write(_services.Clock.UtcNow, "Hosted config not fetched: " + fetched.Error);
@@ -176,19 +197,23 @@ public sealed class ImportCoordinator
             }
 
             var attempt = await ImportTextAsync(fetched.Text, "Your hosted config has changed", showDeclineNote: true, ignoreHostedUrl: false);
+            if (IsQuitting)
+                throw new OperationCanceledException(); // a "cancelled" caused by quitting is not the user's decision: remember nothing
 
-            // Applied, declined and rejected versions are all remembered: the user has seen this version.
-            var hash = fetched.Hash;
-            var saved = _services.UpdateSettings(s => s with { HostedConfigLastHash = hash });
-            if (!saved.Success)
-                _services.Log.Write(_services.Clock.UtcNow, "Could not remember the hosted config version: " + saved.Error);
-
-            return attempt.Outcome switch
+            if (ImportOutcomes.ShouldRememberHostedVersion(attempt.Outcome))
             {
-                ImportOutcome.Imported => "Hosted config imported. " + attempt.Message,
-                ImportOutcome.Cancelled => "Hosted config change skipped.",
-                _ => "Hosted config was not imported (it has problems).",
-            };
+                var hash = fetched.Hash;
+                var saved = _services.UpdateSettings(s => s with { HostedConfigLastHash = hash });
+                if (!saved.Success)
+                    _services.Log.Write(_services.Clock.UtcNow, "Could not remember the hosted config version: " + saved.Error);
+            }
+            else
+            {
+                _services.Log.Write(_services.Clock.UtcNow,
+                    $"Hosted config version not remembered ({attempt.Outcome}); it will be offered again.");
+            }
+
+            return ImportOutcomes.HostedMessage(attempt.Outcome, attempt.Message);
         }
         catch (OperationCanceledException)
         {
@@ -216,9 +241,13 @@ public sealed class ImportCoordinator
     private static void Tell(Window? owner, string text, MessageBoxImage icon) =>
         Ask(owner, text, MessageBoxButton.OK, icon, MessageBoxResult.OK);
 
+    /// <summary>
+    /// Asks with the config window as owner when there is one (brought to the front first, so a minimized window does not hide
+    /// the question); without a window the question is an ordinary message box.
+    /// </summary>
     private static MessageBoxResult Ask(
         Window? owner, string text, MessageBoxButton buttons, MessageBoxImage icon, MessageBoxResult defaultResult) =>
-        owner is not null
+        owner is not null && DialogHelper.PrepareOwner(owner)
             ? MessageBox.Show(owner, text, "ASTRA", buttons, icon, defaultResult)
             : MessageBox.Show(text, "ASTRA", buttons, icon, defaultResult);
 }

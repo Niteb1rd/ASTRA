@@ -31,6 +31,19 @@ namespace Astra.App.Views;
 /// </summary>
 public partial class ConfigWindow : Window, IImportHost
 {
+    /// <summary>What a save writes.</summary>
+    private enum SaveScope
+    {
+        /// <summary>The lists (if changed) and the settings (if changed), including the hosted address box. The Save button.</summary>
+        ListsAndSettings,
+
+        /// <summary>Like <see cref="ListsAndSettings"/>, but the hosted address and version stay as stored (import from a URL).</summary>
+        ListsAndSettingsKeepHostedUrl,
+
+        /// <summary>The lists only (export).</summary>
+        ListsOnly,
+    }
+
     private const string ConfigFileFilter = "ASTRA config (*.toml)|*.toml|All files (*.*)|*.*";
 
     private readonly AppServices _services;
@@ -369,7 +382,7 @@ public partial class ConfigWindow : Window, IImportHost
         _saving = true;
         try
         {
-            if (await SaveAfterChecksAsync())
+            if (await SaveAfterChecksAsync(SaveScope.ListsAndSettings, allowWhileBusy: false))
                 Close(); // saved: the baseline was updated, so OnWindowClosing does not ask about unsaved changes
         }
         catch (Exception ex)
@@ -386,8 +399,12 @@ public partial class ConfigWindow : Window, IImportHost
         }
     }
 
-    /// <summary>Waits for running name checks (up to 25 seconds), then saves lists and settings. True only when everything that changed was written.</summary>
-    private async Task<bool> SaveAfterChecksAsync()
+    /// <summary>
+    /// Waits for running name checks (up to 25 seconds), then saves what <paramref name="scope"/> says. True only when everything that changed was written.
+    /// The Save button must not save while an import or export is running (<paramref name="allowWhileBusy"/> false);
+    /// the import's and export's own "save first" is part of that busy work and passes true.
+    /// </summary>
+    private async Task<bool> SaveAfterChecksAsync(SaveScope scope, bool allowWhileBusy)
     {
         var pending = _checks.Values.Where(t => !t.IsCompleted).ToList();
         if (pending.Count > 0)
@@ -399,16 +416,23 @@ public partial class ConfigWindow : Window, IImportHost
             FooterStatus.Text = string.Empty;
         }
 
-        return SaveCore();
+        // An import or export may have started while the checks were awaited: its work must not be saved over.
+        if (!allowWhileBusy && _busyCount > 0)
+        {
+            FooterStatus.Text = "Not saved: an import or export is running. Try again when it is done.";
+            return false;
+        }
+
+        return SaveCore(scope);
     }
 
     /// <summary>
-    /// Saves what changed: the lists (validated first) and the settings. An invalid hosted address blocks the whole save.
-    /// Returns true when nothing is left unsaved.
+    /// Saves what changed, as far as <paramref name="scope"/> goes: the lists (validated first) and the settings.
+    /// An invalid hosted address blocks a save that includes it. Returns true when nothing is left unsaved.
     /// </summary>
-    private bool SaveCore()
+    private bool SaveCore(SaveScope scope)
     {
-        if (!ValidateHostedUrl())
+        if (scope == SaveScope.ListsAndSettings && !ValidateHostedUrl())
         {
             Tabs.SelectedItem = SettingsTab;
             MessageBox.Show(
@@ -418,19 +442,32 @@ public partial class ConfigWindow : Window, IImportHost
             return false;
         }
 
-        if (Snapshot() != _baseline && !SaveListsCore())
-            return false;
-
-        var settings = BuildSettings();
-        if (settings != _services.Settings)
+        var listsSaved = false;
+        if (Snapshot() != _baseline)
         {
-            var savedSettings = _services.SaveSettings(settings);
-            if (!savedSettings.Success)
-            {
-                MessageBox.Show(this, (savedSettings.Error ?? "The settings could not be saved.")
-                    + "\n\nYour lists were saved, the settings were not.", "ASTRA", MessageBoxButton.OK, MessageBoxImage.Error);
-                FooterStatus.Text = "Settings not saved.";
+            if (!SaveListsCore())
                 return false;
+            listsSaved = true;
+        }
+
+        if (scope != SaveScope.ListsOnly)
+        {
+            var settings = BuildSettings();
+            if (scope == SaveScope.ListsAndSettingsKeepHostedUrl)
+                settings = settings with { HostedConfigUrl = _services.Settings.HostedConfigUrl };
+
+            // An unreadable settings.toml is rewritten by the first save even when no setting was edited.
+            if (settings != _services.Settings || _services.SettingsFileNeedsSave)
+            {
+                var savedSettings = _services.SaveSettings(settings);
+                if (!savedSettings.Success)
+                {
+                    MessageBox.Show(this, (savedSettings.Error ?? "The settings could not be saved.")
+                        + (listsSaved ? "\n\nYour lists were saved, the settings were not." : "\n\nThe settings were not saved."),
+                        "ASTRA", MessageBoxButton.OK, MessageBoxImage.Error);
+                    FooterStatus.Text = "Settings not saved.";
+                    return false;
+                }
             }
         }
 
@@ -826,12 +863,12 @@ public partial class ConfigWindow : Window, IImportHost
             {
                 var answer = MessageBox.Show(
                     this,
-                    "You have unsaved changes to your lists.\n\nYes: save them, then export.\nNo: export the last saved version.",
+                    "You have unsaved changes to your lists.\n\nYes: save the lists, then export.\nNo: export the last saved version.\nCancel: stop.",
                     "ASTRA", MessageBoxButton.YesNoCancel, MessageBoxImage.Question, MessageBoxResult.Cancel);
                 if (answer == MessageBoxResult.Cancel)
                     return;
-                if (answer == MessageBoxResult.Yes && !await SaveChangesAsync())
-                    return;
+                if (answer == MessageBoxResult.Yes && !await SaveWithGuardAsync(SaveScope.ListsOnly))
+                    return; // only the lists are saved here; other edits in the Settings tab stay unsaved
             }
 
             var dialog = new SaveFileDialog
@@ -876,6 +913,9 @@ public partial class ConfigWindow : Window, IImportHost
 
     public Window DialogOwner => this;
 
+    /// <summary>True while an import, export or save-for-import is running: the window cannot be closed then.</summary>
+    public bool IsBusy => _busyCount > 0;
+
     /// <summary>Lists differ from the last save, or the settings controls differ from the saved settings.</summary>
     public bool HasUnsavedChanges(bool ignoreHostedUrl)
     {
@@ -889,15 +929,22 @@ public partial class ConfigWindow : Window, IImportHost
         return shown != saved;
     }
 
-    /// <summary>Saves lists and settings like the Save button does, but leaves the window open.</summary>
-    public async Task<bool> SaveChangesAsync()
+    /// <summary>
+    /// Saves lists and settings like the Save button does, but leaves the window open. With <paramref name="ignoreHostedUrl"/>
+    /// the stored hosted address and version are kept (the import stores the address itself, and only after it worked).
+    /// </summary>
+    public Task<bool> SaveChangesAsync(bool ignoreHostedUrl) =>
+        SaveWithGuardAsync(ignoreHostedUrl ? SaveScope.ListsAndSettingsKeepHostedUrl : SaveScope.ListsAndSettings);
+
+    /// <summary>The save used by import and export: part of their busy work, one save at a time, problems reported in a message box.</summary>
+    private async Task<bool> SaveWithGuardAsync(SaveScope scope)
     {
         if (_saving)
             return false;
         _saving = true;
         try
         {
-            return await SaveAfterChecksAsync();
+            return await SaveAfterChecksAsync(scope, allowWhileBusy: true);
         }
         catch (Exception ex)
         {

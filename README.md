@@ -99,11 +99,12 @@ cache_ttl_days = 30            # 30 or 7; anything else becomes 30 (with a note 
 session_log_enabled = true     # write Data\logs\astra-yyyy-MM-dd.log
 check_for_updates = true       # a setting only for now: the GitHub version check arrives in a later version
 hosted_config_url = ""         # https:// address of a config file you host yourself
-hosted_config_last_hash = ""   # SHA-256 of the last hosted file you applied or declined (ASTRA fills this in)
+hosted_config_last_hash = ""   # SHA-256 (64 hex characters) of the last hosted file you applied or declined (ASTRA fills this in)
 ```
 
 Unknown keys are noted in the log and ignored. A file that is not valid TOML is not changed until you save; until then the defaults
-apply and ASTRA tells you. Turning the log file off stops writing lines to it; the in-memory log keeps working, and files older than
+apply and ASTRA tells you; a background change (such as the remembered hosted version) is then kept in memory only, and the file is
+written when you press Save. A hash that is not 64 hex characters is cleared with a note. Turning the log file off stops writing lines to it; the in-memory log keeps working, and files older than
 30 days are still deleted at startup.
 
 **Update database now** (tray menu and Settings tab, same action) first looks at the hosted config URL, if one is set, and then
@@ -112,8 +113,11 @@ refetches your saved players and orgs from RSI.
 ### Import
 
 **Import from file...** and **Import from URL** read a config file (at most 1 MB; the file is only ever read as data).
-If it has errors, the first 15 are shown and nothing changes. Notes (such as unknown keys) are shown and you can continue.
-If the window has unsaved changes you are asked "Save your changes first?" (Yes saves, No discards them, Cancel stops).
+If it has errors, the first 15 are shown and nothing changes; an archetype or activity rule whose value is not one ASTRA knows
+counts as an error. Notes (such as unknown keys) are shown and you can continue. Only one import runs at a time.
+If the window has unsaved changes you are asked "Save your changes first?" (Yes saves them, then imports; No discards them and
+imports; Cancel stops). When importing from a URL, saving first does not store the address you typed: the address is stored only
+after the import worked.
 You then pick what happens to your current lists, every time:
 
 - **Backup existing config**: your current file is renamed `social-overlay.backup-yyyyMMdd-HHmmss.toml` (same folder), and the
@@ -131,18 +135,20 @@ name is checked against RSI, and the status bar says what was added.
 
 Put the address of your own config file (for example a raw file in your own repository or a web space) into **Hosted config URL**.
 Rules ASTRA follows when it fetches it: `https://` only, no user name or password in the address; one GET, 15 seconds, at most 1 MB;
-redirects are followed by hand only within the same site (up to 3), a redirect to another site is refused with a message; every
-request URL is logged; a failed fetch is never remembered.
+redirects are followed by hand only within the same site, same port (up to 3), a redirect to another site is refused with a message;
+every request URL, refused ones too, is logged without any user name or password; a failed fetch is never remembered.
 
 When you press **Update database now** and the hosted file differs from the last one you applied or declined (compared by SHA-256),
-ASTRA shows the same import choices with the heading "Your hosted config has changed". Whatever you choose, including Cancel, that
-version is remembered and you are not asked again until the file changes. If the fetch fails, the result message says so and the RSI
-refresh still runs. **Import from URL** does the same fetch on demand and, when you import, remembers the address and the version.
+ASTRA shows the same import choices with the heading "Your hosted config has changed". If you import it, choose Cancel, or the file
+has problems, that version is remembered and you are not asked again until the file changes. If the import could not happen (your
+changes could not be saved, the list file could not be written, another import was running) the version is not remembered and it is
+offered again next time. If the fetch fails, the result message says so and the RSI refresh still runs. **Import from URL** does the same fetch on demand and, when you import, remembers the address and the version.
 
 ### Export
 
 **Export...** writes the lists as last saved to a file (default name `astra-config.toml`). If the window has unsaved list changes you
-are asked whether to save first (Yes), export the saved version (No) or stop (Cancel). The file contains only the lists, never settings.
+are asked whether to save the lists first (Yes; settings edits stay unsaved), export the saved version (No) or stop (Cancel). A file that
+cannot be written (for example a read-only USB stick) is reported in the status bar and a message. The file contains only the lists, never settings.
 
 ## Capture real RSI pages (needed for the parser tests)
 
