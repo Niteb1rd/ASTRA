@@ -4,7 +4,7 @@ format_version = 1
 
 [[players]]
 handle = "nitebird"
-color = "Red"
+color = "Cyan"
 
 [[players]]
 handle = "jettt"
@@ -58,27 +58,54 @@ color = "Green"
 [[orgs]]
 sid = "AVOCADO"
 priority = 5
-color = "Red"
+color = "Orange"
 
 [[orgs]]
 sid = "AVSQN"
-priority = 1
+priority = 5
+color = "Yellow"
+
+[[orgs]]
+sid = "GRIEFERNET"
+priority = 5
 color = "Red"
 
 [[org_rules]]
 kind = "archetype"
 value = "Syndicate"
-priority = 5
+priority = 2
 color = "Orange"
 
 [[org_rules]]
 kind = "activity"
 value = "Piracy"
-priority = 5
-color = "Orange"
+priority = 1
+color = "Red"
 
 [[org_rules]]
 kind = "activity"
 value = "Smuggling"
+priority = 3
+color = "Orange"
+
+[[org_rules]]
+kind = "no_org"
+priority = 5
+color = "Blue"
+
+[[org_rules]]
+kind = "activity"
+value = "Bounty Hunting"
+priority = 6
+color = "Cyan"
+
+[[org_rules]]
+kind = "activity"
+value = "Medical"
 priority = 5
 color = "Orange"
+
+[[org_rules]]
+kind = "no_match"
+priority = 10
+color = "Blue"
