@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Developer tool: saves real RSI pages so the parser tests can run against them.
+       Uses Iris.Core's name checks and parsers to read what it saved. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Iris.CaptureFixtures</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Iris.Core\Iris.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -5,7 +5,7 @@ obj/
 *.user
 TestResults/
 
-# ASTRA's own data (lists, cache, logs) lives in a Data folder next to the exe, i.e. inside the build output.
+# IRIS's own data (lists, cache, logs) lives in a Data folder next to the exe, i.e. inside the build output.
 # Only that is ignored, so a source folder that happens to be called Data stays visible to git.
 **/bin/**/Data/
 
@@ -22,8 +22,8 @@ spike/
 frames/
 training-data/
 
-# ASTRA's own app assets (for example its tray icon) are ours to commit, even though they are images.
-!src/Astra.App/Assets/**
+# IRIS's own app assets (for example its tray icon) are ours to commit, even though they are images.
+!src/Iris.App/Assets/**
 
-# Copies of RSI pages captured by tools/Astra.CaptureFixtures. Third-party content: keep local.
-tests/Astra.Core.Tests/Fixtures/rsi/
+# Copies of RSI pages captured by tools/Iris.CaptureFixtures. Third-party content: keep local.
+tests/Iris.Core.Tests/Fixtures/rsi/
