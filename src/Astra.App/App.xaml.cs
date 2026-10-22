@@ -26,7 +26,8 @@ public partial class App : Application
     private AppServices? _services;
     private TrayIcon? _tray;
     private ConfigWindow? _configWindow;
-    private bool _updateRunning;
+    private ImportCoordinator? _imports;
+    private DatabaseUpdater? _updater;
     private bool _shuttingDown;
 
     protected override void OnStartup(StartupEventArgs e)
@@ -66,8 +67,14 @@ public partial class App : Application
 
         DispatcherUnhandledException += OnUnhandledException;
 
+        var imports = new ImportCoordinator(services);
+        var updater = new DatabaseUpdater(services, imports);
+        _imports = imports;
+        _updater = updater;
+
         var tray = new TrayIcon();
         _tray = tray;
+        updater.RunningChanged += (_, _) => tray.SetUpdateRunning(updater.IsRunning);
         tray.SettingsRequested += (_, _) => OpenSettings();
         tray.UpdateDatabaseRequested += (_, _) => StartDatabaseUpdate();
         tray.PauseChanged += (_, paused) => services.IsOverlayPaused = paused;
@@ -100,6 +107,11 @@ public partial class App : Application
         {
             OpenSettings(); // let the user fix the list; the file itself is untouched until they press Save
         }
+
+        // A settings file that could not be read is the one thing worth a balloon of its own (it replaces the greeting).
+        var settingsLoad = services.SettingsLoad;
+        if (!settingsLoad.IsValid)
+            _tray?.ShowBalloon("Could not read Data\\settings.toml (" + settingsLoad.Errors[0] + "). Default settings are used until you save in the Settings tab.");
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -142,7 +154,7 @@ public partial class App : Application
             return;
         }
 
-        var window = new ConfigWindow(_services);
+        var window = new ConfigWindow(_services, _imports!, _updater!);
         window.Closed += (_, _) => _configWindow = null;
         _configWindow = window;
         window.Show();
@@ -151,34 +163,13 @@ public partial class App : Application
 
     private async void StartDatabaseUpdate()
     {
-        var services = _services;
-        var tray = _tray;
-        if (services is null || tray is null || _updateRunning)
+        var updater = _updater;
+        if (updater is null || _tray is null || _shuttingDown)
             return;
 
-        _updateRunning = true;
-        tray.SetUpdateRunning(true);
-        string message;
-        try
-        {
-            message = await services.UpdateDatabaseNowAsync();
-        }
-        catch (OperationCanceledException)
-        {
-            return; // ASTRA is quitting
-        }
-        catch (Exception ex)
-        {
-            services.Log.Write(DateTimeOffset.UtcNow, "Update database now failed: " + ex.Message);
-            message = "The database update failed: " + ex.Message;
-        }
-        finally
-        {
-            _updateRunning = false;
-            tray.SetUpdateRunning(false);
-        }
-
-        tray.ShowBalloon(message);
+        var message = await updater.RunAsync(); // null: already running, or ASTRA is quitting
+        if (message is not null)
+            _tray?.ShowBalloon(message);
     }
 
     /// <summary>Opens today's log file in the default viewer (Notepad if .log has no program).</summary>

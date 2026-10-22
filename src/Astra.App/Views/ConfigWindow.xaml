@@ -70,7 +70,7 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <TabControl Grid.Row="0" Margin="8,8,8,0">
+        <TabControl x:Name="Tabs" Grid.Row="0" Margin="8,8,8,0">
 
             <!-- ================= Players ================= -->
             <TabItem Header="Players">
@@ -280,9 +280,51 @@
                 </Grid>
             </TabItem>
 
-            <!-- ================= Settings (placeholder) ================= -->
-            <TabItem Header="Settings">
-                <TextBlock Margin="16" Text="Settings arrive in the next update" Foreground="#616161" />
+            <!-- ================= Settings ================= -->
+            <TabItem x:Name="SettingsTab" Header="Settings">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="8">
+                        <TextBlock Margin="0,0,0,12" TextWrapping="Wrap" Foreground="#616161"
+                                   Text="App settings for this PC. These are not included when you share or export your lists." />
+
+                        <!-- Cache -->
+                        <TextBlock Text="Cache" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                            <TextBlock Text="Refresh cached RSI data after" VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <ComboBox x:Name="CacheTtlCombo" Width="100" SelectedIndex="0">
+                                <ComboBoxItem Content="30 days" />
+                                <ComboBoxItem Content="7 days" />
+                            </ComboBox>
+                        </StackPanel>
+                        <Button x:Name="UpdateNowButton" Content="Update database now" HorizontalAlignment="Left"
+                                Padding="12,4" Margin="0,0,0,16" Click="OnUpdateNow"
+                                ToolTip="Fetches every player and org on your saved lists from RSI again (one request every 3 seconds)." />
+
+                        <!-- Logging -->
+                        <TextBlock Text="Logging" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <CheckBox x:Name="LogEnabledCheck" Content="Write a log file (Data\logs, kept 30 days)" Margin="0,0,0,6" />
+                        <Button x:Name="OpenLogFolderButton" Content="Open log folder" HorizontalAlignment="Left"
+                                Padding="12,4" Margin="0,0,0,16" Click="OnOpenLogFolder" />
+
+                        <!-- Updates -->
+                        <TextBlock Text="Updates" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <CheckBox x:Name="CheckUpdatesCheck" Content="Check GitHub for new ASTRA versions" Margin="0,0,0,16"
+                                  ToolTip="Checks start in a later version" />
+
+                        <!-- Shared config -->
+                        <TextBlock Text="Shared config" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <TextBlock Text="Hosted config URL" Margin="0,0,0,2" />
+                        <TextBox x:Name="HostedUrlBox" MaxLength="2000" LostKeyboardFocus="OnHostedUrlLostFocus"
+                                 ToolTip="Optional. An https:// address of a config file you host yourself. &quot;Update database now&quot; checks it first and asks before using a changed version." />
+                        <TextBlock x:Name="HostedUrlError" Foreground="#C62828" TextWrapping="Wrap" Margin="0,2,0,0"
+                                   Visibility="Collapsed" />
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <Button x:Name="ImportFileButton" Content="Import from file&#8230;" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromFile" />
+                            <Button x:Name="ImportUrlButton" Content="Import from URL" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromUrl" />
+                            <Button x:Name="ExportButton" Content="Export&#8230;" Padding="12,4" Click="OnExport" />
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
             </TabItem>
         </TabControl>
 

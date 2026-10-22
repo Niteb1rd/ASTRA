@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -15,18 +16,26 @@ using System.Windows.Threading;
 using Astra.App.Services;
 using Astra.App.ViewModels;
 using Astra.Core.Config;
+using Astra.Core.Settings;
 using Astra.Core.Storage;
+using Microsoft.Win32;
 
 namespace Astra.App.Views;
 
 /// <summary>
 /// The Social Overlay config window: player, org and org-rule lists. Edits happen on row view models;
 /// nothing is written until Save. Names are checked against RSI (cache first) when the user leaves the cell.
-/// Later increments add the Settings tab, import/export and the overlay controls to this window.
+/// The Settings tab holds this PC's app settings, the shared-config buttons (import, export) and "Update database now".
+/// One Save button saves the lists (if they changed) and the settings (if they changed).
+/// Later increments add the overlay controls to this window.
 /// </summary>
-public partial class ConfigWindow : Window
+public partial class ConfigWindow : Window, IImportHost
 {
+    private const string ConfigFileFilter = "ASTRA config (*.toml)|*.toml|All files (*.*)|*.*";
+
     private readonly AppServices _services;
+    private readonly ImportCoordinator _imports;
+    private readonly DatabaseUpdater _updater;
     private readonly ObservableCollection<PlayerRowViewModel> _players = new();
     private readonly ObservableCollection<OrgRowViewModel> _orgs = new();
     private readonly ObservableCollection<RuleRowViewModel> _rules = new();
@@ -37,19 +46,57 @@ public partial class ConfigWindow : Window
     private readonly Dictionary<ListRowViewModel, Task> _checks = new();
     private bool _saving;
     private bool _invalidFileCopied;
+    private bool _isClosed;
 
-    private readonly string? _listName;
-    private string _baseline;
+    // While an import, export or save-for-import runs the window cannot be closed and the import buttons are off.
+    private int _busyCount;
 
-    public ConfigWindow(AppServices services)
+    private string? _listName;
+    private string _baseline = string.Empty;
+
+    public ConfigWindow(AppServices services, ImportCoordinator imports, DatabaseUpdater updater)
     {
         _services = services;
+        _imports = imports;
+        _updater = updater;
         InitializeComponent();
 
-        var config = services.CurrentConfig;
-        _listName = config.Name; // the shared list's name is kept as loaded
+        PlayersList.ItemsSource = _players;
+        OrgsList.ItemsSource = _orgs;
+        RulesList.ItemsSource = _rules;
 
-        services.Exclusions.ReloadIfChanged();
+        LoadRowsFrom(services.CurrentConfig);
+        LoadSettingsControls();
+        _baseline = Snapshot();
+
+        imports.Host = this;
+        updater.RunningChanged += OnUpdaterRunningChanged;
+        UpdateNowButton.IsEnabled = !updater.IsRunning;
+
+        Closed += (_, _) =>
+        {
+            _isClosed = true;
+            _updater.RunningChanged -= OnUpdaterRunningChanged;
+            if (ReferenceEquals(_imports.Host, this))
+                _imports.Host = null;
+            _closing.Cancel();
+            _closing.Dispose();
+        };
+    }
+
+    /// <summary>
+    /// Replaces the rows on screen with those of <paramref name="config"/> and checks every name now:
+    /// fresh cache entries answer at once, the rest go through the shared RSI limiter.
+    /// </summary>
+    private void LoadRowsFrom(SocialConfig config)
+    {
+        _listName = config.Name; // the shared list's name is kept as loaded
+        _checks.Clear();
+        _players.Clear();
+        _orgs.Clear();
+        _rules.Clear();
+
+        _services.Exclusions.ReloadIfChanged();
         foreach (var p in config.Players)
             _players.Add(new PlayerRowViewModel(p.Handle, p.Color, IsExcluded));
         foreach (var o in config.Orgs)
@@ -57,18 +104,6 @@ public partial class ConfigWindow : Window
         foreach (var r in config.OrgRules)
             _rules.Add(new RuleRowViewModel(r.Kind, r.Value, r.Priority, r.Color));
 
-        PlayersList.ItemsSource = _players;
-        OrgsList.ItemsSource = _orgs;
-        RulesList.ItemsSource = _rules;
-
-        _baseline = Snapshot();
-        Closed += (_, _) =>
-        {
-            _closing.Cancel();
-            _closing.Dispose();
-        };
-
-        // Check every loaded name now: fresh cache entries answer at once, the rest go through the shared RSI limiter.
         foreach (var row in NameRows().ToList())
             StartCheck(row);
     }
@@ -329,22 +364,12 @@ public partial class ConfigWindow : Window
 
     private async void OnSave(object sender, RoutedEventArgs e)
     {
-        if (_saving)
+        if (_saving || _busyCount > 0)
             return;
         _saving = true;
         try
         {
-            var pending = _checks.Values.Where(t => !t.IsCompleted).ToList();
-            if (pending.Count > 0)
-            {
-                FooterStatus.Text = "Waiting for name checks…";
-                await Task.WhenAny(Task.WhenAll(pending), Task.Delay(TimeSpan.FromSeconds(25), _closing.Token));
-                if (_closing.IsCancellationRequested)
-                    return; // the window was closed meanwhile
-                FooterStatus.Text = string.Empty;
-            }
-
-            if (SaveCore())
+            if (await SaveAfterChecksAsync())
                 Close(); // saved: the baseline was updated, so OnWindowClosing does not ask about unsaved changes
         }
         catch (Exception ex)
@@ -352,7 +377,7 @@ public partial class ConfigWindow : Window
             if (!_closing.IsCancellationRequested)
             {
                 FooterStatus.Text = "Not saved.";
-                MessageBox.Show(this, "The list could not be saved:\n\n" + ex.Message, "ASTRA", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(this, "Your changes could not be saved:\n\n" + ex.Message, "ASTRA", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
         finally
@@ -361,8 +386,60 @@ public partial class ConfigWindow : Window
         }
     }
 
-    /// <summary>Validates and writes the list. Returns true only when the file was written.</summary>
+    /// <summary>Waits for running name checks (up to 25 seconds), then saves lists and settings. True only when everything that changed was written.</summary>
+    private async Task<bool> SaveAfterChecksAsync()
+    {
+        var pending = _checks.Values.Where(t => !t.IsCompleted).ToList();
+        if (pending.Count > 0)
+        {
+            FooterStatus.Text = "Waiting for name checks…";
+            await Task.WhenAny(Task.WhenAll(pending), Task.Delay(TimeSpan.FromSeconds(25), _closing.Token));
+            if (_isClosed || _closing.IsCancellationRequested)
+                return false; // the window was closed meanwhile
+            FooterStatus.Text = string.Empty;
+        }
+
+        return SaveCore();
+    }
+
+    /// <summary>
+    /// Saves what changed: the lists (validated first) and the settings. An invalid hosted address blocks the whole save.
+    /// Returns true when nothing is left unsaved.
+    /// </summary>
     private bool SaveCore()
+    {
+        if (!ValidateHostedUrl())
+        {
+            Tabs.SelectedItem = SettingsTab;
+            MessageBox.Show(
+                this,
+                "The hosted config URL is not valid:\n\n" + HostedUrlError.Text + "\n\nFix it or clear the box, then save again.",
+                "ASTRA", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        if (Snapshot() != _baseline && !SaveListsCore())
+            return false;
+
+        var settings = BuildSettings();
+        if (settings != _services.Settings)
+        {
+            var savedSettings = _services.SaveSettings(settings);
+            if (!savedSettings.Success)
+            {
+                MessageBox.Show(this, (savedSettings.Error ?? "The settings could not be saved.")
+                    + "\n\nYour lists were saved, the settings were not.", "ASTRA", MessageBoxButton.OK, MessageBoxImage.Error);
+                FooterStatus.Text = "Settings not saved.";
+                return false;
+            }
+        }
+
+        FooterStatus.Text = "Saved at " + DateTime.Now.ToString("HH:mm:ss") + ".";
+        return true;
+    }
+
+    /// <summary>Validates and writes the list. Returns true only when the file was written.</summary>
+    private bool SaveListsCore()
     {
         var problems = new List<string>();
         CollectNameProblems("Players", _players, RowValidator.CheckHandleFormat, problems);
@@ -427,7 +504,6 @@ public partial class ConfigWindow : Window
 
         _services.SetCurrentConfig(config);
         _baseline = Snapshot();
-        FooterStatus.Text = "Saved at " + DateTime.Now.ToString("HH:mm:ss") + ".";
         return true;
     }
 
@@ -481,7 +557,12 @@ public partial class ConfigWindow : Window
 
     private void OnWindowClosing(object? sender, CancelEventArgs e)
     {
-        if (Snapshot() == _baseline)
+        if (_busyCount > 0)
+        {
+            e.Cancel = true; // an import, export or save is in the middle of its work
+            return;
+        }
+        if (!HasUnsavedChanges(ignoreHostedUrl: false))
             return;
         var answer = MessageBox.Show(
             this, "You have unsaved changes. Discard them?",
@@ -542,6 +623,329 @@ public partial class ConfigWindow : Window
             else if (!seen.Add(text))
                 problems.Add($"{tab}, row {number}: \"{text}\" is already in the list.");
         }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Settings tab
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>Shows the saved settings in the controls (also used to throw away edits).</summary>
+    private void LoadSettingsControls()
+    {
+        var settings = _services.Settings;
+        CacheTtlCombo.SelectedIndex = settings.CacheTtlDays == 7 ? 1 : 0;
+        LogEnabledCheck.IsChecked = settings.SessionLogEnabled;
+        CheckUpdatesCheck.IsChecked = settings.CheckForUpdates;
+        HostedUrlBox.Text = settings.HostedConfigUrl;
+        HostedUrlError.Text = string.Empty;
+        HostedUrlError.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// The settings as the controls show them. The hosted file's hash is not on screen, so it always comes from the saved settings
+    /// (an import or an "Update database now" can change it while this window is open).
+    /// </summary>
+    private AppSettings BuildSettings() => _services.Settings with
+    {
+        CacheTtlDays = CacheTtlCombo.SelectedIndex == 1 ? 7 : 30,
+        SessionLogEnabled = LogEnabledCheck.IsChecked == true,
+        CheckForUpdates = CheckUpdatesCheck.IsChecked == true,
+        HostedConfigUrl = HostedUrlBox.Text.Trim(),
+    };
+
+    /// <summary>Checks the hosted address box (empty is fine) and shows or hides the red message under it. True when it is acceptable.</summary>
+    private bool ValidateHostedUrl()
+    {
+        var text = HostedUrlBox.Text.Trim();
+        var problem = text.Length == 0 ? null : HostedConfigUrl.Check(text);
+        HostedUrlError.Text = problem ?? string.Empty;
+        HostedUrlError.Visibility = problem is null ? Visibility.Collapsed : Visibility.Visible;
+        return problem is null;
+    }
+
+    private void OnHostedUrlLostFocus(object sender, KeyboardFocusChangedEventArgs e) => ValidateHostedUrl();
+
+    private void OnOpenLogFolder(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var folder = _services.Paths.LogsFolder;
+            Directory.CreateDirectory(folder);
+            Process.Start(new ProcessStartInfo("explorer.exe", "\"" + folder + "\"") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            FooterStatus.Text = "Could not open the log folder: " + ex.Message;
+        }
+    }
+
+    private async void OnUpdateNow(object sender, RoutedEventArgs e)
+    {
+        if (_updater.IsRunning)
+            return;
+
+        FooterStatus.ToolTip = null;
+        FooterStatus.Text = "Updating the database… (one request every 3 seconds)";
+        var message = await _updater.RunAsync(); // greys the button out through RunningChanged; null when ASTRA is quitting
+        if (message is not null && !_isClosed)
+        {
+            FooterStatus.Text = message;
+            FooterStatus.ToolTip = message; // the status bar trims long text
+        }
+    }
+
+    private void OnUpdaterRunningChanged(object? sender, EventArgs e)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => OnUpdaterRunningChanged(sender, e)));
+            return;
+        }
+        UpdateNowButton.IsEnabled = !_updater.IsRunning;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Import and export
+    // ---------------------------------------------------------------------------------------
+
+    private async void OnImportFromFile(object sender, RoutedEventArgs e)
+    {
+        if (_busyCount > 0)
+            return;
+
+        var dialog = new OpenFileDialog
+        {
+            Title = "Import ASTRA config",
+            Filter = ConfigFileFilter,
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        var read = ConfigImporter.ReadFile(dialog.FileName);
+        if (!read.Success || read.Text is null)
+        {
+            FooterStatus.Text = "Import failed.";
+            MessageBox.Show(this, "The file could not be imported:\n\n" + read.Error, "ASTRA", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        BeginBusy();
+        try
+        {
+            var attempt = await _imports.ImportTextAsync(read.Text, "Import " + Path.GetFileName(dialog.FileName), showDeclineNote: false, ignoreHostedUrl: false);
+            if (!_isClosed && attempt.Outcome != ImportOutcome.Imported)
+                FooterStatus.Text = attempt.Message; // on success the reload has already shown the summary
+        }
+        catch (Exception ex)
+        {
+            _services.Log.Write(DateTimeOffset.UtcNow, "Import from file failed: " + ex);
+            if (!_isClosed)
+                FooterStatus.Text = "Import failed: " + ex.Message;
+        }
+        finally
+        {
+            EndBusy();
+        }
+    }
+
+    private async void OnImportFromUrl(object sender, RoutedEventArgs e)
+    {
+        if (_busyCount > 0)
+            return;
+
+        var url = HostedUrlBox.Text.Trim();
+        if (url.Length == 0)
+        {
+            HostedUrlError.Text = "Enter the web address of your config file first (it must start with https://).";
+            HostedUrlError.Visibility = Visibility.Visible;
+            HostedUrlBox.Focus();
+            return;
+        }
+        if (!ValidateHostedUrl())
+        {
+            HostedUrlBox.Focus();
+            return;
+        }
+
+        BeginBusy();
+        try
+        {
+            FooterStatus.ToolTip = null;
+            FooterStatus.Text = "Fetching " + url + "…";
+            var fetched = await _services.FetchHostedConfigAsync(url);
+            if (!fetched.Success || fetched.Text is null || fetched.Hash is null)
+            {
+                FooterStatus.Text = "Import failed.";
+                MessageBox.Show(this, "The config could not be fetched:\n\n" + fetched.Error, "ASTRA", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var hash = fetched.Hash;
+            var attempt = await _imports.ImportTextAsync(fetched.Text, "Import from " + new Uri(url).Host, showDeclineNote: false, ignoreHostedUrl: true);
+            if (attempt.Outcome != ImportOutcome.Imported)
+            {
+                FooterStatus.Text = attempt.Message;
+                return;
+            }
+
+            // Remember the address and this version, so "Update database now" only asks again when the file changes.
+            var remembered = _services.UpdateSettings(s => s with { HostedConfigUrl = url, HostedConfigLastHash = hash });
+            LoadSettingsControls();
+            FooterStatus.Text = remembered.Success
+                ? attempt.Message
+                : attempt.Message + " (the address could not be saved: " + remembered.Error + ")";
+        }
+        catch (OperationCanceledException)
+        {
+            // ASTRA is quitting
+        }
+        catch (Exception ex)
+        {
+            _services.Log.Write(DateTimeOffset.UtcNow, "Import from URL failed: " + ex);
+            if (!_isClosed)
+                FooterStatus.Text = "Import failed: " + ex.Message;
+        }
+        finally
+        {
+            EndBusy();
+        }
+    }
+
+    private async void OnExport(object sender, RoutedEventArgs e)
+    {
+        if (_busyCount > 0)
+            return;
+
+        BeginBusy();
+        try
+        {
+            // The file holds the SAVED lists, so unsaved edits need a decision first.
+            if (Snapshot() != _baseline)
+            {
+                var answer = MessageBox.Show(
+                    this,
+                    "You have unsaved changes to your lists.\n\nYes: save them, then export.\nNo: export the last saved version.",
+                    "ASTRA", MessageBoxButton.YesNoCancel, MessageBoxImage.Question, MessageBoxResult.Cancel);
+                if (answer == MessageBoxResult.Cancel)
+                    return;
+                if (answer == MessageBoxResult.Yes && !await SaveChangesAsync())
+                    return;
+            }
+
+            var dialog = new SaveFileDialog
+            {
+                Title = "Export ASTRA config",
+                Filter = ConfigFileFilter,
+                FileName = "astra-config.toml",
+                DefaultExt = ".toml",
+                AddExtension = true,
+                OverwritePrompt = true,
+            };
+            if (dialog.ShowDialog(this) != true)
+                return;
+
+            var result = ConfigImporter.Export(dialog.FileName, _services.CurrentConfig);
+            if (result.Success)
+            {
+                FooterStatus.ToolTip = null;
+                FooterStatus.Text = "Exported to " + Path.GetFileName(dialog.FileName);
+            }
+            else
+            {
+                FooterStatus.Text = "Export failed.";
+                MessageBox.Show(this, result.Error ?? "The file could not be written.", "ASTRA", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _services.Log.Write(DateTimeOffset.UtcNow, "Export failed: " + ex);
+            if (!_isClosed)
+                FooterStatus.Text = "Export failed: " + ex.Message;
+        }
+        finally
+        {
+            EndBusy();
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // IImportHost: what the import flow asks of this window
+    // ---------------------------------------------------------------------------------------
+
+    public Window DialogOwner => this;
+
+    /// <summary>Lists differ from the last save, or the settings controls differ from the saved settings.</summary>
+    public bool HasUnsavedChanges(bool ignoreHostedUrl)
+    {
+        if (Snapshot() != _baseline)
+            return true;
+
+        var shown = BuildSettings();
+        var saved = _services.Settings;
+        if (ignoreHostedUrl)
+            shown = shown with { HostedConfigUrl = saved.HostedConfigUrl };
+        return shown != saved;
+    }
+
+    /// <summary>Saves lists and settings like the Save button does, but leaves the window open.</summary>
+    public async Task<bool> SaveChangesAsync()
+    {
+        if (_saving)
+            return false;
+        _saving = true;
+        try
+        {
+            return await SaveAfterChecksAsync();
+        }
+        catch (Exception ex)
+        {
+            if (!_isClosed)
+            {
+                FooterStatus.Text = "Not saved.";
+                MessageBox.Show(this, "Your changes could not be saved:\n\n" + ex.Message, "ASTRA", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            return false;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    public void BeginBusy()
+    {
+        _busyCount++;
+        ApplyBusy();
+    }
+
+    public void EndBusy()
+    {
+        if (_busyCount > 0)
+            _busyCount--;
+        ApplyBusy();
+    }
+
+    private void ApplyBusy()
+    {
+        var idle = _busyCount == 0;
+        ImportFileButton.IsEnabled = idle;
+        ImportUrlButton.IsEnabled = idle;
+        ExportButton.IsEnabled = idle;
+    }
+
+    /// <summary>The app's lists were replaced by an import: show them, check every name, show the settings as saved, and start clean.</summary>
+    public void ReloadAfterImport(string status)
+    {
+        if (_isClosed)
+            return;
+
+        LoadRowsFrom(_services.CurrentConfig);
+        LoadSettingsControls();
+        _baseline = Snapshot();
+        FooterStatus.ToolTip = null;
+        FooterStatus.Text = status;
     }
 
     private static string Plural(int count, string one, string many) => count == 1 ? $"1 {one}" : $"{count} {many}";

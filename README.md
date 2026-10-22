@@ -7,7 +7,7 @@ and summarizes their orgs in a side panel. See the requirements doc for the full
 
 ## Status
 
-Phase 1, increment 4: the first window. ASTRA now runs as a tray app with a Social Overlay config window (no overlay or OCR yet).
+Phase 1, increment 5: the Settings tab. ASTRA runs as a tray app with a Social Overlay config window (no overlay or OCR yet). The window now has app settings, import and export of your lists, and an optional hosted config URL.
 
 - `src/Astra.Core`: config file (TOML) read, write and validate; color and bracket rules; right-panel org line (increment 1).
 - `src/Astra.Core/Rsi`: reads robertsspaceindustries.com. Pure parsers for the player organizations page, the org page and the
@@ -21,8 +21,10 @@ Phase 1, increment 4: the first window. ASTRA now runs as a tray app with a Soci
 - `src/Astra.Core/Storage`: `DataPaths` (the `Data` folder and the files in it) and `SocialListStore` (loads the list file; saves it
   crash-safely through `.tmp`, keeping one `.bak`). `src/Astra.Core/Config/RowValidator.cs` checks a typed handle or SID for the
   config window: format, duplicates, cache first, then one RSI request (increment 4).
-- `src/Astra.App`: the Windows app (WPF): tray icon, and the config window with the Players, Orgs and Org-Attribute tabs
-  (the Settings tab is a placeholder). It has no automated tests yet; everything testable lives in `Astra.Core`.
+- `src/Astra.Core/Settings`: `AppSettings` and `AppSettingsToml` (`Data\settings.toml`). `src/Astra.Core/Config` also holds
+  `SocialConfigMerger`, `ConfigImporter` (the three import modes, export) and `HostedConfigClient` (increment 5).
+- `src/Astra.App`: the Windows app (WPF): tray icon, and the config window with the Players, Orgs, Org-Attribute and Settings tabs.
+  It has no automated tests yet; everything testable lives in `Astra.Core`.
 - `tests/Astra.Core.Tests`: automated tests for all of the above. Tests that need real RSI pages are skipped until you capture them.
 - `tools/Astra.CaptureFixtures`: saves a few real RSI pages for those tests.
 
@@ -79,9 +81,68 @@ The tray menu also has "Open log" (today's log file in your text viewer) and "Op
 
 Everything ASTRA stores lives in a `Data` folder next to `ASTRA.exe` (when run from the build output:
 `src\Astra.App\bin\Debug\net8.0-windows\Data`): `social-overlay.toml` (your lists, plus `.bak` of the previous save),
-`cache.db` (what ASTRA learned from RSI), `exclusions.txt` and `logs\` (one `astra-yyyy-MM-dd.log` per day, kept for 30 days).
+`settings.toml` (this PC's app settings, see below), `cache.db` (what ASTRA learned from RSI), `exclusions.txt` and `logs\` (one `astra-yyyy-MM-dd.log` per day, kept for 30 days).
 Delete the folder to start fresh. `.gitignore` ignores every `Data/` folder (it is your personal data) and `bin/`/`obj/`;
 it must not ignore the source of `src\Astra.App`, and it does not.
+
+## Settings, import and export
+
+The window's **Settings** tab holds the settings of this PC. They live in `Data\settings.toml`, a separate file that is never
+shared or exported with your lists. Press the window's single **Save** button to save the lists (if you changed them) and the
+settings (if you changed them); an invalid hosted URL blocks the save with a message. Settings take effect at once, no restart.
+
+`settings.toml` (all keys are optional; a missing file means the defaults and nothing is written until you save):
+
+```
+format_version = 1
+cache_ttl_days = 30            # 30 or 7; anything else becomes 30 (with a note in the log)
+session_log_enabled = true     # write Data\logs\astra-yyyy-MM-dd.log
+check_for_updates = true       # a setting only for now: the GitHub version check arrives in a later version
+hosted_config_url = ""         # https:// address of a config file you host yourself
+hosted_config_last_hash = ""   # SHA-256 of the last hosted file you applied or declined (ASTRA fills this in)
+```
+
+Unknown keys are noted in the log and ignored. A file that is not valid TOML is not changed until you save; until then the defaults
+apply and ASTRA tells you. Turning the log file off stops writing lines to it; the in-memory log keeps working, and files older than
+30 days are still deleted at startup.
+
+**Update database now** (tray menu and Settings tab, same action) first looks at the hosted config URL, if one is set, and then
+refetches your saved players and orgs from RSI.
+
+### Import
+
+**Import from file...** and **Import from URL** read a config file (at most 1 MB; the file is only ever read as data).
+If it has errors, the first 15 are shown and nothing changes. Notes (such as unknown keys) are shown and you can continue.
+If the window has unsaved changes you are asked "Save your changes first?" (Yes saves, No discards them, Cancel stops).
+You then pick what happens to your current lists, every time:
+
+- **Backup existing config**: your current file is renamed `social-overlay.backup-yyyyMMdd-HHmmss.toml` (same folder), and the
+  imported config becomes the list file.
+- **Merge config files**: your rows stay first, in their order; imported rows you do not have yet are added after them.
+  Duplicates are players with the same handle, orgs with the same SID, and rules with the same kind and value (case does not matter;
+  Redacted and No-org rules count by kind alone). On a duplicate your row wins, with its color and priority. Your list name is kept.
+  The usual `.bak` of the previous version is kept. A current file with errors cannot be merged (choose Backup or Replace).
+- **Replace existing config**: the imported config overwrites the list file (the usual `.bak` keeps the previous version).
+
+With no list file yet, the import just asks for confirmation and writes the file. Afterwards the window shows the new rows, every
+name is checked against RSI, and the status bar says what was added.
+
+### Hosted config URL
+
+Put the address of your own config file (for example a raw file in your own repository or a web space) into **Hosted config URL**.
+Rules ASTRA follows when it fetches it: `https://` only, no user name or password in the address; one GET, 15 seconds, at most 1 MB;
+redirects are followed by hand only within the same site (up to 3), a redirect to another site is refused with a message; every
+request URL is logged; a failed fetch is never remembered.
+
+When you press **Update database now** and the hosted file differs from the last one you applied or declined (compared by SHA-256),
+ASTRA shows the same import choices with the heading "Your hosted config has changed". Whatever you choose, including Cancel, that
+version is remembered and you are not asked again until the file changes. If the fetch fails, the result message says so and the RSI
+refresh still runs. **Import from URL** does the same fetch on demand and, when you import, remembers the address and the version.
+
+### Export
+
+**Export...** writes the lists as last saved to a file (default name `astra-config.toml`). If the window has unsaved list changes you
+are asked whether to save first (Yes), export the saved version (No) or stop (Cancel). The file contains only the lists, never settings.
 
 ## Capture real RSI pages (needed for the parser tests)
 
