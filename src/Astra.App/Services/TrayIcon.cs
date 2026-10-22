@@ -31,6 +31,12 @@ public sealed class TrayIcon : IDisposable
         _pauseItem = new Forms.ToolStripMenuItem("Pause overlay (not active yet)") { CheckOnClick = true };
         _pauseItem.CheckedChanged += (_, _) => PauseChanged?.Invoke(this, _pauseItem.Checked);
 
+        var openLogItem = new Forms.ToolStripMenuItem("Open log");
+        openLogItem.Click += (_, _) => OpenLogRequested?.Invoke(this, EventArgs.Empty);
+
+        var openConfigItem = new Forms.ToolStripMenuItem("Open config location");
+        openConfigItem.Click += (_, _) => OpenConfigLocationRequested?.Invoke(this, EventArgs.Empty);
+
         var quitItem = new Forms.ToolStripMenuItem("Quit");
         quitItem.Click += (_, _) => QuitRequested?.Invoke(this, EventArgs.Empty);
 
@@ -38,6 +44,9 @@ public sealed class TrayIcon : IDisposable
         _menu.Items.Add(settingsItem);
         _menu.Items.Add(_updateItem);
         _menu.Items.Add(_pauseItem);
+        _menu.Items.Add(new Forms.ToolStripSeparator());
+        _menu.Items.Add(openLogItem);
+        _menu.Items.Add(openConfigItem);
         _menu.Items.Add(new Forms.ToolStripSeparator());
         _menu.Items.Add(quitItem);
 
@@ -54,6 +63,10 @@ public sealed class TrayIcon : IDisposable
     public event EventHandler? SettingsRequested;
 
     public event EventHandler? UpdateDatabaseRequested;
+
+    public event EventHandler? OpenLogRequested;
+
+    public event EventHandler? OpenConfigLocationRequested;
 
     public event EventHandler? QuitRequested;
 

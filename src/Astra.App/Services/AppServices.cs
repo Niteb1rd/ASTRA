@@ -7,6 +7,7 @@ using Astra.Core;
 using Astra.Core.Cache;
 using Astra.Core.Config;
 using Astra.Core.Detection;
+using Astra.Core.Logging;
 using Astra.Core.Rsi;
 using Astra.Core.Storage;
 
@@ -22,11 +23,12 @@ public sealed class AppServices : IDisposable
     private readonly CancellationTokenSource _shutdown = new();
 
     private AppServices(
-        DataPaths paths, ILog log, CacheDatabase database, ExclusionList exclusions, HttpClient http,
+        DataPaths paths, ILog log, FileLog fileLog, CacheDatabase database, ExclusionList exclusions, HttpClient http,
         IRsiClient rsi, SocialListLoadResult listLoad)
     {
         Paths = paths;
         Log = log;
+        FileLog = fileLog;
         Database = database;
         Exclusions = exclusions;
         _http = http;
@@ -39,17 +41,15 @@ public sealed class AppServices : IDisposable
         Refresher = new CacheRefresher(database, rsi, Clock, CacheSettings, log);
     }
 
-    /// <summary>
-    /// The one place that decides where log lines go. Next increment this becomes the session log file:
-    /// change this single line.
-    /// </summary>
-    public static ILog CreateLog() => new InMemoryLog();
-
     public IClock Clock => SystemClock.Instance;
 
     public DataPaths Paths { get; }
 
+    /// <summary>Everything written here goes to the in-memory log and to today's log file.</summary>
     public ILog Log { get; }
+
+    /// <summary>The daily log file writer (for its folder and today's file path).</summary>
+    public FileLog FileLog { get; }
 
     public CacheDatabase Database { get; }
 
@@ -79,8 +79,12 @@ public sealed class AppServices : IDisposable
         var paths = DataPaths.FromBaseDirectory(exeDirectory);
         paths.EnsureCreated();
 
-        var log = CreateLog();
         var clock = SystemClock.Instance;
+
+        // TODO (later increment): a setting to switch file logging and this cleanup off.
+        FileLog.DeleteOlderThan(paths.LogsFolder, TimeSpan.FromDays(30), clock.UtcNow);
+        var fileLog = new FileLog(paths.LogsFolder, clock);
+        var log = new TeeLog(new InMemoryLog(), fileLog);
 
         var database = CacheDatabase.OpenFile(paths.CacheFile);
         HttpClient? http = null;
@@ -93,7 +97,7 @@ public sealed class AppServices : IDisposable
             var limiter = new RsiRateLimiter(clock);
             var rsi = new RsiClient(http, limiter, clock, log);
 
-            return new AppServices(paths, log, database, exclusions, http, rsi, listLoad);
+            return new AppServices(paths, log, fileLog, database, exclusions, http, rsi, listLoad);
         }
         catch
         {

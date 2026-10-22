@@ -6,8 +6,7 @@ using Astra.Core;
 namespace Astra.App.Services;
 
 /// <summary>
-/// A simple log that keeps the last lines in memory. It exists only until the session log file arrives
-/// (next increment); swap it in <see cref="AppServices.CreateLog"/>.
+/// A simple log that keeps the last lines in memory. <see cref="AppServices"/> combines it with the log file.
 /// </summary>
 public sealed class InMemoryLog : ILog
 {

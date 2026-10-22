@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -69,6 +71,8 @@ public partial class App : Application
         tray.SettingsRequested += (_, _) => OpenSettings();
         tray.UpdateDatabaseRequested += (_, _) => StartDatabaseUpdate();
         tray.PauseChanged += (_, paused) => services.IsOverlayPaused = paused;
+        tray.OpenLogRequested += (_, _) => OpenLog();
+        tray.OpenConfigLocationRequested += (_, _) => OpenConfigLocation();
         tray.QuitRequested += (_, _) => Quit();
 
         var load = services.ListLoad;
@@ -175,6 +179,56 @@ public partial class App : Application
         }
 
         tray.ShowBalloon(message);
+    }
+
+    /// <summary>Opens today's log file in the default viewer (Notepad if .log has no program).</summary>
+    private void OpenLog()
+    {
+        var services = _services;
+        if (services is null || _shuttingDown)
+            return;
+
+        try
+        {
+            var path = services.FileLog.CurrentFilePath;
+            if (!File.Exists(path))
+                services.Log.Write(DateTimeOffset.UtcNow, "Log opened");
+            if (!File.Exists(path))
+                File.WriteAllBytes(path, Array.Empty<byte>()); // logging failed (for example no folder): still give Notepad a file
+
+            try
+            {
+                Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            }
+            catch (Win32Exception)
+            {
+                // no program is associated with .log files
+                Process.Start(new ProcessStartInfo("notepad.exe", "\"" + path + "\"") { UseShellExecute = true });
+            }
+        }
+        catch (Exception ex)
+        {
+            _tray?.ShowBalloon("Could not open the log: " + ex.Message);
+        }
+    }
+
+    /// <summary>Opens Windows Explorer at the Data folder (config, cache, exclusions, logs).</summary>
+    private void OpenConfigLocation()
+    {
+        var services = _services;
+        if (services is null || _shuttingDown)
+            return;
+
+        try
+        {
+            var folder = services.Paths.DataFolder;
+            Directory.CreateDirectory(folder);
+            Process.Start(new ProcessStartInfo("explorer.exe", "\"" + folder + "\"") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            _tray?.ShowBalloon("Could not open the config location: " + ex.Message);
+        }
     }
 
     private void Quit()

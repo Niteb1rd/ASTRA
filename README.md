@@ -75,10 +75,11 @@ dotnet run --project src\Astra.App
 
 ASTRA starts in the system tray (bottom right, maybe under the `^` arrow). Double-click the icon, or right-click it and choose
 "Settings...", to edit your lists. Only one copy can run at a time. Closing the window keeps ASTRA running; use "Quit" in the tray menu.
+The tray menu also has "Open log" (today's log file in your text viewer) and "Open config location" (opens the `Data` folder in Explorer).
 
 Everything ASTRA stores lives in a `Data` folder next to `ASTRA.exe` (when run from the build output:
 `src\Astra.App\bin\Debug\net8.0-windows\Data`): `social-overlay.toml` (your lists, plus `.bak` of the previous save),
-`cache.db` (what ASTRA learned from RSI), `exclusions.txt` and `logs\` (used by a later update).
+`cache.db` (what ASTRA learned from RSI), `exclusions.txt` and `logs\` (one `astra-yyyy-MM-dd.log` per day, kept for 30 days).
 Delete the folder to start fresh. `.gitignore` ignores every `Data/` folder (it is your personal data) and `bin/`/`obj/`;
 it must not ignore the source of `src\Astra.App`, and it does not.
 
