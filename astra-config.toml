@@ -82,8 +82,3 @@ kind = "activity"
 value = "Smuggling"
 priority = 5
 color = "Orange"
-
-[[org_rules]]
-kind = "no_match"
-priority = 10
-color = "Blue"
