@@ -81,7 +81,7 @@ public static class ConfigStartup
         {
             file.AppliedHash = null;
             return new SocialListStartup(
-                new SocialListLoadResult(new ConfigLoadResult { Config = new SocialConfig() }, isNew: true),
+                new SocialListLoadResult(new ConfigLoadResult { Config = SocialListStore.NewConfig() }, isNew: true),
                 usedLastGood: false, lastGoodTime: null, Array.Empty<string>(), mainFileHash: null);
         }
 

@@ -1,3 +1,4 @@
+using System;
 using System.Windows;
 using Iris.Core.Config;
 
@@ -18,12 +19,18 @@ public partial class ImportChoiceDialog : Window
     }
 
     /// <summary>Shows the dialog and returns the chosen mode, or null for Cancel.</summary>
-    /// <param name="owner">The window to center on, or null for the middle of the screen (then the dialog is shown on top, with a taskbar button).</param>
+    /// <param name="owner">The window to center on, or null for the middle of the screen. Without an owner the pop-up policy applies
+    /// (<see cref="DialogHelper.PrepareBackgroundDialog"/>): if another program is in front, the dialog waits in the taskbar and a tray balloon says so.</param>
     /// <param name="imported">The parsed file, for the summary line.</param>
     /// <param name="hasExistingFile">False when there is no list file yet (no choice to make).</param>
     /// <param name="headline">Heading text, e.g. "Your hosted config has changed".</param>
     /// <param name="showDeclineNote">True for the hosted config: tells the user that Cancel is remembered.</param>
-    public static ImportMode? Ask(Window? owner, SocialConfig imported, bool hasExistingFile, string headline, bool showDeclineNote)
+    /// <param name="notify">Shows a tray balloon (used with the headline when the dialog has to wait behind another program); may be null.</param>
+    /// <param name="userJustActed">True when the dialog follows something the user just did (a click, a Yes): it is then shown normally even if
+    /// IRIS is not in front at that moment, and no balloon is shown.</param>
+    public static ImportMode? Ask(
+        Window? owner, SocialConfig imported, bool hasExistingFile, string headline, bool showDeclineNote, Action<string>? notify = null,
+        bool userJustActed = false)
     {
         var dialog = new ImportChoiceDialog();
         dialog.HeadlineText.Text = headline;
@@ -40,10 +47,9 @@ public partial class ImportChoiceDialog : Window
         }
         else
         {
-            // No window to belong to (or it is gone): the dialog stands on its own, in the taskbar and on top, so it cannot get lost.
-            dialog.ShowInTaskbar = true;
-            dialog.Topmost = true;
-            dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            // No window to belong to (or it is gone): the dialog stands on its own, with a taskbar button. It is never forced on top of
+            // another program: if IRIS is not in front it is shown without taking the focus, and the balloon says that it is waiting.
+            DialogHelper.PrepareBackgroundDialog(dialog, null, headline, notify, userJustActed);
         }
 
         dialog.ShowDialog();
@@ -56,7 +62,7 @@ public partial class ImportChoiceDialog : Window
         return $"List name: {name}\n"
             + $"{Plural(config.Players.Count, "player", "players")}, "
             + $"{Plural(config.Orgs.Count, "org", "orgs")}, "
-            + $"{Plural(config.OrgRules.Count, "org-attribute rule", "org-attribute rules")}";
+            + $"{Plural(config.UserRuleCount, "org-attribute rule", "org-attribute rules")}";
     }
 
     private static string Plural(int count, string one, string many) => count == 1 ? $"1 {one}" : $"{count} {many}";

@@ -20,6 +20,9 @@ public static class Choices
     /// <summary>1 (highest) to 9.</summary>
     public static IReadOnlyList<int> Priorities { get; } = new[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
 
+    /// <summary>
+    /// The types a user can pick for a rule. No Match is NOT offered: it is the permanent last rule of every list and cannot be added or chosen.
+    /// </summary>
     public static IReadOnlyList<KindChoice> Kinds { get; } = new[]
     {
         new KindChoice(AttributeKind.Archetype, "Org-Archetype"),
@@ -33,13 +36,14 @@ public static class Choices
 
     /// <summary>The name shown to the user for a kind (the stored value and TOML text are not affected).</summary>
     public static string DisplayName(AttributeKind kind) =>
-        Kinds.FirstOrDefault(k => k.Kind == kind)?.Name ?? kind.ToString();
+        kind == AttributeKind.NoMatch ? "No Match" : Kinds.FirstOrDefault(k => k.Kind == kind)?.Name ?? kind.ToString();
 
-    /// <summary>Text shown (disabled) in the Value cell for kinds that take no value.</summary>
+    /// <summary>Text shown (disabled) in the Value cell for kinds that take no value (Redacted, No Org, No Match).</summary>
     public static string InfoTextFor(AttributeKind kind) => kind switch
     {
         AttributeKind.Redacted => "Player belongs in a Redacted org",
         AttributeKind.NoOrg => "Player is in no orgs/hidden orgs",
+        AttributeKind.NoMatch => "Player does not meet any other rule",
         _ => string.Empty,
     };
 

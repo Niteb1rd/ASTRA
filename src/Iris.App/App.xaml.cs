@@ -29,6 +29,7 @@ public partial class App : Application
     private ConfigWindow? _configWindow;
     private ImportCoordinator? _imports;
     private CacheUpdater? _updater;
+    private HostedConfigAutoChecker? _hostedChecker;
     private bool _shuttingDown;
 
     private const string AnswerFirstText = "Answer the open IRIS question first.";
@@ -88,7 +89,7 @@ public partial class App : Application
 
         var load = services.ListLoad;
         if (!load.IsValid)
-            ShowListProblems(load.Errors.ToList(), load.Warnings.ToList()); // a dialog: the user has to act
+            ShowListProblems(load.Errors.ToList(), load.Warnings.ToList(), services.Notify); // a dialog: the user has to act
 
         // The dialog above is modal; the user may have chosen Quit in the tray meanwhile.
         if (_shuttingDown)
@@ -106,15 +107,16 @@ public partial class App : Application
 
         if (problems.Count > 0)
         {
-            // A pop-up, not a balloon: Windows can hide balloons (focus assist, full-screen game), and the user must know
-            // that IRIS is not running on the file they edited.
-            var answer = MessageBox.Show(
+            // A pop-up, not only a balloon: Windows can hide balloons (focus assist, full-screen game), and the user must know
+            // that IRIS is not running on the file they edited. It appears on its own, so it follows the pop-up policy: if another
+            // program (the game) is in front, it waits in the taskbar without taking the focus, and the balloon says so.
+            var answer = PromptDialog.Ask(
                 "Errors were detected in your config files:\n\n- " + string.Join(".\n- ", problems) + ".\n\n"
                 + "Your files were not changed. Open Settings to see the errors and fix them now?",
-                "IRIS", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.Yes);
+                "Errors were detected in your config files.", services.Notify, owner: null, userJustActed: true); // the user just launched IRIS
             if (_shuttingDown)
                 return;
-            if (answer == MessageBoxResult.Yes && load.IsValid)
+            if (answer && load.IsValid)
                 OpenSettings();
         }
         else if (load.IsValid && load.Warnings.Count > 0)
@@ -128,12 +130,19 @@ public partial class App : Application
             _tray?.ShowBalloon("IRIS is running in the system tray. Right-click the icon for Settings.");
         }
 
+        // The opt-in 24-hour check of the hosted config address (does nothing unless it is switched on in the Settings tab).
+        var checker = new HostedConfigAutoChecker(services, imports);
+        _hostedChecker = checker;
+        checker.Start();
+
         if (!load.IsValid)
             OpenSettings(); // let the user fix the list; the file itself is untouched until they press Save
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _hostedChecker?.Dispose();
+        _hostedChecker = null;
         _tray?.Dispose();
         _tray = null;
         _services?.Dispose();
@@ -287,12 +296,13 @@ public partial class App : Application
         _shuttingDown = true;
         if (_imports is not null)
             _imports.IsQuitting = true; // no new import question from here on
+        _hostedChecker?.Stop();
         _services?.RequestShutdown(); // a running cache refresh (no question open) stops cleanly: its RSI requests are cancelled
         _updater?.StopFillMissing(TimeSpan.FromMilliseconds(500)); // give the background fill a moment to stop before the database is disposed
         Shutdown();
     }
 
-    private static void ShowListProblems(IReadOnlyList<string> errors, IReadOnlyList<string> warnings)
+    private static void ShowListProblems(IReadOnlyList<string> errors, IReadOnlyList<string> warnings, Action<string>? notify)
     {
         var text = new StringBuilder();
         if (errors.Count > 0)
@@ -317,15 +327,32 @@ public partial class App : Application
                 text.AppendLine($"  ...and {warnings.Count - 8} more.");
         }
 
-        MessageBox.Show(text.ToString(), "IRIS", MessageBoxButton.OK,
-            errors.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
+        // Appears on its own at startup: the pop-up policy applies (see PromptDialog / DialogHelper.PrepareBackgroundDialog).
+        PromptDialog.Tell(text.ToString(), "IRIS found problems in your list file.", notify, owner: null, userJustActed: true); // the user just launched IRIS
     }
 
     private void OnUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         _services?.Log.Write(DateTimeOffset.UtcNow, "Unexpected error: " + e.Exception);
-        MessageBox.Show("Something unexpected went wrong:\n\n" + e.Exception.Message + "\n\nIRIS keeps running.",
-            "IRIS", MessageBoxButton.OK, MessageBoxImage.Error);
+        var message = "Something unexpected went wrong:\n\n" + e.Exception.Message + "\n\nIRIS keeps running.";
+        // Claim the question slot, so no import or automatic question starts under this pop-up. If the slot is taken (an import or another
+        // question is open) the pop-up is shown anyway: the error must not be lost.
+        var claimed = _imports?.TryBeginQuestion() == true;
+        try
+        {
+            // Can happen at any time (also from a background check), so it follows the pop-up policy like the other pop-ups.
+            PromptDialog.Tell(message, "Something unexpected went wrong in IRIS.", _services?.Notify, _configWindow);
+        }
+        catch (Exception)
+        {
+            // the dialog itself failed: fall back to the plain message box rather than letting the handler throw
+            MessageBox.Show(message, "IRIS", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            if (claimed)
+                _imports?.EndQuestion();
+        }
         e.Handled = true;
     }
 }

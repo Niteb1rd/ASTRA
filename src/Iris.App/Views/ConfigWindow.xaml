@@ -62,6 +62,28 @@
             <TextBox IsEnabled="False" IsReadOnly="True"
                      Text="{Binding InfoText, Mode=OneWay}" />
         </DataTemplate>
+
+        <!-- Type and Priority cells of an Org-Attribute row: a drop-down, or (for the permanent No Match row) fixed disabled text.
+             The No Match row never gets the drop-downs, so their lists never need to contain it (Type offers no "No Match"; Priority 1-9 has no 10). -->
+        <DataTemplate x:Key="RuleTypePickTemplate">
+            <ComboBox ItemsSource="{x:Static vm:Choices.Kinds}"
+                      DisplayMemberPath="Name"
+                      SelectedValuePath="Kind"
+                      SelectedValue="{Binding Kind}"
+                      SelectionChanged="OnRuleKindChanged" />
+        </DataTemplate>
+        <DataTemplate x:Key="RuleTypeFixedTemplate">
+            <TextBox IsEnabled="False" IsReadOnly="True"
+                     Text="{Binding KindName, Mode=OneWay}" />
+        </DataTemplate>
+        <DataTemplate x:Key="RulePriorityPickTemplate">
+            <ComboBox ItemsSource="{x:Static vm:Choices.Priorities}"
+                      SelectedItem="{Binding Priority}" />
+        </DataTemplate>
+        <DataTemplate x:Key="RulePriorityFixedTemplate">
+            <TextBox IsEnabled="False" IsReadOnly="True"
+                     Text="{Binding Priority, Mode=OneWay}" />
+        </DataTemplate>
     </Window.Resources>
 
     <Grid>
@@ -164,7 +186,7 @@
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="#616161"
-                               Text="If name is in org member list, use selected color. Provide a priority number for tiebreak 1=highest." />
+                               Text="If player is in org, use selected color. Priority number used for tiebreaks 1=highest. Last tiebreak is entry order." />
 
                     <Grid Grid.Row="1" Margin="0,0,0,4">
                         <Grid.ColumnDefinitions>
@@ -231,7 +253,7 @@
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="#616161"
-                               Text="If name is not in previous two lists, use these general rules." />
+                               Text="If name is not in previous two lists, use these general rules. The last row, No Match, colors every other detected player." />
 
                     <Grid Grid.Row="1" Margin="0,0,0,4">
                         <Grid.ColumnDefinitions>
@@ -259,15 +281,26 @@
                                             <ColumnDefinition Width="140" />
                                             <ColumnDefinition Width="34" />
                                         </Grid.ColumnDefinitions>
-                                        <ComboBox Grid.Column="0" Margin="0,0,8,0" VerticalAlignment="Top"
-                                                  ItemsSource="{x:Static vm:Choices.Kinds}"
-                                                  DisplayMemberPath="Name"
-                                                  SelectedValuePath="Kind"
-                                                  SelectedValue="{Binding Kind}"
-                                                  SelectionChanged="OnRuleKindChanged" />
-                                        <!-- Value: a pick-only list for Org-Archetype / Org-Activity, a disabled explanation for the other types. -->
+                                        <!-- Type: a pick-only list, or the fixed text "No Match" for the permanent last row. -->
+                                        <ContentControl Grid.Column="0" Margin="0,0,8,0" VerticalAlignment="Top"
+                                                        HorizontalContentAlignment="Stretch" Focusable="False"
+                                                        Content="{Binding}">
+                                            <ContentControl.Style>
+                                                <Style TargetType="ContentControl">
+                                                    <Setter Property="ContentTemplate" Value="{StaticResource RuleTypePickTemplate}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsNoMatch}" Value="True">
+                                                            <Setter Property="ContentTemplate" Value="{StaticResource RuleTypeFixedTemplate}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </ContentControl.Style>
+                                        </ContentControl>
+                                        <!-- Value: a pick-only list for Org-Archetype / Org-Activity, a disabled explanation for the other types.
+                                             The Tag lets the code find this cell (see OnRuleKindChanged). -->
                                         <ContentControl Grid.Column="1" Margin="0,0,8,0" VerticalAlignment="Top"
                                                         HorizontalContentAlignment="Stretch" Focusable="False"
+                                                        Tag="RuleValueCell"
                                                         Content="{Binding}">
                                             <ContentControl.Style>
                                                 <Style TargetType="ContentControl">
@@ -280,16 +313,39 @@
                                                 </Style>
                                             </ContentControl.Style>
                                         </ContentControl>
-                                        <ComboBox Grid.Column="2" Margin="0,0,8,0" VerticalAlignment="Top"
-                                                  ItemsSource="{x:Static vm:Choices.Priorities}"
-                                                  SelectedItem="{Binding Priority}" />
+                                        <!-- Priority: 1-9, or the fixed "10" of the No Match row. -->
+                                        <ContentControl Grid.Column="2" Margin="0,0,8,0" VerticalAlignment="Top"
+                                                        HorizontalContentAlignment="Stretch" Focusable="False"
+                                                        Content="{Binding}">
+                                            <ContentControl.Style>
+                                                <Style TargetType="ContentControl">
+                                                    <Setter Property="ContentTemplate" Value="{StaticResource RulePriorityPickTemplate}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsNoMatch}" Value="True">
+                                                            <Setter Property="ContentTemplate" Value="{StaticResource RulePriorityFixedTemplate}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </ContentControl.Style>
+                                        </ContentControl>
                                         <ComboBox Grid.Column="3" Margin="0,0,8,0" VerticalAlignment="Top"
                                                   ItemsSource="{x:Static vm:Choices.Colors}"
                                                   SelectedItem="{Binding Color}"
                                                   ItemTemplate="{StaticResource ColorItemTemplate}" />
+                                        <!-- Remove: not available for the No Match row (hidden, the column keeps its width). -->
                                         <Button Grid.Column="4" Content="&#10005;" ToolTip="Remove this row"
                                                 Width="26" Height="24" VerticalAlignment="Top"
-                                                Click="OnRemoveRow" />
+                                                Click="OnRemoveRow">
+                                            <Button.Style>
+                                                <Style TargetType="Button">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsNoMatch}" Value="True">
+                                                            <Setter Property="Visibility" Value="Hidden" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                        </Button>
                                     </Grid>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
@@ -324,16 +380,31 @@
                         <!-- Shared config -->
                         <TextBlock Text="Shared config" FontWeight="SemiBold" Margin="0,0,0,4" />
                         <TextBlock Text="Hosted config URL" Margin="0,0,0,2" />
-                        <TextBox x:Name="HostedUrlBox" MaxLength="2000" LostKeyboardFocus="OnHostedUrlLostFocus" TextChanged="OnSettingChanged"
-                                 ToolTip="Optional. An https:// address of a config file you host yourself. It is only looked at when you press &quot;Import from URL&quot;." />
+                        <TextBox x:Name="HostedUrlBox" MaxLength="2000" LostKeyboardFocus="OnHostedUrlLostFocus" TextChanged="OnHostedUrlTextChanged"
+                                 ToolTip="Optional. An https:// address of a config file you host yourself. It is looked at when you press &quot;Import from URL&quot;, and once a day if you tick the check below." />
                         <TextBlock x:Name="HostedUrlError" Foreground="#C62828" TextWrapping="Wrap" Margin="0,2,0,0"
                                    Visibility="Collapsed" />
-                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                            <Button x:Name="ImportFileButton" Content="Import from file&#8230;" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromFile" />
-                            <Button x:Name="ImportUrlButton" Content="Import from URL" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromUrl"
-                                    ToolTip="Fetches the hosted config. If it is the same version you imported last time, nothing is imported." />
-                            <Button x:Name="ExportButton" Content="Export&#8230;" Padding="12,4" Click="OnExport" />
-                        </StackPanel>
+                        <!-- Row 0: "Import from file" in column 0; column 1 holds "Import from URL" and "Export". Row 1: the 24-hour check, directly under "Import from URL". -->
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Button x:Name="ImportFileButton" Grid.Row="0" Grid.Column="0" Content="Import from file&#8230;" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromFile" />
+                            <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal">
+                                <Button x:Name="ImportUrlButton" Content="Import from URL" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromUrl"
+                                        ToolTip="Fetches the hosted config. If it is the same version you imported last time, nothing is imported." />
+                                <Button x:Name="ExportButton" Content="Export&#8230;" Padding="12,4" Click="OnExport" />
+                            </StackPanel>
+                            <CheckBox x:Name="HostedAutoCheck" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"
+                                      Content="Check hosted config URL for updates every 24 hrs" IsEnabled="False"
+                                      Checked="OnSettingChanged" Unchecked="OnSettingChanged"
+                                      ToolTip="Needs a valid https:// address above. While IRIS runs it checks the address once a day (also at startup, if a day has passed) and asks before importing anything. It is off until you tick it." />
+                        </Grid>
 
                         <!-- Cache (last: the long-running action sits at the bottom) -->
                         <TextBlock Text="Cache" FontWeight="SemiBold" Margin="0,16,0,4" />

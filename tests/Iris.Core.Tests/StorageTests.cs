@@ -68,6 +68,7 @@ public class SocialListStoreTests : IDisposable
         Assert.True(loaded.IsValid);
         Assert.Empty(loaded.Errors);
         Assert.Empty(loaded.Config.Players);
+        Assert.Equal(NoMatchRule.CreateDefault(), Assert.Single(loaded.Config.OrgRules)); // the permanent rule is there from the start
         Assert.False(File.Exists(_dir.File("social-overlay.toml")));
     }
 
@@ -85,7 +86,7 @@ public class SocialListStoreTests : IDisposable
         Assert.Equal("Squad", loaded.Config.Name);
         Assert.Equal(Sample().Players, loaded.Config.Players);
         Assert.Equal(Sample().Orgs, loaded.Config.Orgs);
-        Assert.Equal(Sample().OrgRules, loaded.Config.OrgRules);
+        Assert.Equal(Sample().OrgRules.Append(NoMatchRule.CreateDefault()), loaded.Config.OrgRules); // saving adds the No Match rule
         Assert.False(File.Exists(path + ".tmp"));
     }
 

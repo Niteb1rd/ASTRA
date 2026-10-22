@@ -129,11 +129,87 @@ public class ColorAndPanelTests
     }
 
     [Fact]
-    public void NoMatch_ReturnsNull_PanelStillInRsiOrder()
+    public void NoMatch_NothingMatches_GetsTheNoMatchColor_AngleBrackets_PanelStillInRsiOrder()
+    {
+        var c = Config(c => c.OrgRules.Add(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Magenta)));
+        var m = ColorResolver.Resolve("Nitebird", Nitebird, c);
+
+        Assert.Equal(MatchKind.NoMatch, m.Kind);
+        Assert.Equal(OverlayColor.Magenta, m.Color);
+        Assert.Equal("<", m.OpenBracket);
+        Assert.Equal(">", m.CloseBracket);
+        Assert.Null(m.DecidingOrgSid);
+        Assert.Null(m.DecidingAttribute);
+        // the orgs line as usual: RSI order, main first, no org marked as the reason
+        Assert.Equal("Orgs: HEKATE*, J0K3R5, AVOCADO, etc.", PanelText.OrgLine(Nitebird, m));
+    }
+
+    [Fact]
+    public void NoMatch_ConfigWithoutTheRule_FallsBackToTheDefaultBlue_StillBracketed()
     {
         var m = ColorResolver.Resolve("Nitebird", Nitebird, new SocialConfig());
-        Assert.Null(m);
-        Assert.Equal("Orgs: HEKATE*, J0K3R5, AVOCADO, etc.", PanelText.OrgLine(Nitebird, m));
+
+        Assert.Equal(MatchKind.NoMatch, m.Kind);
+        Assert.Equal(OverlayColor.Blue, m.Color);
+        Assert.Equal("<", m.OpenBracket);
+    }
+
+    [Fact]
+    public void NoMatch_PlayerWithNoOrgs_IsBracketedToo_AndPanelSaysNoneFound()
+    {
+        var none = Array.Empty<OrgMembership>();
+        var c = Config(c => c.OrgRules.Add(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Green)));
+
+        var m = ColorResolver.Resolve("Loner", none, c);
+
+        Assert.Equal(OverlayColor.Green, m.Color);
+        Assert.Equal(MatchKind.NoMatch, m.Kind);
+        Assert.Equal("Orgs: none found", PanelText.OrgLine(none, m));
+    }
+
+    [Fact]
+    public void NoMatch_NeverBeatsARealMatch()
+    {
+        var c = Config(c =>
+        {
+            c.OrgRules.Add(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Green));
+            c.OrgRules.Add(new OrgAttributeRule(AttributeKind.Archetype, "PMC", 9, OverlayColor.Orange)); // worst real priority, listed after it
+        });
+
+        var m = ColorResolver.Resolve("Nitebird", Nitebird, c);
+
+        Assert.Equal(OverlayColor.Orange, m.Color);
+        Assert.Equal("J0K3R5", m.DecidingOrgSid);
+        Assert.Equal("PMC", m.DecidingAttribute);
+    }
+
+    [Fact]
+    public void NoMatch_PlayerListAndOrgListStillWin()
+    {
+        var c = Config(c =>
+        {
+            c.Players.Add(new PlayerEntry("Nitebird", OverlayColor.Cyan));
+            c.OrgRules.Add(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Green));
+        });
+        Assert.Equal(MatchKind.PlayerList, ColorResolver.Resolve("Nitebird", Nitebird, c).Kind);
+
+        var c2 = Config(c =>
+        {
+            c.Orgs.Add(new OrgEntry("VNGD", 9, OverlayColor.Red));
+            c.OrgRules.Add(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Green));
+        });
+        Assert.Equal(MatchKind.OrgList, ColorResolver.Resolve("Nitebird", Nitebird, c2).Kind);
+    }
+
+    [Fact]
+    public void NoMatch_ConfigRead_FromAFileWithoutTheRule_UsesBlue()
+    {
+        var read = SocialConfigToml.Read("format = \"sc-social-overlay\"\nformat_version = 1\n");
+
+        var m = ColorResolver.Resolve("Nitebird", Nitebird, read.Config!);
+
+        Assert.Equal(OverlayColor.Blue, m.Color);
+        Assert.Equal("<", m.OpenBracket);
     }
 
     [Fact]

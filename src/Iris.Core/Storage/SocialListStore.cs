@@ -19,7 +19,7 @@ public sealed class SocialListLoadResult
     public bool IsNew { get; }
 
     /// <summary>The config to work with. Never null: an unreadable file gives an empty config (check <see cref="IsValid"/>).</summary>
-    public SocialConfig Config => Result.Config ?? new SocialConfig();
+    public SocialConfig Config => Result.Config ?? SocialListStore.NewConfig();
 
     public IReadOnlyList<string> Errors => Result.Errors;
 
@@ -55,11 +55,19 @@ public sealed class SaveResult
 /// </summary>
 public static class SocialListStore
 {
-    /// <summary>Reads the list. A missing file gives an empty config marked as new.</summary>
+    /// <summary>An empty list as a fresh start has it: no rows, but the permanent No Match rule (Blue).</summary>
+    public static SocialConfig NewConfig()
+    {
+        var config = new SocialConfig();
+        NoMatchRule.Ensure(config);
+        return config;
+    }
+
+    /// <summary>Reads the list. A missing file gives an empty config (with the No Match rule) marked as new.</summary>
     public static SocialListLoadResult Load(string path)
     {
         if (!File.Exists(path))
-            return new SocialListLoadResult(new ConfigLoadResult { Config = new SocialConfig() }, isNew: true);
+            return new SocialListLoadResult(new ConfigLoadResult { Config = NewConfig() }, isNew: true);
 
         string text;
         try

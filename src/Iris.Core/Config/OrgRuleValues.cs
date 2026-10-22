@@ -31,22 +31,26 @@ public static class OrgRuleValues
 
     /// <summary>
     /// One plain-words problem per rule whose value is missing or unknown; empty when every rule is fine.
-    /// Rules are numbered from 1 in file order.
+    /// Rules are numbered from 1 in the order they appear, not counting the permanent No Match rule (IRIS writes it last, and the Settings
+    /// window does not number it), so "Org rule N" is the Nth rule of the file.
     /// </summary>
     public static List<string> Check(SocialConfig config)
     {
         var problems = new List<string>();
-        for (int i = 0; i < config.OrgRules.Count; i++)
+        int number = 0;
+        foreach (var rule in config.OrgRules)
         {
-            var rule = config.OrgRules[i];
+            if (rule.Kind == AttributeKind.NoMatch)
+                continue; // not numbered
+            number++;
             if (!NeedsValue(rule.Kind))
                 continue;
 
             var kindName = rule.Kind == AttributeKind.Archetype ? "archetype" : "activity";
             if (string.IsNullOrWhiteSpace(rule.Value))
-                problems.Add($"Org rule {i + 1}: the {kindName} rule needs a value.");
+                problems.Add($"Org rule {number}: the {kindName} rule needs a value.");
             else if (Canonical(rule.Kind, rule.Value) is null)
-                problems.Add($"Org rule {i + 1}: \"{rule.Value}\" is not a known {kindName} value. Known values: "
+                problems.Add($"Org rule {number}: \"{rule.Value}\" is not a known {kindName} value. Known values: "
                     + string.Join(", ", VocabularyFor(rule.Kind)) + ".");
         }
         return problems;

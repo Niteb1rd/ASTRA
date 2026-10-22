@@ -44,12 +44,15 @@ public partial class ConfigWindow : Window, IImportHost
         /// <summary>The lists (if changed) and the settings (if changed), including the hosted address box. The Save button.</summary>
         ListsAndSettings,
 
-        /// <summary>Like <see cref="ListsAndSettings"/>, but the hosted address and version stay as stored (import from a URL).</summary>
+        /// <summary>Like <see cref="ListsAndSettings"/>, but the hosted address, its 24-hour check and its version stay as stored (import from a URL).</summary>
         ListsAndSettingsKeepHostedUrl,
 
         /// <summary>The lists only (export).</summary>
         ListsOnly,
     }
+
+    // Tag of the Value cell in the Org-Attribute row template (see ConfigWindow.xaml).
+    private const string RuleValueCellTag = "RuleValueCell";
 
     private const string ConfigFileFilter = "IRIS config (*.toml)|*.toml|All files (*.*)|*.*";
 
@@ -176,8 +179,12 @@ public partial class ConfigWindow : Window, IImportHost
             _players.Add(new PlayerRowViewModel(p.Handle, p.Color, IsExcluded));
         foreach (var o in config.Orgs)
             _orgs.Add(new OrgRowViewModel(o.Sid, o.Priority, o.Color));
-        foreach (var r in config.OrgRules)
+        foreach (var r in config.OrgRules.Where(rule => rule.Kind != AttributeKind.NoMatch))
             _rules.Add(new RuleRowViewModel(r.Kind, r.Value, r.Priority, r.Color));
+
+        // The permanent No Match row is always there, always last (a list without one gets the default).
+        var noMatch = NoMatchRule.Find(config) ?? NoMatchRule.CreateDefault();
+        _rules.Add(new RuleRowViewModel(AttributeKind.NoMatch, null, NoMatchRule.Priority, noMatch.Color));
 
         foreach (var row in NameRows().ToList())
             StartCheck(row);
@@ -205,9 +212,13 @@ public partial class ConfigWindow : Window, IImportHost
 
     private void OnAddRule(object sender, RoutedEventArgs e)
     {
+        // New rules go ABOVE the permanent No Match row, which stays last.
         var row = new RuleRowViewModel(AttributeKind.Archetype, null, Choices.DefaultPriority, OverlayColor.Orange);
-        _rules.Add(row);
-        FocusNewRow(RulesList, row);
+        var noMatchIndex = _rules.Count;
+        while (noMatchIndex > 0 && _rules[noMatchIndex - 1].IsNoMatch)
+            noMatchIndex--;
+        _rules.Insert(noMatchIndex, row);
+        FocusNewRow<ComboBox>(RulesList, row);
     }
 
     private void OnRemoveRow(object sender, RoutedEventArgs e)
@@ -222,7 +233,7 @@ public partial class ConfigWindow : Window, IImportHost
                 _orgs.Remove(org);
                 RecheckDuplicates(_orgs);
                 break;
-            case RuleRowViewModel rule:
+            case RuleRowViewModel rule when !rule.IsNoMatch: // the No Match row cannot be removed (its button is hidden, too)
                 _rules.Remove(rule);
                 break;
         }
@@ -239,7 +250,10 @@ public partial class ConfigWindow : Window, IImportHost
     }
 
     /// <summary>Scrolls the new row into view and puts the cursor in its first cell. The row's visuals exist a moment later.</summary>
-    private void FocusNewRow(ItemsControl list, object item)
+    private void FocusNewRow(ItemsControl list, object item) => FocusNewRow<Control>(list, item);
+
+    /// <summary>Same, putting the cursor in the first control of type <typeparamref name="T"/> of the row.</summary>
+    private void FocusNewRow<T>(ItemsControl list, object item) where T : Control
     {
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
         {
@@ -247,8 +261,20 @@ public partial class ConfigWindow : Window, IImportHost
             if (list.ItemContainerGenerator.ContainerFromItem(item) is not FrameworkElement container)
                 return;
             container.BringIntoView();
-            FindFirst<Control>(container)?.Focus();
+            FindFirst<T>(container)?.Focus();
         }));
+    }
+
+    private static T? FindAncestor<T>(DependencyObject start) where T : DependencyObject
+    {
+        var current = VisualTreeHelper.GetParent(start);
+        while (current is not null)
+        {
+            if (current is T match)
+                return match;
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return null;
     }
 
     private static T? FindFirst<T>(DependencyObject root) where T : DependencyObject
@@ -340,9 +366,10 @@ public partial class ConfigWindow : Window, IImportHost
         {
             if (kindBox.DataContext is not RuleRowViewModel { NeedsValue: true })
                 return;
-            if (VisualTreeHelper.GetParent(kindBox) is not Grid rowGrid)
+            var rowGrid = FindAncestor<Grid>(kindBox); // the Type drop-down sits in a cell (ContentControl) of the row's grid
+            if (rowGrid is null)
                 return;
-            var cell = rowGrid.Children.OfType<ContentControl>().FirstOrDefault();
+            var cell = rowGrid.Children.OfType<ContentControl>().FirstOrDefault(c => Equals(c.Tag, RuleValueCellTag));
             if (cell is null)
                 return;
             cell.UpdateLayout();
@@ -523,7 +550,11 @@ public partial class ConfigWindow : Window, IImportHost
         {
             var settings = BuildSettings();
             if (scope == SaveScope.ListsAndSettingsKeepHostedUrl)
-                settings = settings with { HostedConfigUrl = _services.Settings.HostedConfigUrl };
+                settings = settings with
+                {
+                    HostedConfigUrl = _services.Settings.HostedConfigUrl,
+                    HostedConfigAutoCheck = _services.Settings.HostedConfigAutoCheck,
+                };
 
             // Settings are written only when they differ from the stored ones, or to replace a settings.toml that has errors
             // (then the user is asked first and a copy of the broken file is kept).
@@ -749,8 +780,12 @@ public partial class ConfigWindow : Window, IImportHost
             config.Players.Add(new PlayerEntry(p.Value.Trim(), p.Color));
         foreach (var o in _orgs)
             config.Orgs.Add(new OrgEntry(o.Value.Trim(), o.Priority, o.Color));
-        foreach (var r in _rules)
+        // The No Match row is the last row; written last explicitly so the order can never be broken.
+        foreach (var r in _rules.Where(rule => !rule.IsNoMatch))
             config.OrgRules.Add(new OrgAttributeRule(r.Kind, r.NeedsValue ? r.Value.Trim() : null, r.Priority, r.Color));
+        var noMatch = _rules.FirstOrDefault(rule => rule.IsNoMatch);
+        config.OrgRules.Add(new OrgAttributeRule(
+            AttributeKind.NoMatch, null, NoMatchRule.Priority, noMatch?.Color ?? NoMatchRule.DefaultColor));
         return config;
     }
 
@@ -809,6 +844,8 @@ public partial class ConfigWindow : Window, IImportHost
         HostedUrlBox.Text = settings.HostedConfigUrl;
         HostedUrlError.Text = string.Empty;
         HostedUrlError.Visibility = Visibility.Collapsed;
+        HostedAutoCheck.IsChecked = settings.HostedConfigAutoCheck && IsHostedUrlUsable();
+        UpdateAutoCheckState();
         UpdateSaveButton();
     }
 
@@ -822,6 +859,7 @@ public partial class ConfigWindow : Window, IImportHost
         SessionLogEnabled = LogEnabledCheck.IsChecked == true,
         CheckForUpdates = CheckUpdatesCheck.IsChecked == true,
         HostedConfigUrl = HostedUrlBox.Text.Trim(),
+        HostedConfigAutoCheck = HostedAutoCheck.IsChecked == true && IsHostedUrlUsable(),
     };
 
     /// <summary>Checks the hosted address box (empty is fine) and shows or hides the red message under it. True when it is acceptable.</summary>
@@ -835,6 +873,29 @@ public partial class ConfigWindow : Window, IImportHost
     }
 
     private void OnHostedUrlLostFocus(object sender, KeyboardFocusChangedEventArgs e) => ValidateHostedUrl();
+
+    /// <summary>True when the hosted address box holds a valid https address (the 24-hour check needs one).</summary>
+    private bool IsHostedUrlUsable() => HostedConfigUrl.Check(HostedUrlBox.Text) is null;
+
+    /// <summary>
+    /// The 24-hour check can be ticked only while the address box holds a valid address. When the address is cleared or not valid the
+    /// box is unticked and greyed out; when a valid address appears it is enabled again but stays unticked until the user ticks it.
+    /// </summary>
+    private void UpdateAutoCheckState()
+    {
+        var usable = IsHostedUrlUsable();
+        if (!usable && HostedAutoCheck.IsChecked == true)
+            HostedAutoCheck.IsChecked = false;
+        HostedAutoCheck.IsEnabled = usable;
+    }
+
+    private void OnHostedUrlTextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!_ready)
+            return; // the controls are still being filled (LoadSettingsControls updates the check box itself)
+        UpdateAutoCheckState();
+        UpdateSaveButton();
+    }
 
     private void OnOpenLogFolder(object sender, RoutedEventArgs e)
     {
@@ -1098,7 +1159,7 @@ public partial class ConfigWindow : Window, IImportHost
                 return;
             }
 
-            var attempt = await _imports.ImportTextAsync(read.Text, "Import " + Path.GetFileName(dialog.FileName), ignoreHostedUrl: false);
+            var attempt = await _imports.ImportTextAsync(read.Text, "Import " + Path.GetFileName(dialog.FileName), ignoreHostedUrl: false, userJustActed: true);
             if (!_isClosed && attempt.Outcome != ImportOutcome.Imported)
                 FooterStatus.Text = attempt.Message; // on success the reload has already shown the summary
         }
@@ -1134,6 +1195,8 @@ public partial class ConfigWindow : Window, IImportHost
         }
 
         BeginBusy();
+        // Read now: ReloadAfterImport (inside the import) resets the controls from the stored settings.
+        var wantAutoCheck = HostedAutoCheck.IsChecked == true;
         try
         {
             FooterStatus.ToolTip = null;
@@ -1158,7 +1221,7 @@ public partial class ConfigWindow : Window, IImportHost
                 return;
             }
 
-            var attempt = await _imports.ImportTextAsync(fetched.Text, "Import from " + new Uri(url).Host, ignoreHostedUrl: true);
+            var attempt = await _imports.ImportTextAsync(fetched.Text, "Import from " + new Uri(url).Host, ignoreHostedUrl: true, userJustActed: true);
             if (attempt.Outcome != ImportOutcome.Imported)
             {
                 FooterStatus.Text = attempt.Message;
@@ -1166,7 +1229,10 @@ public partial class ConfigWindow : Window, IImportHost
             }
 
             // Remember the address and this version, so the next "Import from URL" can tell whether the hosted file has changed.
-            var remembered = _services.UpdateSettings(s => s with { HostedConfigUrl = url, HostedConfigLastHash = hash });
+            // The 24-hour check goes with the address (it was left out of the save above, like the address): the tick the user had when
+            // pressing the button (read before the import reset the controls) is stored together with the address.
+            var remembered = _services.UpdateSettings(
+                s => s with { HostedConfigUrl = url, HostedConfigLastHash = hash, HostedConfigAutoCheck = wantAutoCheck });
             LoadSettingsControls();
             FooterStatus.Text = remembered.Success
                 ? attempt.Message
@@ -1268,6 +1334,9 @@ public partial class ConfigWindow : Window, IImportHost
     /// <summary>True while an import, export or save-for-import is running: the window cannot be closed then.</summary>
     public bool IsBusy => _busyCount > 0;
 
+    /// <summary>No save, import, export or question of the window is open (see <see cref="IImportHost.IsIdleForPrompt"/>).</summary>
+    public bool IsIdleForPrompt => IsIdle();
+
     /// <summary>Lists differ from the last save, or the settings controls differ from the saved settings.</summary>
     public bool HasUnsavedChanges(bool ignoreHostedUrl)
     {
@@ -1277,7 +1346,7 @@ public partial class ConfigWindow : Window, IImportHost
         var shown = BuildSettings();
         var saved = _services.Settings;
         if (ignoreHostedUrl)
-            shown = shown with { HostedConfigUrl = saved.HostedConfigUrl };
+            shown = shown with { HostedConfigUrl = saved.HostedConfigUrl, HostedConfigAutoCheck = saved.HostedConfigAutoCheck };
         return shown != saved;
     }
 

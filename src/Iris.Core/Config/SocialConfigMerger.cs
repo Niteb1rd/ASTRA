@@ -31,6 +31,8 @@ public sealed class MergeResult
 /// Same thing means: a player with the same handle, an org with the same SID, a rule with the same kind and value
 /// (kinds without a value, Redacted and NoOrg, are the same by kind alone). Upper/lower case does not matter.
 /// The result keeps the original's list name.
+/// The permanent No Match rule is not merged like the others: the result has exactly one, the ORIGINAL's (its color wins); only when the
+/// original has none (an older in-memory config) is the imported one taken, else the default. It is never counted as added or skipped.
 /// </summary>
 public static class SocialConfigMerger
 {
@@ -78,12 +80,12 @@ public static class SocialConfigMerger
         }
 
         var rules = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var r in original.OrgRules)
+        foreach (var r in original.OrgRules.Where(r => r.Kind != AttributeKind.NoMatch))
         {
             merged.OrgRules.Add(r);
             rules.Add(RuleKey(r));
         }
-        foreach (var r in imported.OrgRules)
+        foreach (var r in imported.OrgRules.Where(r => r.Kind != AttributeKind.NoMatch))
         {
             if (rules.Add(RuleKey(r)))
             {
@@ -95,6 +97,10 @@ public static class SocialConfigMerger
                 result.SkippedRules++;
             }
         }
+
+        // exactly one No Match rule, last: the original's wins
+        merged.OrgRules.Add(NoMatchRule.Find(original) ?? NoMatchRule.Find(imported) ?? NoMatchRule.CreateDefault());
+        NoMatchRule.Ensure(merged);
 
         return result;
     }
