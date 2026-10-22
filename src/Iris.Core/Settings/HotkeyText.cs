@@ -1,6 +1,6 @@
 namespace Iris.Core.Settings;
 
-/// <summary>The modifier keys of a hotkey. The numbers are the Windows MOD_ALT, MOD_CONTROL, MOD_SHIFT and MOD_WIN values (RegisterHotKey).</summary>
+/// <summary>The modifier keys of a hotkey. The numbers match the Windows MOD_ALT, MOD_CONTROL, MOD_SHIFT and MOD_WIN values.</summary>
 [Flags]
 public enum HotkeyModifiers
 {

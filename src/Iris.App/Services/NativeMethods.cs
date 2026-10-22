@@ -78,17 +78,40 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
 
-    public const uint ModNoRepeat = 0x4000;
-    public const int WmHotkey = 0x0312;
-    public static readonly IntPtr HwndMessage = new IntPtr(-3);
+    public const int WhKeyboardLl = 13;
+    public const int WmKeyDown = 0x0100;
+    public const int WmKeyUp = 0x0101;
+    public const int WmSysKeyDown = 0x0104;
+    public const int WmSysKeyUp = 0x0105;
+
+    public delegate IntPtr LowLevelKeyboardProc(int code, IntPtr wParam, IntPtr lParam);
+
+    /// <summary>What a low-level keyboard hook receives for each key event (KBDLLHOOKSTRUCT).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KeyboardHookData
+    {
+        public uint VirtualKey;
+        public uint ScanCode;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetWindowsHookEx(int hookType, LowLevelKeyboardProc callback, IntPtr module, uint threadId);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
+    public static extern bool UnhookWindowsHookEx(IntPtr hook);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+    [DllImport("user32.dll")]
+    public static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int virtualKey);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr GetModuleHandle(string? moduleName);
 
     [DllImport("dwmapi.dll")]
     public static extern int DwmGetWindowAttribute(IntPtr hWnd, int attribute, out NativeRect value, int size);

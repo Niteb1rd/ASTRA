@@ -132,9 +132,13 @@ change the same saved setting.
 
 **Hotkeys** (Settings tab, top section, `hotkey_toggle_overlay` / `hotkey_toggle_panel`, empty by default): *Toggle Overlay* and *Toggle Info Panel*. Click a box,
 press a combination (at least one of Ctrl, Alt, Shift or Win, plus a key; Esc cancels), **Clear** removes it. Written as text such as `Ctrl+Shift+O`; keys: A-Z, 0-9, F1-F24,
-Num0-Num9, Space, Tab, Enter, Backspace, Insert, Delete, Home, End, PageUp, PageDown, arrows. They are global (they work while the game is in front) and are
-registered again whenever the settings change. If another program already owns a combination, or both are the same, the box shows a red message and the log has a line;
-neither of the two is active in the "same" case.
+Num0-Num9, Space, Tab, Enter, Backspace, Insert, Delete, Home, End, PageUp, PageDown, arrows.
+
+Hotkeys are global and work while the game is in front. IRIS reads them with a low-level keyboard hook rather than by claiming the combination, so **the key press
+always reaches Star Citizen (or whatever program is in front) as well as IRIS**: IRIS never swallows a key, and it does not check whether another program uses the same
+combination. A hotkey fires once when its key goes down with exactly its modifiers held (holding the key does not repeat it) and is active again after the key is released.
+Key presses sent by other programs count too. The hook is only installed while at least one hotkey is set, and removed when IRIS quits. The only thing IRIS checks is that
+the two hotkeys are not the same combination: the boxes then show a red message, the log has a line and neither is active.
 
 When a hotkey is pressed and Star Citizen is in front and borderless, the overlay shows a short confirmation ("Overlay off", "Overlay on", "Info panel off", "Info panel on")
 for about 2 seconds at the top of the panel area, white text with a dark edge on a dark translucent box. After "Overlay off" nothing else is drawn. In any other case the
