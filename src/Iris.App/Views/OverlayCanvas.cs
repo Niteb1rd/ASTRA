@@ -13,7 +13,7 @@ namespace Iris.App.Views;
 /// layout changes (<see cref="SetContent"/>); between changes WPF keeps the recorded drawing, so an idle overlay costs nothing.
 /// Everything is drawn in physical pixels: a transform undoes the window's DPI scaling, so the model's pixel rectangles are used as they are.
 /// </summary>
-internal sealed class OverlayCanvas : FrameworkElement
+public sealed class OverlayCanvas : FrameworkElement
 {
     private static readonly Brush DarkBrush = Frozen(new SolidColorBrush(Color.FromArgb(0xE6, 0x0A, 0x0A, 0x0F)));
     private static readonly Brush[] ColorBrushes = new Brush[8];

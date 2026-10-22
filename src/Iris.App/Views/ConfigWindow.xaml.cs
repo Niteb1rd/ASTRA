@@ -34,7 +34,7 @@ namespace Iris.App.Views;
 /// enabled on purpose, so the user can replace the broken file with what the window shows (a copy of the broken file is kept first).
 /// While the window is open it looks at the config files every 2 seconds: an edited file is loaded (unsaved edits in the window are discarded),
 /// a file with errors is reported in a red banner at the top and the previous version stays in use.
-/// Later increments add the overlay controls to this window.
+/// The Settings tab also has the Overlay section (right panel layout) and the "Show test overlay (15 s)" button.
 /// </summary>
 public partial class ConfigWindow : Window, IImportHost
 {
@@ -59,6 +59,7 @@ public partial class ConfigWindow : Window, IImportHost
     private readonly AppServices _services;
     private readonly ImportCoordinator _imports;
     private readonly CacheUpdater _updater;
+    private readonly OverlayController _overlay;
     private readonly ObservableCollection<PlayerRowViewModel> _players = new();
     private readonly ObservableCollection<OrgRowViewModel> _orgs = new();
     private readonly ObservableCollection<RuleRowViewModel> _rules = new();
@@ -93,12 +94,19 @@ public partial class ConfigWindow : Window, IImportHost
     // The bad version of the settings file that was already copied to ".invalid-<time>" (see _copiedInvalidKey).
     private string? _copiedInvalidSettingsKey;
 
-    public ConfigWindow(AppServices services, ImportCoordinator imports, CacheUpdater updater)
+    public ConfigWindow(AppServices services, ImportCoordinator imports, CacheUpdater updater, OverlayController overlay)
     {
         _services = services;
         _imports = imports;
         _updater = updater;
+        _overlay = overlay;
         InitializeComponent();
+
+        // The slider ranges come from the settings limits (one place). The handlers ignore changes until the window is built (_ready).
+        ConfigureSlider(PanelWidthSlider, AppSettings.PanelWidthPercentMin, AppSettings.PanelWidthPercentMax);
+        ConfigureSlider(PanelTextSizeSlider, AppSettings.PanelTextSizeMin, AppSettings.PanelTextSizeMax);
+        ConfigureSlider(PanelRightGapSlider, AppSettings.PanelRightGapPercentMin, AppSettings.PanelRightGapPercentMax);
+        ConfigureSlider(PanelTopGapSlider, AppSettings.PanelTopGapPercentMin, AppSettings.PanelTopGapPercentMax);
 
         PlayersList.ItemsSource = _players;
         OrgsList.ItemsSource = _orgs;
@@ -116,6 +124,8 @@ public partial class ConfigWindow : Window, IImportHost
         imports.Host = this;
         updater.RefreshingChanged += OnRefreshingChanged;
         RefreshCacheButton.IsEnabled = !updater.IsRefreshing;
+        overlay.TestStateChanged += OnTestStateChanged;
+        UpdateTestButton();
 
         _watchTimer.Tick += OnWatchTick;
         Loaded += (_, _) =>
@@ -130,6 +140,7 @@ public partial class ConfigWindow : Window, IImportHost
             _watchTimer.Stop();
             _watchTimer.Tick -= OnWatchTick;
             _updater.RefreshingChanged -= OnRefreshingChanged;
+            _overlay.TestStateChanged -= OnTestStateChanged;
             if (ReferenceEquals(_imports.Host, this))
                 _imports.Host = null;
             _closing.Cancel();
@@ -839,6 +850,11 @@ public partial class ConfigWindow : Window, IImportHost
     {
         var settings = _services.Settings;
         CacheTtlCombo.SelectedIndex = settings.CacheTtlDays == 7 ? 1 : 0;
+        PanelEnabledCheck.IsChecked = settings.PanelEnabled;
+        PanelWidthSlider.Value = settings.PanelWidthPercent;
+        PanelTextSizeSlider.Value = settings.PanelTextSize;
+        PanelRightGapSlider.Value = settings.PanelRightGapPercent;
+        PanelTopGapSlider.Value = settings.PanelTopGapPercent;
         LogEnabledCheck.IsChecked = settings.SessionLogEnabled;
         CheckUpdatesCheck.IsChecked = settings.CheckForUpdates;
         HostedUrlBox.Text = settings.HostedConfigUrl;
@@ -856,6 +872,11 @@ public partial class ConfigWindow : Window, IImportHost
     private AppSettings BuildSettings() => _services.Settings with
     {
         CacheTtlDays = CacheTtlCombo.SelectedIndex == 1 ? 7 : 30,
+        PanelEnabled = PanelEnabledCheck.IsChecked == true,
+        PanelWidthPercent = (int)Math.Round(PanelWidthSlider.Value),
+        PanelTextSize = (int)Math.Round(PanelTextSizeSlider.Value),
+        PanelRightGapPercent = (int)Math.Round(PanelRightGapSlider.Value),
+        PanelTopGapPercent = (int)Math.Round(PanelTopGapSlider.Value),
         SessionLogEnabled = LogEnabledCheck.IsChecked == true,
         CheckForUpdates = CheckUpdatesCheck.IsChecked == true,
         HostedConfigUrl = HostedUrlBox.Text.Trim(),
@@ -870,6 +891,64 @@ public partial class ConfigWindow : Window, IImportHost
         HostedUrlError.Text = problem ?? string.Empty;
         HostedUrlError.Visibility = problem is null ? Visibility.Collapsed : Visibility.Visible;
         return problem is null;
+    }
+
+    // ---- Overlay section ----
+
+    private static void ConfigureSlider(Slider slider, int minimum, int maximum)
+    {
+        slider.Maximum = maximum; // the maximum first: the default maximum (10) must not cap a larger minimum
+        slider.Minimum = minimum;
+    }
+
+    /// <summary>A panel check box or slider changed: the Save button follows, and a running test overlay shows the new values at once.</summary>
+    private void OnOverlayCheckChanged(object sender, RoutedEventArgs e) => OverlayValuesChanged();
+
+    private void OnOverlaySliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => OverlayValuesChanged();
+
+    private void OverlayValuesChanged()
+    {
+        if (!_ready)
+            return; // the controls are still being filled
+        UpdateSaveButton();
+        _overlay.UpdateTestSettings(BuildSettings());
+    }
+
+    /// <summary>"Show test overlay (15 s)": shows or stops the sample overlay, using the values on screen (saved or not).</summary>
+    private void OnTestOverlay(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_overlay.IsTestRunning)
+            {
+                _overlay.StopTest();
+                SetFooter("Test overlay stopped.");
+                return;
+            }
+            var where = _overlay.StartTest(BuildSettings(), this);
+            SetFooter($"Test overlay shown {where} for {OverlayController.TestSeconds} seconds.");
+        }
+        catch (Exception ex)
+        {
+            _services.Log.Write(DateTimeOffset.UtcNow, "Test overlay failed: " + ex);
+            SetFooter("Could not show the test overlay: " + ex.Message);
+        }
+    }
+
+    private void OnTestStateChanged(object? sender, EventArgs e)
+    {
+        if (_isClosed)
+            return;
+        UpdateTestButton();
+        if (!_overlay.IsTestRunning)
+            SetFooter("Test overlay ended.");
+    }
+
+    private void UpdateTestButton()
+    {
+        TestOverlayButton.Content = _overlay.IsTestRunning
+            ? $"Stop test overlay ({_overlay.TestSecondsLeft} s)"
+            : $"Show test overlay ({OverlayController.TestSeconds} s)";
     }
 
     private void OnHostedUrlLostFocus(object sender, KeyboardFocusChangedEventArgs e) => ValidateHostedUrl();

@@ -204,8 +204,11 @@ public sealed class AppServices : IDisposable
     /// <summary>The list as last saved (or as loaded). Replaced, never changed in place, when the user saves.</summary>
     public SocialConfig CurrentConfig { get; private set; }
 
-    /// <summary>Remembered for the overlay increment; nothing reads it yet.</summary>
+    /// <summary>True while the tray's "Pause overlay" is ticked (the overlay controller keeps this up to date).</summary>
     public bool IsOverlayPaused { get; set; }
+
+    /// <summary>Raised on the UI thread after new settings became the current ones (saved in the window, or loaded from an edited file).</summary>
+    public event EventHandler? SettingsApplied;
 
     /// <summary>Opens everything under the Data folder next to the program. Throws if the cache file cannot be opened.</summary>
     public static AppServices Create(string exeDirectory)
@@ -484,6 +487,7 @@ public sealed class AppServices : IDisposable
 
         CacheSettings.TtlDays = ttl;
         Settings = settings;
+        SettingsApplied?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>Downloads the user's hosted config file (see <see cref="HostedConfigClient"/>). Stops when IRIS quits.</summary>

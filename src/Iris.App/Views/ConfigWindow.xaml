@@ -406,6 +406,62 @@
                                       ToolTip="Needs a valid https:// address above. While IRIS runs it checks the address once a day (also at startup, if a day has passed) and asks before importing anything. It is off until you tick it." />
                         </Grid>
 
+                        <!-- Overlay -->
+                        <TextBlock Text="Overlay" FontWeight="SemiBold" Margin="0,16,0,4" />
+                        <CheckBox x:Name="PanelEnabledCheck" Content="Show right panel" Margin="0,0,0,6"
+                                  Checked="OnOverlayCheckChanged" Unchecked="OnOverlayCheckChanged"
+                                  ToolTip="The panel lists every bracketed player with their orgs. The brackets around nameplates are always shown." />
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="190" />
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="70" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Panel width" VerticalAlignment="Center"
+                                       ToolTip="Width of the panel, as a percentage of the game window width (8 to 40)." />
+                            <Slider x:Name="PanelWidthSlider" Grid.Row="0" Grid.Column="1" Margin="0,3" VerticalAlignment="Center"
+                                    TickFrequency="1" IsSnapToTickEnabled="True" SmallChange="1" LargeChange="4"
+                                    ValueChanged="OnOverlaySliderChanged" />
+                            <TextBlock Grid.Row="0" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center"
+                                       Text="{Binding Value, ElementName=PanelWidthSlider, StringFormat='{}{0:0}%'}" />
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Text size (pixels at 1440p)" VerticalAlignment="Center"
+                                       ToolTip="Text size in pixels on a 1440p-high game window (10 to 40). On other resolutions it scales with the window height." />
+                            <Slider x:Name="PanelTextSizeSlider" Grid.Row="1" Grid.Column="1" Margin="0,3" VerticalAlignment="Center"
+                                    TickFrequency="1" IsSnapToTickEnabled="True" SmallChange="1" LargeChange="4"
+                                    ValueChanged="OnOverlaySliderChanged" />
+                            <TextBlock Grid.Row="1" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center"
+                                       Text="{Binding Value, ElementName=PanelTextSizeSlider, StringFormat='{}{0:0} px'}" />
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Right gap" VerticalAlignment="Center"
+                                       ToolTip="Space between the panel and the right edge of the screen, as a percentage of the screen width (0 to 40)." />
+                            <Slider x:Name="PanelRightGapSlider" Grid.Row="2" Grid.Column="1" Margin="0,3" VerticalAlignment="Center"
+                                    TickFrequency="1" IsSnapToTickEnabled="True" SmallChange="1" LargeChange="4"
+                                    ValueChanged="OnOverlaySliderChanged" />
+                            <TextBlock Grid.Row="2" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center"
+                                       Text="{Binding Value, ElementName=PanelRightGapSlider, StringFormat='{}{0:0}%'}" />
+
+                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Top gap" VerticalAlignment="Center"
+                                       ToolTip="Space between the top of the screen and the panel, as a percentage of the screen height (0 to 60)." />
+                            <Slider x:Name="PanelTopGapSlider" Grid.Row="3" Grid.Column="1" Margin="0,3" VerticalAlignment="Center"
+                                    TickFrequency="1" IsSnapToTickEnabled="True" SmallChange="1" LargeChange="4"
+                                    ValueChanged="OnOverlaySliderChanged" />
+                            <TextBlock Grid.Row="3" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center"
+                                       Text="{Binding Value, ElementName=PanelTopGapSlider, StringFormat='{}{0:0}%'}" />
+                        </Grid>
+                        <Button x:Name="TestOverlayButton" Content="Show test overlay (15 s)" HorizontalAlignment="Left"
+                                Padding="12,4" Margin="0,0,0,4" Click="OnTestOverlay"
+                                ToolTip="Shows a sample overlay for 15 seconds, over the Star Citizen window if it is running, otherwise over this screen. It uses the values above even before you save them, so you can adjust and preview. Click again to stop." />
+                        <TextBlock TextWrapping="Wrap" Foreground="#616161" Margin="0,0,0,0"
+                                   Text="The overlay only appears over Star Citizen in Borderless windowed mode. Changes to the values above show in a running test at once; press Save to keep them." />
+
                         <!-- Cache (last: the long-running action sits at the bottom) -->
                         <TextBlock Text="Cache" FontWeight="SemiBold" Margin="0,16,0,4" />
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,6">

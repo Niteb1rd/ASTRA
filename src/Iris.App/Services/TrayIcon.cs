@@ -24,7 +24,7 @@ public sealed class TrayIcon : IDisposable
         var settingsItem = new Forms.ToolStripMenuItem("Settings…");
         settingsItem.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
 
-        _pauseItem = new Forms.ToolStripMenuItem("Pause overlay (not active yet)") { CheckOnClick = true };
+        _pauseItem = new Forms.ToolStripMenuItem("Pause overlay") { CheckOnClick = true };
         _pauseItem.CheckedChanged += (_, _) => PauseChanged?.Invoke(this, _pauseItem.Checked);
 
         var openLogItem = new Forms.ToolStripMenuItem("Open log");
