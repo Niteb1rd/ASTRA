@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -25,8 +27,11 @@ namespace Iris.App.Views;
 /// <summary>
 /// The Social Overlay config window: player, org and org-rule lists. Edits happen on row view models;
 /// nothing is written until Save. Names are checked against RSI (cache first) when the user leaves the cell.
-/// The Settings tab holds this PC's app settings, the shared-config buttons (import, export) and "Update database now".
-/// One Save button saves the lists (if they changed) and the settings (if they changed).
+/// The Settings tab holds this PC's app settings, the shared-config buttons (import, export) and "Refresh Cache (long time)".
+/// One Save button saves the lists (if they changed) and the settings (if they changed); it is greyed out while nothing differs from the
+/// saved version, and saving does not close the window (the Close button does).
+/// While the window is open it looks at the config files every 2 seconds: an edited file is loaded (unsaved edits in the window are discarded),
+/// a file with errors is reported in a red banner at the top and the previous version stays in use.
 /// Later increments add the overlay controls to this window.
 /// </summary>
 public partial class ConfigWindow : Window, IImportHost
@@ -48,7 +53,7 @@ public partial class ConfigWindow : Window, IImportHost
 
     private readonly AppServices _services;
     private readonly ImportCoordinator _imports;
-    private readonly DatabaseUpdater _updater;
+    private readonly CacheUpdater _updater;
     private readonly ObservableCollection<PlayerRowViewModel> _players = new();
     private readonly ObservableCollection<OrgRowViewModel> _orgs = new();
     private readonly ObservableCollection<RuleRowViewModel> _rules = new();
@@ -58,8 +63,19 @@ public partial class ConfigWindow : Window, IImportHost
     // which starts a check; without waiting, Save would be refused with "still being checked").
     private readonly Dictionary<ListRowViewModel, Task> _checks = new();
     private bool _saving;
-    private bool _invalidFileCopied;
     private bool _isClosed;
+
+    // Set once the window is built: the control events fire while it is still being created and must not touch anything yet.
+    private bool _ready;
+
+    // The bad version of the list file that was already copied to ".invalid-<time>" (so the copy is made once per bad version).
+    private string? _copiedInvalidKey;
+
+    // Watching the config files (see OnWatchTick).
+    private readonly DispatcherTimer _watchTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private bool _polling;
+    private bool _closePromptOpen;
+    private ConfigPoll? _pendingPoll;
 
     // While an import, export or save-for-import runs the window cannot be closed and the import buttons are off.
     private int _busyCount;
@@ -67,7 +83,7 @@ public partial class ConfigWindow : Window, IImportHost
     private string? _listName;
     private string _baseline = string.Empty;
 
-    public ConfigWindow(AppServices services, ImportCoordinator imports, DatabaseUpdater updater)
+    public ConfigWindow(AppServices services, ImportCoordinator imports, CacheUpdater updater)
     {
         _services = services;
         _imports = imports;
@@ -78,23 +94,36 @@ public partial class ConfigWindow : Window, IImportHost
         OrgsList.ItemsSource = _orgs;
         RulesList.ItemsSource = _rules;
 
+        // Any change to the rows (added, removed, moved, or a value edited) recomputes whether Save is needed.
+        _players.CollectionChanged += OnRowsChanged;
+        _orgs.CollectionChanged += OnRowsChanged;
+        _rules.CollectionChanged += OnRowsChanged;
+
         LoadRowsFrom(services.CurrentConfig);
         LoadSettingsControls();
         _baseline = Snapshot();
 
         imports.Host = this;
-        updater.RunningChanged += OnUpdaterRunningChanged;
-        UpdateNowButton.IsEnabled = !updater.IsRunning;
+        updater.RefreshingChanged += OnRefreshingChanged;
+        RefreshCacheButton.IsEnabled = !updater.IsRefreshing;
+
+        _watchTimer.Tick += OnWatchTick;
+        Loaded += (_, _) => _watchTimer.Start();
 
         Closed += (_, _) =>
         {
             _isClosed = true;
-            _updater.RunningChanged -= OnUpdaterRunningChanged;
+            _watchTimer.Stop();
+            _watchTimer.Tick -= OnWatchTick;
+            _updater.RefreshingChanged -= OnRefreshingChanged;
             if (ReferenceEquals(_imports.Host, this))
                 _imports.Host = null;
             _closing.Cancel();
             _closing.Dispose();
         };
+
+        _ready = true;
+        RefreshStateUi();
     }
 
     /// <summary>
@@ -382,8 +411,8 @@ public partial class ConfigWindow : Window, IImportHost
         _saving = true;
         try
         {
-            if (await SaveAfterChecksAsync(SaveScope.ListsAndSettings, allowWhileBusy: false))
-                Close(); // saved: the baseline was updated, so OnWindowClosing does not ask about unsaved changes
+            // Saved: the baseline was updated and Save greys out again. The window stays open (Close closes it).
+            await SaveAfterChecksAsync(SaveScope.ListsAndSettings, allowWhileBusy: false);
         }
         catch (Exception ex)
         {
@@ -443,7 +472,7 @@ public partial class ConfigWindow : Window, IImportHost
         }
 
         var listsSaved = false;
-        if (Snapshot() != _baseline)
+        if (Snapshot() != _baseline || _services.ListFileHasErrors)
         {
             if (!SaveListsCore())
                 return false;
@@ -471,7 +500,8 @@ public partial class ConfigWindow : Window, IImportHost
             }
         }
 
-        FooterStatus.Text = "Saved at " + DateTime.Now.ToString("HH:mm:ss") + ".";
+        SetFooter("Saved at " + DateTime.Now.ToString("HH:mm:ss"));
+        RefreshStateUi();
         return true;
     }
 
@@ -541,32 +571,37 @@ public partial class ConfigWindow : Window, IImportHost
 
         _services.SetCurrentConfig(config);
         _baseline = Snapshot();
+        RefreshStateUi();
         return true;
     }
 
     /// <summary>
-    /// The list file could not be read completely at startup, and the first save replaces it with what is on screen.
-    /// Asks first, then keeps a copy of the original beside it. Returns false when the user said no or the copy failed.
+    /// The list file on disk has errors (at startup, or after an outside edit), and the first save replaces it with what is on screen.
+    /// Asks first, then keeps a copy of the broken file beside it ("name.toml.invalid-yyyyMMdd-HHmmss"). Asked once per bad version of the file.
+    /// Returns false when the user said no or the copy failed.
     /// </summary>
     private bool KeepCopyOfInvalidFile()
     {
-        var load = _services.ListLoad;
-        if (load.IsValid || _invalidFileCopied)
+        if (!_services.ListFileHasErrors)
+            return true;
+
+        var key = _services.ListFileErrorHash ?? "unreadable";
+        if (_copiedInvalidKey == key)
             return true;
 
         var listFile = _services.Paths.SocialListFile;
         if (!File.Exists(listFile))
         {
-            _invalidFileCopied = true;
+            _copiedInvalidKey = key;
             return true;
         }
 
         var copy = listFile + ".invalid-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
         var answer = MessageBox.Show(
             this,
-            $"Your list file ({Path.GetFileName(listFile)}) had {Plural(load.Errors.Count, "problem", "problems")} when IRIS started.\n\n"
+            $"Your list file ({Path.GetFileName(listFile)}) has {Plural(_services.ListFileErrors.Count, "problem", "problems")}.\n\n"
             + "Saving replaces the file with what you see in this window. Entries in the file that could not be read will be dropped.\n\n"
-            + "A copy of the original file is kept as:\n" + Path.GetFileName(copy) + "\n\nSave now?",
+            + "A copy of the broken file is kept as:\n" + Path.GetFileName(copy) + "\n\nSave now?",
             "IRIS", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
         if (answer != MessageBoxResult.Yes)
             return false;
@@ -583,13 +618,13 @@ public partial class ConfigWindow : Window, IImportHost
             return false;
         }
 
-        _invalidFileCopied = true;
+        _copiedInvalidKey = key;
         return true;
     }
 
-    private void OnCancel(object sender, RoutedEventArgs e)
+    private void OnClose(object sender, RoutedEventArgs e)
     {
-        Close(); // OnWindowClosing asks first if there are unsaved changes
+        Close(); // OnWindowClosing asks first if there are unsaved changes (the Escape key lands here too: the button is the cancel button)
     }
 
     private void OnWindowClosing(object? sender, CancelEventArgs e)
@@ -601,11 +636,19 @@ public partial class ConfigWindow : Window, IImportHost
         }
         if (!HasUnsavedChanges(ignoreHostedUrl: false))
             return;
-        var answer = MessageBox.Show(
-            this, "You have unsaved changes. Discard them?",
-            "IRIS", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
-        if (answer != MessageBoxResult.Yes)
-            e.Cancel = true;
+        _closePromptOpen = true; // no file check (and no reload of the rows) while this question is open
+        try
+        {
+            var answer = MessageBox.Show(
+                this, "You have unsaved changes. Discard them?",
+                "IRIS", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+            if (answer != MessageBoxResult.Yes)
+                e.Cancel = true;
+        }
+        finally
+        {
+            _closePromptOpen = false;
+        }
     }
 
     /// <summary>The rows as a SocialConfig, in on-screen order (order is the tiebreak between equal priorities).</summary>
@@ -676,11 +719,12 @@ public partial class ConfigWindow : Window, IImportHost
         HostedUrlBox.Text = settings.HostedConfigUrl;
         HostedUrlError.Text = string.Empty;
         HostedUrlError.Visibility = Visibility.Collapsed;
+        UpdateSaveButton();
     }
 
     /// <summary>
     /// The settings as the controls show them. The hosted file's hash is not on screen, so it always comes from the saved settings
-    /// (an import or an "Update database now" can change it while this window is open).
+    /// (an import, or a settings file edited from outside, can change it while this window is open).
     /// </summary>
     private AppSettings BuildSettings() => _services.Settings with
     {
@@ -716,29 +760,216 @@ public partial class ConfigWindow : Window, IImportHost
         }
     }
 
-    private async void OnUpdateNow(object sender, RoutedEventArgs e)
+    /// <summary>"Refresh Cache (long time)": the full refresh of everything on the saved lists. The button is off while it runs; the result goes to the footer.</summary>
+    private async void OnRefreshCache(object sender, RoutedEventArgs e)
     {
-        if (_updater.IsRunning)
+        if (_updater.IsRefreshing)
             return;
 
-        FooterStatus.ToolTip = null;
-        FooterStatus.Text = "Updating the database… (one request every 3 seconds)";
-        var message = await _updater.RunAsync(); // greys the button out through RunningChanged; null when IRIS is quitting
-        if (message is not null && !_isClosed)
-        {
-            FooterStatus.Text = message;
-            FooterStatus.ToolTip = message; // the status bar trims long text
-        }
+        SetFooter("Refreshing the cache… this takes a long time (about one request per second, slower if RSI asks us to wait).");
+        var message = await _updater.RunFullRefreshAsync(); // greys the button out through RefreshingChanged; null when IRIS is quitting
+        if (message is null)
+            return;
+        if (_isClosed)
+            _services.Notify?.Invoke(message); // the window was closed meanwhile: nobody would see the footer
+        else
+            SetFooter(message);
     }
 
-    private void OnUpdaterRunningChanged(object? sender, EventArgs e)
+    private void OnRefreshingChanged(object? sender, EventArgs e)
     {
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.BeginInvoke(new Action(() => OnUpdaterRunningChanged(sender, e)));
+            Dispatcher.BeginInvoke(new Action(() => OnRefreshingChanged(sender, e)));
             return;
         }
-        UpdateNowButton.IsEnabled = !_updater.IsRunning;
+        RefreshCacheButton.IsEnabled = !_updater.IsRefreshing;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Save button, error banners, status line
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>A row was added, removed or moved: follow its edits from now on (or stop), and see whether Save is needed.</summary>
+    private void OnRowsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.OldItems is not null)
+            foreach (var row in e.OldItems.OfType<INotifyPropertyChanged>())
+                row.PropertyChanged -= OnRowPropertyChanged;
+        if (e.NewItems is not null)
+            foreach (var row in e.NewItems.OfType<INotifyPropertyChanged>())
+                row.PropertyChanged += OnRowPropertyChanged;
+        UpdateSaveButton();
+    }
+
+    /// <summary>A value of a row changed (text, color, priority, type). Status texts and notes change all the time and do not matter here.</summary>
+    private void OnRowPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        switch (e.PropertyName)
+        {
+            case nameof(ListRowViewModel.Value):
+            case nameof(ListRowViewModel.Color):
+            case nameof(OrgRowViewModel.Priority):
+            case nameof(RuleRowViewModel.Kind):
+                UpdateSaveButton();
+                break;
+        }
+    }
+
+    /// <summary>Any control of the Settings tab changed.</summary>
+    private void OnSettingChanged(object sender, RoutedEventArgs e) => UpdateSaveButton();
+
+    /// <summary>
+    /// Save is on while anything differs from what is saved (rows, their order, any value, any setting). It is also on while a file on disk
+    /// has errors, because saving is how the user replaces the broken file with what the window shows.
+    /// </summary>
+    private void UpdateSaveButton()
+    {
+        if (!_ready || _isClosed)
+            return;
+        SaveButton.IsEnabled = HasUnsavedChanges(ignoreHostedUrl: false) || _services.ListFileHasErrors || _services.SettingsFileNeedsSave;
+    }
+
+    private void RefreshStateUi()
+    {
+        UpdateBanners();
+        UpdateSaveButton();
+    }
+
+    private void UpdateBanners()
+    {
+        ShowBanner(ListBanner, ListBannerText, DataPaths.SocialListFileName, _services.ListFileErrors, _services.ListFileNote);
+        ShowBanner(SettingsBanner, SettingsBannerText, DataPaths.SettingsFileName, _services.SettingsFileErrors, _services.SettingsFileNote);
+    }
+
+    private static void ShowBanner(Border banner, TextBlock text, string fileName, IReadOnlyList<string> errors, string note)
+    {
+        if (errors.Count == 0)
+        {
+            banner.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        const int shown = 3;
+        var message = new StringBuilder();
+        message.Append(fileName).Append(" has errors. ").Append(note);
+        foreach (var error in errors.Take(shown))
+            message.Append("\n  - ").Append(error);
+        if (errors.Count > shown)
+            message.Append($"\n  ...and {errors.Count - shown} more (open the file to see them all).");
+        text.Text = message.ToString();
+        banner.Visibility = Visibility.Visible;
+    }
+
+    private void OnOpenListFile(object sender, RoutedEventArgs e) => OpenInEditor(_services.Paths.SocialListFile);
+
+    private void OnOpenSettingsFile(object sender, RoutedEventArgs e) => OpenInEditor(_services.Paths.SettingsFile);
+
+    /// <summary>Opens a file in its default editor; Notepad when .toml has no program.</summary>
+    private void OpenInEditor(string path)
+    {
+        try
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            }
+            catch (Win32Exception)
+            {
+                // no program is associated with .toml files
+                Process.Start(new ProcessStartInfo("notepad.exe", "\"" + path + "\"") { UseShellExecute = true });
+            }
+        }
+        catch (Exception ex)
+        {
+            SetFooter("Could not open " + Path.GetFileName(path) + ": " + ex.Message);
+        }
+    }
+
+    /// <summary>Shows a message in the footer (and as a tooltip, because the footer trims long text).</summary>
+    private void SetFooter(string message)
+    {
+        FooterStatus.Text = message;
+        FooterStatus.ToolTip = message;
+    }
+
+    /// <summary>Shows a message in the footer from outside the window (for example the end of the background fill-missing refresh).</summary>
+    public void ShowStatus(string message)
+    {
+        if (!_isClosed)
+            SetFooter(message);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Watching the config files
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>True when nothing is going on that a reload of the rows would disturb.</summary>
+    private bool IsIdle() => !_saving && _busyCount == 0 && !_imports.IsBusy && !_closePromptOpen;
+
+    /// <summary>
+    /// Every 2 seconds while the window is open: look at the config files (on a background thread, the files are only stat'ed unless
+    /// they changed) and apply what is found here. A result that arrives while a save or import is going on waits for the next idle tick.
+    /// </summary>
+    private async void OnWatchTick(object? sender, EventArgs e)
+    {
+        if (_isClosed || _polling || _closePromptOpen)
+            return;
+
+        _polling = true;
+        try
+        {
+            var poll = _pendingPoll;
+            if (poll is null)
+            {
+                if (!IsIdle())
+                    return;
+                poll = await Task.Run(() => _services.PollConfigFiles());
+            }
+
+            if (!_isClosed && !IsIdle())
+            {
+                _pendingPoll = poll; // the detector has already moved on: keep the result until it can be shown
+                return;
+            }
+
+            _pendingPoll = null;
+            var changes = _services.ApplyPoll(poll);
+            if (!_isClosed)
+                ShowConfigChanges(changes);
+        }
+        catch (Exception ex)
+        {
+            _services.Log.Write(DateTimeOffset.UtcNow, "Checking the config files failed: " + ex);
+        }
+        finally
+        {
+            _polling = false;
+        }
+    }
+
+    /// <summary>
+    /// Brings the window up to date with what <see cref="AppServices.ApplyPoll"/> applied. A new list replaces ALL rows and a new settings
+    /// file replaces ALL settings controls: unsaved edits in the window are discarded (a deliberate choice). Name checks start again for the loaded rows.
+    /// </summary>
+    private void ShowConfigChanges(ConfigChanges changes)
+    {
+        if (changes.ListChanged)
+        {
+            LoadRowsFrom(_services.CurrentConfig);
+            _baseline = Snapshot();
+        }
+        if (changes.SettingsChanged)
+            LoadSettingsControls();
+        if (changes.ExclusionsChanged)
+        {
+            foreach (var row in _players)
+                row.RefreshExclusionNote();
+        }
+
+        RefreshStateUi();
+        if (changes.Message is { } message)
+            SetFooter(message);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -771,7 +1002,7 @@ public partial class ConfigWindow : Window, IImportHost
         BeginBusy();
         try
         {
-            var attempt = await _imports.ImportTextAsync(read.Text, "Import " + Path.GetFileName(dialog.FileName), showDeclineNote: false, ignoreHostedUrl: false);
+            var attempt = await _imports.ImportTextAsync(read.Text, "Import " + Path.GetFileName(dialog.FileName), ignoreHostedUrl: false);
             if (!_isClosed && attempt.Outcome != ImportOutcome.Imported)
                 FooterStatus.Text = attempt.Message; // on success the reload has already shown the summary
         }
@@ -820,14 +1051,26 @@ public partial class ConfigWindow : Window, IImportHost
             }
 
             var hash = fetched.Hash;
-            var attempt = await _imports.ImportTextAsync(fetched.Text, "Import from " + new Uri(url).Host, showDeclineNote: false, ignoreHostedUrl: true);
+            if (string.Equals(hash, _services.Settings.HostedConfigLastHash, StringComparison.OrdinalIgnoreCase))
+            {
+                // The same version as the one imported last time: nothing to do.
+                const string unchanged = "Your hosted config has not changed.";
+                _services.Log.Write(_services.Clock.UtcNow, "Hosted config unchanged since the last import.");
+                if (_isClosed)
+                    _services.Notify?.Invoke(unchanged); // the window was closed while fetching: a balloon is the only way to say it
+                else
+                    SetFooter(unchanged);
+                return;
+            }
+
+            var attempt = await _imports.ImportTextAsync(fetched.Text, "Import from " + new Uri(url).Host, ignoreHostedUrl: true);
             if (attempt.Outcome != ImportOutcome.Imported)
             {
                 FooterStatus.Text = attempt.Message;
                 return;
             }
 
-            // Remember the address and this version, so "Update database now" only asks again when the file changes.
+            // Remember the address and this version, so the next "Import from URL" can tell whether the hosted file has changed.
             var remembered = _services.UpdateSettings(s => s with { HostedConfigUrl = url, HostedConfigLastHash = hash });
             LoadSettingsControls();
             FooterStatus.Text = remembered.Success
@@ -991,8 +1234,8 @@ public partial class ConfigWindow : Window, IImportHost
         LoadRowsFrom(_services.CurrentConfig);
         LoadSettingsControls();
         _baseline = Snapshot();
-        FooterStatus.ToolTip = null;
-        FooterStatus.Text = status;
+        RefreshStateUi();
+        SetFooter(status);
     }
 
     private static string Plural(int count, string one, string many) => count == 1 ? $"1 {one}" : $"{count} {many}";

@@ -16,7 +16,6 @@ public sealed class TrayIcon : IDisposable
 
     private readonly Forms.NotifyIcon _icon;
     private readonly Forms.ContextMenuStrip _menu;
-    private readonly Forms.ToolStripMenuItem _updateItem;
     private readonly Forms.ToolStripMenuItem _pauseItem;
     private bool _disposed;
 
@@ -24,9 +23,6 @@ public sealed class TrayIcon : IDisposable
     {
         var settingsItem = new Forms.ToolStripMenuItem("Settings…");
         settingsItem.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
-
-        _updateItem = new Forms.ToolStripMenuItem("Update database now");
-        _updateItem.Click += (_, _) => UpdateDatabaseRequested?.Invoke(this, EventArgs.Empty);
 
         _pauseItem = new Forms.ToolStripMenuItem("Pause overlay (not active yet)") { CheckOnClick = true };
         _pauseItem.CheckedChanged += (_, _) => PauseChanged?.Invoke(this, _pauseItem.Checked);
@@ -42,7 +38,6 @@ public sealed class TrayIcon : IDisposable
 
         _menu = new Forms.ContextMenuStrip();
         _menu.Items.Add(settingsItem);
-        _menu.Items.Add(_updateItem);
         _menu.Items.Add(_pauseItem);
         _menu.Items.Add(new Forms.ToolStripSeparator());
         _menu.Items.Add(openLogItem);
@@ -62,8 +57,6 @@ public sealed class TrayIcon : IDisposable
 
     public event EventHandler? SettingsRequested;
 
-    public event EventHandler? UpdateDatabaseRequested;
-
     public event EventHandler? OpenLogRequested;
 
     public event EventHandler? OpenConfigLocationRequested;
@@ -73,13 +66,12 @@ public sealed class TrayIcon : IDisposable
     /// <summary>Raised with the new state when the user ticks or unticks "Pause overlay".</summary>
     public event EventHandler<bool>? PauseChanged;
 
-    /// <summary>Greys out "Update database now" while an update runs, and says so in the tooltip.</summary>
-    public void SetUpdateRunning(bool running)
+    /// <summary>Shows what IRIS is busy with in the tooltip ("refreshing the cache..."), or the plain name when <paramref name="activity"/> is null.</summary>
+    public void SetActivity(string? activity)
     {
         if (_disposed)
             return;
-        _updateItem.Enabled = !running;
-        SetTooltip(running ? "IRIS - updating the database..." : DefaultTooltip);
+        SetTooltip(activity is null ? DefaultTooltip : DefaultTooltip + " - " + activity);
     }
 
     /// <summary>Shows a balloon notification next to the tray icon.</summary>

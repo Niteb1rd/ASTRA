@@ -66,11 +66,32 @@
 
     <Grid>
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <TabControl x:Name="Tabs" Grid.Row="0" Margin="8,8,8,0">
+        <!-- ================= Error banners (a config file on disk has errors) ================= -->
+        <StackPanel Grid.Row="0">
+            <Border x:Name="ListBanner" Visibility="Collapsed" Margin="8,8,8,0" Padding="8,6"
+                    Background="#FDECEA" BorderBrush="#C62828" BorderThickness="1" CornerRadius="3">
+                <DockPanel LastChildFill="True">
+                    <Button DockPanel.Dock="Right" Content="Open file" Padding="10,3" Margin="8,0,0,0" VerticalAlignment="Top"
+                            ToolTip="Opens social-overlay.toml in your default editor (Notepad if there is none)." Click="OnOpenListFile" />
+                    <TextBlock x:Name="ListBannerText" TextWrapping="Wrap" Foreground="#B71C1C" />
+                </DockPanel>
+            </Border>
+            <Border x:Name="SettingsBanner" Visibility="Collapsed" Margin="8,8,8,0" Padding="8,6"
+                    Background="#FDECEA" BorderBrush="#C62828" BorderThickness="1" CornerRadius="3">
+                <DockPanel LastChildFill="True">
+                    <Button DockPanel.Dock="Right" Content="Open file" Padding="10,3" Margin="8,0,0,0" VerticalAlignment="Top"
+                            ToolTip="Opens settings.toml in your default editor (Notepad if there is none)." Click="OnOpenSettingsFile" />
+                    <TextBlock x:Name="SettingsBannerText" TextWrapping="Wrap" Foreground="#B71C1C" />
+                </DockPanel>
+            </Border>
+        </StackPanel>
+
+        <TabControl x:Name="Tabs" Grid.Row="1" Margin="8,8,8,0">
 
             <!-- ================= Players ================= -->
             <TabItem Header="Players">
@@ -287,49 +308,52 @@
                         <TextBlock Margin="0,0,0,12" TextWrapping="Wrap" Foreground="#616161"
                                    Text="App settings for this PC. These are not included when you share or export your lists." />
 
-                        <!-- Cache -->
-                        <TextBlock Text="Cache" FontWeight="SemiBold" Margin="0,0,0,4" />
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
-                            <TextBlock Text="Refresh cached RSI data after" VerticalAlignment="Center" Margin="0,0,8,0" />
-                            <ComboBox x:Name="CacheTtlCombo" Width="100" SelectedIndex="0">
-                                <ComboBoxItem Content="30 days" />
-                                <ComboBoxItem Content="7 days" />
-                            </ComboBox>
-                        </StackPanel>
-                        <Button x:Name="UpdateNowButton" Content="Update database now" HorizontalAlignment="Left"
-                                Padding="12,4" Margin="0,0,0,16" Click="OnUpdateNow"
-                                ToolTip="Fetches every player and org on your saved lists from RSI again (one request every 3 seconds)." />
-
                         <!-- Logging -->
                         <TextBlock Text="Logging" FontWeight="SemiBold" Margin="0,0,0,4" />
-                        <CheckBox x:Name="LogEnabledCheck" Content="Write a log file (Data\logs, kept 30 days)" Margin="0,0,0,6" />
+                        <CheckBox x:Name="LogEnabledCheck" Content="Write a log file (Data\logs, kept 30 days)" Margin="0,0,0,6"
+                                  Checked="OnSettingChanged" Unchecked="OnSettingChanged" />
                         <Button x:Name="OpenLogFolderButton" Content="Open log folder" HorizontalAlignment="Left"
                                 Padding="12,4" Margin="0,0,0,16" Click="OnOpenLogFolder" />
 
                         <!-- Updates -->
                         <TextBlock Text="Updates" FontWeight="SemiBold" Margin="0,0,0,4" />
                         <CheckBox x:Name="CheckUpdatesCheck" Content="Check GitHub for new IRIS versions" Margin="0,0,0,16"
+                                  Checked="OnSettingChanged" Unchecked="OnSettingChanged"
                                   ToolTip="Checks start in a later version" />
 
                         <!-- Shared config -->
                         <TextBlock Text="Shared config" FontWeight="SemiBold" Margin="0,0,0,4" />
                         <TextBlock Text="Hosted config URL" Margin="0,0,0,2" />
-                        <TextBox x:Name="HostedUrlBox" MaxLength="2000" LostKeyboardFocus="OnHostedUrlLostFocus"
-                                 ToolTip="Optional. An https:// address of a config file you host yourself. &quot;Update database now&quot; checks it first and asks before using a changed version." />
+                        <TextBox x:Name="HostedUrlBox" MaxLength="2000" LostKeyboardFocus="OnHostedUrlLostFocus" TextChanged="OnSettingChanged"
+                                 ToolTip="Optional. An https:// address of a config file you host yourself. It is only looked at when you press &quot;Import from URL&quot;." />
                         <TextBlock x:Name="HostedUrlError" Foreground="#C62828" TextWrapping="Wrap" Margin="0,2,0,0"
                                    Visibility="Collapsed" />
                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                             <Button x:Name="ImportFileButton" Content="Import from file&#8230;" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromFile" />
-                            <Button x:Name="ImportUrlButton" Content="Import from URL" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromUrl" />
+                            <Button x:Name="ImportUrlButton" Content="Import from URL" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromUrl"
+                                    ToolTip="Fetches the hosted config. If it is the same version you imported last time, nothing is imported." />
                             <Button x:Name="ExportButton" Content="Export&#8230;" Padding="12,4" Click="OnExport" />
                         </StackPanel>
+
+                        <!-- Cache (last: the long-running action sits at the bottom) -->
+                        <TextBlock Text="Cache" FontWeight="SemiBold" Margin="0,16,0,4" />
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                            <TextBlock Text="Refresh cached RSI data after" VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <ComboBox x:Name="CacheTtlCombo" Width="100" SelectedIndex="0" SelectionChanged="OnSettingChanged">
+                                <ComboBoxItem Content="30 days" />
+                                <ComboBoxItem Content="7 days" />
+                            </ComboBox>
+                        </StackPanel>
+                        <Button x:Name="RefreshCacheButton" Content="Refresh Cache (long time)" HorizontalAlignment="Left"
+                                Padding="12,4" Margin="0,0,0,8" Click="OnRefreshCache"
+                                ToolTip="Fetches EVERY player and org on your saved lists from RSI again, however recent the data is. This takes a long time: about one request per second (one for each player, two or more for each org), slower if RSI asks us to wait. Importing a config only fetches what is missing." />
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
         </TabControl>
 
         <!-- ================= Bottom bar ================= -->
-        <Grid Grid.Row="1" Margin="8">
+        <Grid Grid.Row="2" Margin="8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
@@ -340,8 +364,8 @@
             <Border x:Name="FocusSink" Grid.Column="0" Width="1" Height="1" HorizontalAlignment="Left"
                     Focusable="True" FocusVisualStyle="{x:Null}" KeyboardNavigation.IsTabStop="False" />
             <TextBlock x:Name="FooterStatus" Grid.Column="0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-            <Button Grid.Column="1" Content="Save" Width="80" Padding="0,4" Click="OnSave" />
-            <Button Grid.Column="2" Content="Cancel" Width="80" Padding="0,4" Margin="8,0,0,0" IsCancel="True" Click="OnCancel" />
+            <Button x:Name="SaveButton" Grid.Column="1" Content="Save" Width="80" Padding="0,4" IsEnabled="False" Click="OnSave" />
+            <Button Grid.Column="2" Content="Close" Width="80" Padding="0,4" Margin="8,0,0,0" IsCancel="True" Click="OnClose" />
         </Grid>
     </Grid>
 </Window>
