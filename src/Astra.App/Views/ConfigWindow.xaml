@@ -7,6 +7,8 @@
         Width="760" Height="520"
         MinWidth="640" MinHeight="380"
         WindowStartupLocation="CenterScreen"
+        Focusable="True" FocusVisualStyle="{x:Null}"
+        PreviewMouseDown="OnWindowPreviewMouseDown"
         Closing="OnWindowClosing">
 
     <Window.Resources>
@@ -38,6 +40,29 @@
                            Visibility="{Binding HasNote, Converter={StaticResource BoolToVisibility}}" />
             </StackPanel>
         </DataTemplate>
+
+        <!-- Value cell of an Org-Attribute row: a pick-only list, or a disabled explanation. -->
+        <DataTemplate x:Key="RuleValuePickTemplate">
+                <ComboBox IsEditable="False"
+                          ItemsSource="{Binding Suggestions}"
+                          SelectedItem="{Binding Value}">
+                    <ComboBox.Style>
+                        <Style TargetType="ComboBox">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding HasInvalidValue}" Value="True">
+                                    <Setter Property="Foreground" Value="#C62828" />
+                                    <Setter Property="BorderBrush" Value="#C62828" />
+                                    <Setter Property="ToolTip" Value="This value is not in the list of known values. Pick another one." />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ComboBox.Style>
+                </ComboBox>
+        </DataTemplate>
+        <DataTemplate x:Key="RuleValueInfoTemplate">
+            <TextBox IsEnabled="False" IsReadOnly="True"
+                     Text="{Binding InfoText, Mode=OneWay}" />
+        </DataTemplate>
     </Window.Resources>
 
     <Grid>
@@ -53,11 +78,15 @@
                 <Grid Margin="8">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="0" Margin="0,0,0,4">
+                    <TextBlock Grid.Row="0" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="#616161"
+                               Text="Player names will first be matched against this list. Pick a color for the outline." />
+
+                    <Grid Grid.Row="1" Margin="0,0,0,4">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="210" />
                             <ColumnDefinition Width="140" />
@@ -69,7 +98,7 @@
                         <TextBlock Grid.Column="2" Text="Status" FontWeight="SemiBold" />
                     </Grid>
 
-                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <ItemsControl x:Name="PlayersList">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
@@ -82,7 +111,8 @@
                                         </Grid.ColumnDefinitions>
                                         <TextBox Grid.Column="0" Margin="0,0,8,0" VerticalAlignment="Top" MaxLength="40"
                                                  Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
-                                                 LostFocus="OnValueLostFocus" />
+                                                 LostKeyboardFocus="OnValueLostFocus"
+                                                 PreviewKeyDown="OnNameKeyDown" />
                                         <ComboBox Grid.Column="1" Margin="0,0,8,0" VerticalAlignment="Top"
                                                   ItemsSource="{x:Static vm:Choices.Colors}"
                                                   SelectedItem="{Binding Color}"
@@ -98,7 +128,7 @@
                         </ItemsControl>
                     </ScrollViewer>
 
-                    <Button Grid.Row="2" Content="+ Add player" HorizontalAlignment="Left"
+                    <Button Grid.Row="3" Content="+ Add player" HorizontalAlignment="Left"
                             Padding="12,4" Margin="0,8,0,0" Click="OnAddPlayer" />
                 </Grid>
             </TabItem>
@@ -108,11 +138,15 @@
                 <Grid Margin="8">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="0" Margin="0,0,0,4">
+                    <TextBlock Grid.Row="0" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="#616161"
+                               Text="If name is in org member list, use selected color. Provide a priority number for tiebreak 1=highest." />
+
+                    <Grid Grid.Row="1" Margin="0,0,0,4">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="150" />
                             <ColumnDefinition Width="90" />
@@ -127,7 +161,7 @@
                         <TextBlock Grid.Column="3" Text="Status" FontWeight="SemiBold" />
                     </Grid>
 
-                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <ItemsControl x:Name="OrgsList">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
@@ -141,7 +175,8 @@
                                         </Grid.ColumnDefinitions>
                                         <TextBox Grid.Column="0" Margin="0,0,8,0" VerticalAlignment="Top" MaxLength="40"
                                                  Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
-                                                 LostFocus="OnValueLostFocus" />
+                                                 LostKeyboardFocus="OnValueLostFocus"
+                                                 PreviewKeyDown="OnNameKeyDown" />
                                         <ComboBox Grid.Column="1" Margin="0,0,8,0" VerticalAlignment="Top"
                                                   ItemsSource="{x:Static vm:Choices.Priorities}"
                                                   SelectedItem="{Binding Priority}" />
@@ -160,13 +195,13 @@
                         </ItemsControl>
                     </ScrollViewer>
 
-                    <Button Grid.Row="2" Content="+ Add org" HorizontalAlignment="Left"
+                    <Button Grid.Row="3" Content="+ Add org" HorizontalAlignment="Left"
                             Padding="12,4" Margin="0,8,0,0" Click="OnAddOrg" />
                 </Grid>
             </TabItem>
 
-            <!-- ================= Org rules ================= -->
-            <TabItem Header="Org rules">
+            <!-- ================= Org-Attribute ================= -->
+            <TabItem Header="Org-Attribute">
                 <Grid Margin="8">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -176,7 +211,7 @@
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="#616161"
-                               Text="Rules color players by the kind of org they are in, even when the org is not on your Orgs list. 1 = highest priority." />
+                               Text="If name is not in previous two lists, use these general rules." />
 
                     <Grid Grid.Row="1" Margin="0,0,0,4">
                         <Grid.ColumnDefinitions>
@@ -186,7 +221,7 @@
                             <ColumnDefinition Width="140" />
                             <ColumnDefinition Width="34" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="Kind" FontWeight="SemiBold" />
+                        <TextBlock Grid.Column="0" Text="Type" FontWeight="SemiBold" />
                         <TextBlock Grid.Column="1" Text="Value" FontWeight="SemiBold" />
                         <TextBlock Grid.Column="2" Text="Priority" FontWeight="SemiBold" />
                         <TextBlock Grid.Column="3" Text="Color" FontWeight="SemiBold" />
@@ -208,12 +243,23 @@
                                                   ItemsSource="{x:Static vm:Choices.Kinds}"
                                                   DisplayMemberPath="Name"
                                                   SelectedValuePath="Kind"
-                                                  SelectedValue="{Binding Kind}" />
-                                        <ComboBox Grid.Column="1" Margin="0,0,8,0" VerticalAlignment="Top"
-                                                  IsEditable="True"
-                                                  IsEnabled="{Binding NeedsValue}"
-                                                  ItemsSource="{Binding Suggestions}"
-                                                  Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}" />
+                                                  SelectedValue="{Binding Kind}"
+                                                  SelectionChanged="OnRuleKindChanged" />
+                                        <!-- Value: a pick-only list for Org-Archetype / Org-Activity, a disabled explanation for the other types. -->
+                                        <ContentControl Grid.Column="1" Margin="0,0,8,0" VerticalAlignment="Top"
+                                                        HorizontalContentAlignment="Stretch" Focusable="False"
+                                                        Content="{Binding}">
+                                            <ContentControl.Style>
+                                                <Style TargetType="ContentControl">
+                                                    <Setter Property="ContentTemplate" Value="{StaticResource RuleValueInfoTemplate}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding NeedsValue}" Value="True">
+                                                            <Setter Property="ContentTemplate" Value="{StaticResource RuleValuePickTemplate}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </ContentControl.Style>
+                                        </ContentControl>
                                         <ComboBox Grid.Column="2" Margin="0,0,8,0" VerticalAlignment="Top"
                                                   ItemsSource="{x:Static vm:Choices.Priorities}"
                                                   SelectedItem="{Binding Priority}" />
@@ -249,7 +295,7 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <TextBlock x:Name="FooterStatus" Grid.Column="0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-            <Button Grid.Column="1" Content="Save" Width="80" Padding="0,4" IsDefault="True" Click="OnSave" />
+            <Button Grid.Column="1" Content="Save" Width="80" Padding="0,4" Click="OnSave" />
             <Button Grid.Column="2" Content="Cancel" Width="80" Padding="0,4" Margin="8,0,0,0" IsCancel="True" Click="OnCancel" />
         </Grid>
     </Grid>

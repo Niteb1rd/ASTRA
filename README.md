@@ -21,7 +21,7 @@ Phase 1, increment 4: the first window. ASTRA now runs as a tray app with a Soci
 - `src/Astra.Core/Storage`: `DataPaths` (the `Data` folder and the files in it) and `SocialListStore` (loads the list file; saves it
   crash-safely through `.tmp`, keeping one `.bak`). `src/Astra.Core/Config/RowValidator.cs` checks a typed handle or SID for the
   config window: format, duplicates, cache first, then one RSI request (increment 4).
-- `src/Astra.App`: the Windows app (WPF): tray icon, and the config window with the Players, Orgs and Org rules tabs
+- `src/Astra.App`: the Windows app (WPF): tray icon, and the config window with the Players, Orgs and Org-Attribute tabs
   (the Settings tab is a placeholder). It has no automated tests yet; everything testable lives in `Astra.Core`.
 - `tests/Astra.Core.Tests`: automated tests for all of the above. Tests that need real RSI pages are skipped until you capture them.
 - `tools/Astra.CaptureFixtures`: saves a few real RSI pages for those tests.

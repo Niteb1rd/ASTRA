@@ -1,11 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Astra.Core.Config;
 using Astra.Core.Rsi;
 
 namespace Astra.App.ViewModels;
 
-/// <summary>One entry of the "Kind" drop-down of the org rules.</summary>
+/// <summary>One entry of the "Type" drop-down of the Org-Attribute rules.</summary>
 public sealed record KindChoice(AttributeKind Kind, string Name);
 
 /// <summary>The fixed lists behind the drop-downs. XAML reads them with x:Static.</summary>
@@ -21,8 +22,8 @@ public static class Choices
 
     public static IReadOnlyList<KindChoice> Kinds { get; } = new[]
     {
-        new KindChoice(AttributeKind.Archetype, "Archetype"),
-        new KindChoice(AttributeKind.Activity, "Activity"),
+        new KindChoice(AttributeKind.Archetype, "Org-Archetype"),
+        new KindChoice(AttributeKind.Activity, "Org-Activity"),
         new KindChoice(AttributeKind.Redacted, "Redacted"),
         new KindChoice(AttributeKind.NoOrg, "No Org"),
     };
@@ -33,6 +34,18 @@ public static class Choices
         AttributeKind.Archetype => OrgVocabulary.Archetypes,
         AttributeKind.Activity => OrgVocabulary.Activities,
         _ => Array.Empty<string>(),
+    };
+
+    /// <summary>The name shown to the user for a kind (the stored value and TOML text are not affected).</summary>
+    public static string DisplayName(AttributeKind kind) =>
+        Kinds.FirstOrDefault(k => k.Kind == kind)?.Name ?? kind.ToString();
+
+    /// <summary>Text shown (disabled) in the Value cell for kinds that take no value.</summary>
+    public static string InfoTextFor(AttributeKind kind) => kind switch
+    {
+        AttributeKind.Redacted => "Player belongs in a Redacted org",
+        AttributeKind.NoOrg => "Player is in no orgs/hidden orgs",
+        _ => string.Empty,
     };
 
     /// <summary>True for the kinds that need a value (Archetype and Activity).</summary>

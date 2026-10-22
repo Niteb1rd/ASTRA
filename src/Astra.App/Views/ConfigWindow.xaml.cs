@@ -8,6 +8,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Astra.App.Services;
@@ -157,7 +159,7 @@ public partial class ConfigWindow : Window
     // Checking names against RSI
     // ---------------------------------------------------------------------------------------
 
-    private void OnValueLostFocus(object sender, RoutedEventArgs e)
+    private void OnValueLostFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
         if ((sender as FrameworkElement)?.DataContext is not ListRowViewModel row)
             return;
@@ -166,6 +168,71 @@ public partial class ConfigWindow : Window
 
         // The edit may have removed a clash: rows of the same list that were flagged "already in the list" get another look.
         RecheckDuplicates(row is OrgRowViewModel ? _orgs.Cast<ListRowViewModel>() : _players.Cast<ListRowViewModel>(), except: row);
+    }
+
+    /// <summary>
+    /// Enter in a name box ends editing instead of pressing Save: the keyboard focus moves to the window itself
+    /// (a neutral target, so it does not jump into another row), which raises LostKeyboardFocus and starts the check.
+    /// </summary>
+    private void OnNameKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter)
+            return;
+        e.Handled = true;
+        Keyboard.Focus(this);
+    }
+
+    /// <summary>A click on empty space ends editing: a focused text box gives up focus (and so gets checked).</summary>
+    private void OnWindowPreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (Keyboard.FocusedElement is not TextBox)
+            return;
+        if (IsInteractive(e.OriginalSource as DependencyObject))
+            return;
+        Keyboard.Focus(this);
+    }
+
+    private static bool IsInteractive(DependencyObject? element)
+    {
+        while (element is not null)
+        {
+            if (element is TextBoxBase or ComboBox or ComboBoxItem or ButtonBase or ScrollBar or Thumb)
+                return true;
+            element = element is Visual or System.Windows.Media.Media3D.Visual3D
+                ? VisualTreeHelper.GetParent(element)
+                : LogicalTreeHelper.GetParent(element);
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// When the user picks Org-Archetype or Org-Activity as the Type, the Value list opens at once.
+    /// The Value cell is rebuilt from a template when the type changes, so this waits until that has happened.
+    /// </summary>
+    private void OnRuleKindChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox kindBox || !kindBox.IsKeyboardFocusWithin || e.AddedItems.Count == 0)
+            return; // not a user pick (the row is only being loaded)
+        if (kindBox.DataContext is not RuleRowViewModel)
+            return;
+
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+        {
+            if (kindBox.DataContext is not RuleRowViewModel { NeedsValue: true })
+                return;
+            if (VisualTreeHelper.GetParent(kindBox) is not Grid rowGrid)
+                return;
+            var cell = rowGrid.Children.OfType<ContentControl>().FirstOrDefault();
+            if (cell is null)
+                return;
+            cell.UpdateLayout();
+            var valueBox = FindFirst<ComboBox>(cell);
+            if (valueBox is not null)
+            {
+                valueBox.Focus();
+                valueBox.IsDropDownOpen = true;
+            }
+        }));
     }
 
     /// <summary>Starts a check and remembers its task so Save can wait for it. A finished or skipped check is not tracked.</summary>
@@ -267,7 +334,8 @@ public partial class ConfigWindow : Window
                 FooterStatus.Text = string.Empty;
             }
 
-            SaveCore();
+            if (SaveCore())
+                Close(); // saved: the baseline was updated, so OnWindowClosing does not ask about unsaved changes
         }
         catch (Exception ex)
         {
@@ -283,7 +351,8 @@ public partial class ConfigWindow : Window
         }
     }
 
-    private void SaveCore()
+    /// <summary>Validates and writes the list. Returns true only when the file was written.</summary>
+    private bool SaveCore()
     {
         var problems = new List<string>();
         CollectNameProblems("Players", _players, RowValidator.CheckHandleFormat, problems);
@@ -292,7 +361,9 @@ public partial class ConfigWindow : Window
         {
             var rule = _rules[i];
             if (rule.NeedsValue && rule.Value.Trim().Length == 0)
-                problems.Add($"Org rules, row {i + 1}: the {rule.Kind} rule needs a value.");
+                problems.Add($"Org-Attribute, row {i + 1}: the {Choices.DisplayName(rule.Kind)} rule needs a value.");
+            else if (!rule.IsValueAcceptable)
+                problems.Add($"Org-Attribute, row {i + 1}: \"{rule.Value}\" is not a known {Choices.DisplayName(rule.Kind)} value. Pick one from the list.");
         }
 
         if (problems.Count > 0)
@@ -302,7 +373,7 @@ public partial class ConfigWindow : Window
                 "These rows must be fixed before saving:\n\n" + string.Join("\n", problems.Take(15))
                 + (problems.Count > 15 ? $"\n...and {problems.Count - 15} more." : string.Empty),
                 "ASTRA", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
+            return false;
         }
 
         var nameRows = NameRows().ToList();
@@ -313,7 +384,7 @@ public partial class ConfigWindow : Window
                 this,
                 $"{Plural(checking, "name is", "names are")} still being checked. Wait a moment and press Save again.",
                 "ASTRA", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
+            return false;
         }
 
         var notFound = nameRows.Count(r => r.StatusKind == RowStatusKind.NotFound);
@@ -329,11 +400,11 @@ public partial class ConfigWindow : Window
                 this, string.Join("\n", lines) + "\n\nSave anyway?",
                 "ASTRA", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
             if (answer != MessageBoxResult.Yes)
-                return;
+                return false;
         }
 
         if (!KeepCopyOfInvalidFile())
-            return;
+            return false;
 
         var config = BuildConfig();
         var saved = SocialListStore.Save(_services.Paths.SocialListFile, config);
@@ -341,12 +412,13 @@ public partial class ConfigWindow : Window
         {
             MessageBox.Show(this, saved.Error ?? "The list could not be saved.", "ASTRA", MessageBoxButton.OK, MessageBoxImage.Error);
             FooterStatus.Text = "Not saved.";
-            return;
+            return false;
         }
 
         _services.SetCurrentConfig(config);
         _baseline = Snapshot();
         FooterStatus.Text = "Saved at " + DateTime.Now.ToString("HH:mm:ss") + ".";
+        return true;
     }
 
     /// <summary>
