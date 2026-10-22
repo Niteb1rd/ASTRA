@@ -178,18 +178,21 @@ public static class ConfigImporter
         var saved = SocialListStore.Save(listFilePath, imported);
         if (!saved.Success)
         {
-            // Put the user's file back where it was.
+            var error = saved.Error ?? "The imported config could not be saved.";
+            var safeNote = " Your previous list is safe as " + Path.GetFileName(backupPath) + ".";
+
+            // The old file was moved away first: put it back where it was, unless something is at that path now.
+            if (File.Exists(listFilePath))
+                return ImportResult.Fail(mode, error + safeNote);
             try
             {
-                if (!File.Exists(listFilePath))
-                    File.Move(backupPath, listFilePath);
+                File.Move(backupPath, listFilePath);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                return ImportResult.Fail(mode, (saved.Error ?? "The imported config could not be saved.")
-                    + " Your previous list is safe as " + Path.GetFileName(backupPath) + ".");
+                return ImportResult.Fail(mode, error + safeNote);
             }
-            return ImportResult.Fail(mode, saved.Error ?? "The imported config could not be saved.");
+            return ImportResult.Fail(mode, error);
         }
 
         return ImportResult.Done(mode, true, imported, imported.Players.Count, imported.Orgs.Count, imported.OrgRules.Count, 0, backupPath);
@@ -239,23 +242,40 @@ public static class ConfigImporter
         }
     }
 
-    /// <summary>Writes <paramref name="config"/> as a shareable config file to a path the user picked (crash-safe, no .bak).</summary>
+    /// <summary>
+    /// Writes <paramref name="config"/> as a shareable config file to a path the user picked (crash-safe, no .bak).
+    /// Never throws for a file problem (read-only USB stick, missing folder, bad path...): the reason comes back in the result.
+    /// </summary>
     public static SaveResult Export(string path, SocialConfig config)
     {
-        var text = SocialConfigToml.Write(config);
-        var check = SocialConfigToml.Read(text);
-        if (!check.IsValid)
-            return SaveResult.Failed("The list is not valid and was not exported: " + string.Join(" ", check.Errors));
-
         try
         {
+            var text = SocialConfigToml.Write(config);
+            var check = SocialConfigToml.Read(text);
+            if (!check.IsValid)
+                return SaveResult.Failed("The list is not valid and was not exported: " + string.Join(" ", check.Errors));
+
             AtomicFile.WriteText(path, text, keepBackup: false);
             return SaveResult.Ok();
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException
+                                       or System.Security.SecurityException)
         {
             return SaveResult.Failed("The file could not be written: " + ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Parses imported text for an import: <see cref="SocialConfigToml.Read"/> plus the rule-value check
+    /// (an archetype or activity rule must use a value ASTRA knows, see <see cref="OrgRuleValues"/>). Bad values are ERRORS here,
+    /// so nothing is imported. (Loading the user's own list file does not apply this check, so an old file never becomes unreadable.)
+    /// </summary>
+    public static ConfigLoadResult ParseForImport(string text)
+    {
+        var read = SocialConfigToml.Read(text);
+        if (read.Config is not null)
+            read.Errors.AddRange(OrgRuleValues.Check(read.Config));
+        return read;
     }
 
     /// <summary>UTF-8 to text, dropping a leading byte-order mark (some editors add one).</summary>

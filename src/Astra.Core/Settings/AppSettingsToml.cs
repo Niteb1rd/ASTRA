@@ -154,7 +154,15 @@ public static class AppSettingsToml
         if (root.TryGetValue("hosted_config_last_hash", out var hashRaw))
         {
             if (hashRaw is string hashText)
-                hash = hashText.Trim().ToLowerInvariant();
+            {
+                var candidate = hashText.Trim().ToLowerInvariant();
+                if (candidate.Length == 0)
+                    hash = string.Empty;
+                else if (IsValidHash(candidate))
+                    hash = candidate;
+                else
+                    warnings.Add("hosted_config_last_hash: must be 64 hex characters (a SHA-256); cleared, so the hosted config will be offered again.");
+            }
             else
                 warnings.Add("hosted_config_last_hash: must be text; ignored.");
         }
@@ -170,6 +178,17 @@ public static class AppSettingsToml
         var result = new AppSettingsLoadResult(settings, isNew: false);
         result.Warnings.AddRange(warnings);
         return result;
+    }
+
+    /// <summary>True for a SHA-256 written as 64 hex characters (either case).</summary>
+    public static bool IsValidHash(string? text)
+    {
+        if (text is null || text.Length != 64)
+            return false;
+        foreach (var c in text)
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+                return false;
+        return true;
     }
 
     private static bool ReadBool(TomlTable root, string key, bool fallback, List<string> warnings)

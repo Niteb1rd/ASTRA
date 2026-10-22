@@ -154,6 +154,64 @@ public class HostedConfigClientTests
     }
 
     [Fact]
+    public async Task RedirectToAnotherPortOfTheSameHost_IsRefused()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (_, _) => Redirect("https://configs.example.com:8443/a.toml");
+
+        var result = await s.Client.FetchAsync(Url);
+
+        Assert.False(result.Success);
+        Assert.Contains("another site", result.Error);
+        Assert.Contains("8443", result.Error);
+        Assert.Single(s.Handler.Requests);
+    }
+
+    [Fact]
+    public async Task RelativeRedirects_AreResolvedAgainstTheCurrentAddress()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (request, _) => request.RequestUri!.AbsolutePath switch
+        {
+            "/squad/astra-config.toml" => Redirect("other.toml"),            // relative to /squad/
+            "/squad/other.toml" => Redirect("/root.toml?x=1"),               // absolute path, same site
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Body) },
+        };
+
+        var result = await s.Client.FetchAsync(Url);
+
+        Assert.True(result.Success, result.Error);
+        Assert.Equal("https://configs.example.com/root.toml?x=1", result.Url);
+    }
+
+    [Fact]
+    public async Task RefusedAddresses_AreLogged_WithoutAUserNameOrPassword()
+    {
+        var s = new Setup();
+
+        await s.Client.FetchAsync("https://user:secret@configs.example.com/a.toml");
+        await s.Client.FetchAsync("http://configs.example.com/plain.toml");
+        await s.Client.FetchAsync("not an address at all");
+
+        Assert.Empty(s.Handler.Requests);
+        Assert.DoesNotContain(s.Log.Entries, e => e.Message.Contains("secret"));
+        Assert.Contains(s.Log.Entries, e => e.Message.Contains("refused") && e.Message.Contains("configs.example.com/a.toml"));
+        Assert.Contains(s.Log.Entries, e => e.Message.Contains("http://configs.example.com/plain.toml"));
+        Assert.Contains(s.Log.Entries, e => e.Message.Contains("not an address at all"));
+    }
+
+    [Fact]
+    public async Task RedirectToAnotherSite_IsLogged()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (_, _) => Redirect("https://evil.example.org/astra-config.toml");
+
+        await s.Client.FetchAsync(Url);
+
+        Assert.Contains(s.Log.Entries, e => e.Message.Contains("evil.example.org") && e.Message.Contains("redirect"));
+    }
+
+    [Fact]
     public async Task MoreThanThreeRedirects_Fail()
     {
         var s = new Setup();
@@ -277,7 +335,7 @@ public class HostedConfigClientTests
     }
 
     [Fact]
-    public void CreateHttpClient_DoesNotFollowRedirects_AndTimesOutAfterFifteenSeconds()
+    public void CreateHttpClient_TimesOutAfterFifteenSeconds()
     {
         using var http = HostedConfigClient.CreateHttpClient();
 

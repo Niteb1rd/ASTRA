@@ -29,12 +29,7 @@ public static class Choices
     };
 
     /// <summary>Suggested values for a rule of this kind (empty for kinds without a value). Read from the RSI vocabulary.</summary>
-    public static IReadOnlyList<string> SuggestionsFor(AttributeKind kind) => kind switch
-    {
-        AttributeKind.Archetype => OrgVocabulary.Archetypes,
-        AttributeKind.Activity => OrgVocabulary.Activities,
-        _ => Array.Empty<string>(),
-    };
+    public static IReadOnlyList<string> SuggestionsFor(AttributeKind kind) => OrgRuleValues.VocabularyFor(kind);
 
     /// <summary>The name shown to the user for a kind (the stored value and TOML text are not affected).</summary>
     public static string DisplayName(AttributeKind kind) =>
@@ -49,5 +44,5 @@ public static class Choices
     };
 
     /// <summary>True for the kinds that need a value (Archetype and Activity).</summary>
-    public static bool KindNeedsValue(AttributeKind kind) => kind is AttributeKind.Archetype or AttributeKind.Activity;
+    public static bool KindNeedsValue(AttributeKind kind) => OrgRuleValues.NeedsValue(kind);
 }

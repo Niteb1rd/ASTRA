@@ -34,10 +34,10 @@ public sealed class HostedConfigResult
 /// <summary>
 /// Downloads the user's own hosted config file (one GET, nothing else). Rules:
 /// - https only, and no user name or password in the address;
-/// - redirects are never followed automatically: a redirect to the SAME site is followed by hand (at most 3 times),
+/// - redirects are never followed automatically: a redirect to the SAME site (same host and port) is followed by hand (at most 3 times),
 ///   a redirect to another site is refused with a message, so ASTRA never ends up talking to a site the user did not name;
 /// - 15 seconds for the whole fetch; the answer may not be larger than <see cref="ConfigImporter.MaxFileBytes"/> (1 MB);
-/// - every request is logged: full URL and outcome;
+/// - every request is logged: URL (without any user name or password) and outcome; refused addresses are logged too;
 /// - nothing is cached, so a failed fetch never sticks.
 /// The text is NOT parsed here; the caller hands it to <see cref="SocialConfigToml.Read"/>.
 /// </summary>
@@ -71,12 +71,13 @@ public sealed class HostedConfigClient
         var problem = HostedConfigUrl.Check(url);
         if (problem is not null)
         {
-            Log($"hosted config: address refused ({problem})");
+            Log($"hosted config: address refused ({problem}): {Display(url ?? string.Empty)}");
             return HostedConfigResult.Failed(url ?? string.Empty, problem);
         }
 
         var uri = new Uri(url.Trim());
         var startHost = uri.Host;
+        var startPort = uri.Port;
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(RequestTimeout);
@@ -98,12 +99,14 @@ public sealed class HostedConfigClient
                     if (location is null)
                         return Fail(uri, "The URL redirects without saying where to.");
 
-                    var next = location.IsAbsoluteUri ? location : new Uri(uri, location.OriginalString);
-                    Log($"GET {uri.AbsoluteUri} -> redirect (HTTP {code}) to {next.AbsoluteUri}");
+                    // A relative Location ("/final.toml") is resolved against the current address. On Linux a path starting with "/"
+                    // parses as an absolute file:// address, so file addresses are treated as relative too.
+                    var next = location.IsAbsoluteUri && !location.IsFile ? location : new Uri(uri, location.OriginalString);
+                    Log($"GET {Display(uri)} -> redirect (HTTP {code}) to {Display(next)}");
                     if (!string.Equals(next.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
                         return Fail(uri, "The URL redirects to an address that is not https; only https:// is allowed.");
-                    if (!string.Equals(next.Host, startHost, StringComparison.OrdinalIgnoreCase))
-                        return Fail(uri, $"The URL redirects to another site ({next.Host}); use the final address instead.");
+                    if (!string.Equals(next.Host, startHost, StringComparison.OrdinalIgnoreCase) || next.Port != startPort)
+                        return Fail(uri, $"The URL redirects to another site ({next.Authority}); use the final address instead.");
                     uri = next;
                     continue;
                 }
@@ -132,12 +135,12 @@ public sealed class HostedConfigClient
 
                 var bytes = body.ToArray();
                 var hash = Sha256Hex(bytes);
-                Log($"GET {uri.AbsoluteUri} -> ok (HTTP {code}, {bytes.Length} bytes, sha256 {hash.Substring(0, 12)}...)");
-                return HostedConfigResult.Ok(uri.AbsoluteUri, ConfigImporter.DecodeUtf8(bytes), hash);
+                Log($"GET {Display(uri)} -> ok (HTTP {code}, {bytes.Length} bytes, sha256 {hash.Substring(0, 12)}...)");
+                return HostedConfigResult.Ok(Display(uri), ConfigImporter.DecodeUtf8(bytes), hash);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                Log($"GET {uri.AbsoluteUri} -> cancelled");
+                Log($"GET {Display(uri)} -> cancelled");
                 throw;
             }
             catch (OperationCanceledException)
@@ -152,6 +155,10 @@ public sealed class HostedConfigClient
             {
                 return Fail(uri, "Network error: " + ex.Message);
             }
+            catch (UriFormatException)
+            {
+                return Fail(uri, "The URL redirects to an address that is not valid.");
+            }
         }
 
         return Fail(uri, $"The URL redirects too many times (more than {MaxRedirects}).");
@@ -162,8 +169,37 @@ public sealed class HostedConfigClient
 
     private HostedConfigResult Fail(Uri uri, string error)
     {
-        Log($"GET {uri.AbsoluteUri} -> error: {error}");
-        return HostedConfigResult.Failed(uri.AbsoluteUri, error);
+        Log($"GET {Display(uri)} -> error: {error}");
+        return HostedConfigResult.Failed(Display(uri), error);
+    }
+
+    /// <summary>The address for the log and for results: any user name or password is left out. Text that is not an address is returned as it is.</summary>
+    private static string Display(string text)
+    {
+        try
+        {
+            if (Uri.TryCreate(text.Trim(), UriKind.Absolute, out var parsed))
+                return Display(parsed);
+        }
+        catch (Exception ex) when (ex is UriFormatException or ArgumentException or InvalidOperationException)
+        {
+        }
+        return text;
+    }
+
+    private static string Display(Uri uri)
+    {
+        if (uri.UserInfo.Length == 0)
+            return uri.AbsoluteUri;
+        try
+        {
+            var builder = new UriBuilder(uri) { UserName = string.Empty, Password = string.Empty };
+            return builder.Uri.AbsoluteUri;
+        }
+        catch (Exception ex) when (ex is UriFormatException or ArgumentException or InvalidOperationException)
+        {
+            return uri.GetLeftPart(UriPartial.Authority).Replace(uri.UserInfo + "@", string.Empty) + uri.PathAndQuery;
+        }
     }
 
     private void Log(string message) => _log.Write(_clock.UtcNow, message);

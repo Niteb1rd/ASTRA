@@ -164,9 +164,46 @@ public class AppSettingsTests : IDisposable
     [Fact]
     public void Hash_IsStoredLowerCase()
     {
-        var result = AppSettingsToml.Read("hosted_config_last_hash = \"ABCDEF\"\n");
+        var result = AppSettingsToml.Read($"hosted_config_last_hash = \"{Hash.ToUpperInvariant()}\"\n");
 
-        Assert.Equal("abcdef", result.Settings.HostedConfigLastHash);
+        Assert.Equal(Hash, result.Settings.HostedConfigLastHash);
+        Assert.Empty(result.Warnings);
+    }
+
+    [Theory]
+    [InlineData("ABCDEF")]
+    [InlineData("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde")]   // 63 characters
+    [InlineData("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0")] // 65 characters
+    [InlineData("g123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")]  // not hex
+    public void Hash_ThatIsNotSixtyFourHexCharacters_IsClearedWithAWarning(string bad)
+    {
+        var result = AppSettingsToml.Read($"cache_ttl_days = 7\nhosted_config_last_hash = \"{bad}\"\n");
+
+        Assert.True(result.IsValid);
+        Assert.Equal(string.Empty, result.Settings.HostedConfigLastHash);
+        Assert.Equal(7, result.Settings.CacheTtlDays);
+        var warning = Assert.Single(result.Warnings);
+        Assert.StartsWith("hosted_config_last_hash", warning);
+    }
+
+    [Fact]
+    public void EmptyHash_IsFineWithoutAWarning()
+    {
+        var result = AppSettingsToml.Read("hosted_config_last_hash = \"\"\n");
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(string.Empty, result.Settings.HostedConfigLastHash);
+    }
+
+    [Fact]
+    public void IsValidHash_AcceptsOnlySixtyFourHexCharacters()
+    {
+        Assert.True(AppSettingsToml.IsValidHash(Hash));
+        Assert.True(AppSettingsToml.IsValidHash(Hash.ToUpperInvariant()));
+        Assert.False(AppSettingsToml.IsValidHash(null));
+        Assert.False(AppSettingsToml.IsValidHash(string.Empty));
+        Assert.False(AppSettingsToml.IsValidHash(Hash.Substring(1)));
+        Assert.False(AppSettingsToml.IsValidHash(Hash.Substring(1) + "z"));
     }
 
     [Fact]

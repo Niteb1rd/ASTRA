@@ -187,6 +187,48 @@ public class ConfigImporterTests : IDisposable
     }
 
     [Fact]
+    public void BackupMode_WhenTheSaveFails_PutsTheOldFileBack_AndLeavesNoBackupFile()
+    {
+        SocialListStore.Save(ListPath, Mine());
+        var before = File.ReadAllText(ListPath);
+        var broken = new SocialConfig();
+        broken.Players.Add(new PlayerEntry("no", OverlayColor.Red)); // too short: the save is refused
+
+        var result = ConfigImporter.Import(ListPath, broken, ImportMode.BackupExisting, _clock);
+
+        Assert.False(result.Success);
+        Assert.Equal(before, File.ReadAllText(ListPath));
+        Assert.Empty(Directory.GetFiles(_dir.Path, "*.backup-*"));
+        Assert.DoesNotContain("safe as", result.Error);
+    }
+
+    [Fact]
+    public void BackupMode_WhenTheSaveFails_AndTheStaleBakExists_DoesNotInventAFile()
+    {
+        SocialListStore.Save(ListPath, Mine());
+        File.WriteAllText(ListPath + ".bak", "stale");
+        Directory.CreateDirectory(ListPath + ".tmp"); // the write of the new list fails
+
+        var result = ConfigImporter.Import(ListPath, Theirs(), ImportMode.BackupExisting, _clock);
+
+        Assert.False(result.Success);
+        Assert.Equal("Mine", SocialListStore.Load(ListPath).Config.Name); // the old list is back, not the stale .bak
+    }
+
+    [Fact]
+    public void Export_ToAnUnwritablePath_ReportsAFailure_InsteadOfThrowing()
+    {
+        var path = _dir.File("taken");
+        Directory.CreateDirectory(path); // a folder where the file should go
+
+        var result = ConfigImporter.Export(path, Mine());
+
+        Assert.False(result.Success);
+        Assert.False(string.IsNullOrEmpty(result.Error));
+        Assert.False(File.Exists(path + ".tmp"));
+    }
+
+    [Fact]
     public void MergeMode_WritesTheMergedResult_OriginalWins_AndKeepsTheBak()
     {
         SocialListStore.Save(ListPath, Mine());
@@ -310,5 +352,104 @@ public class ConfigImporterTests : IDisposable
         ConfigImporter.Export(path, Theirs()); // overwrite
         Assert.False(File.Exists(path + ".bak"));
         Assert.Equal("Theirs", SocialConfigToml.Read(File.ReadAllText(path)).Config!.Name);
+    }
+}
+
+public class ImportValidationTests
+{
+    private static string Toml(string rules) =>
+        "format = \"sc-social-overlay\"\nformat_version = 1\n" + rules;
+
+    private const string Rule = "\n[[org_rules]]\nkind = \"{0}\"\nvalue = \"{1}\"\npriority = 2\ncolor = \"Red\"\n";
+
+    private static string RuleText(string kind, string value) => string.Format(Rule, kind, value);
+
+    [Fact]
+    public void KnownValues_AreAccepted_IgnoringCase()
+    {
+        var read = ConfigImporter.ParseForImport(Toml(RuleText("archetype", "pmc") + RuleText("activity", "Bounty Hunting")));
+
+        Assert.True(read.IsValid, string.Join("; ", read.Errors));
+        Assert.Equal(2, read.Config!.OrgRules.Count);
+    }
+
+    [Fact]
+    public void UnknownArchetype_IsAnError_SoNothingWouldBeImported()
+    {
+        var read = ConfigImporter.ParseForImport(Toml(RuleText("archetype", "Pirates") + RuleText("activity", "Trading")));
+
+        Assert.False(read.IsValid);
+        var error = Assert.Single(read.Errors);
+        Assert.Contains("Org rule 1", error);
+        Assert.Contains("\"Pirates\"", error);
+        Assert.Contains("PMC", error); // the known values are listed
+    }
+
+    [Fact]
+    public void UnknownActivity_IsAnError_AndRulesWithoutAValueAreNotChecked()
+    {
+        var text = Toml(RuleText("activity", "Fishing") + "\n[[org_rules]]\nkind = \"redacted\"\npriority = 1\ncolor = \"Blue\"\n");
+
+        var read = ConfigImporter.ParseForImport(text);
+
+        Assert.False(read.IsValid);
+        Assert.Single(read.Errors);
+        Assert.Contains("activity", read.Errors[0]);
+    }
+
+    [Fact]
+    public void ParseForImport_StillReportsOrdinaryParseErrors()
+    {
+        var read = ConfigImporter.ParseForImport("not a config");
+
+        Assert.False(read.IsValid);
+    }
+
+    [Fact]
+    public void ReadItself_StillAcceptsUnknownValues_SoAnOldListFileStaysLoadable()
+    {
+        var read = SocialConfigToml.Read(Toml(RuleText("activity", "Fishing")));
+
+        Assert.True(read.IsValid);
+    }
+
+    [Fact]
+    public void OrgRuleValues_CanonicalReturnsTheVocabularySpelling()
+    {
+        Assert.Equal("PMC", OrgRuleValues.Canonical(AttributeKind.Archetype, " pmc "));
+        Assert.Null(OrgRuleValues.Canonical(AttributeKind.Archetype, "Trading"));
+        Assert.Null(OrgRuleValues.Canonical(AttributeKind.Redacted, "PMC"));
+        Assert.True(OrgRuleValues.NeedsValue(AttributeKind.Activity));
+        Assert.False(OrgRuleValues.NeedsValue(AttributeKind.NoOrg));
+    }
+}
+
+public class ImportOutcomeTests
+{
+    [Theory]
+    [InlineData(ImportOutcome.Imported, true)]
+    [InlineData(ImportOutcome.Cancelled, true)]
+    [InlineData(ImportOutcome.Rejected, true)]
+    [InlineData(ImportOutcome.NotSaved, false)]
+    [InlineData(ImportOutcome.WriteFailed, false)]
+    [InlineData(ImportOutcome.Busy, false)]
+    public void HostedVersion_IsRemembered_OnlyWhenTheUserDecidedOrTheFileIsBroken(ImportOutcome outcome, bool remembered)
+    {
+        Assert.Equal(remembered, ImportOutcomes.ShouldRememberHostedVersion(outcome));
+    }
+
+    [Fact]
+    public void HostedMessages_MatchTheOutcome()
+    {
+        Assert.Equal("Hosted config imported. Imported: 1 player", ImportOutcomes.HostedMessage(ImportOutcome.Imported, "Imported: 1 player"));
+        Assert.Equal("Hosted config change skipped.", ImportOutcomes.HostedMessage(ImportOutcome.Cancelled, "Import cancelled."));
+        Assert.Equal("Hosted config was not imported (it has problems).", ImportOutcomes.HostedMessage(ImportOutcome.Rejected, "x"));
+        Assert.Equal(
+            "Hosted config was not imported: Import cancelled: your changes were not saved. It will be offered again next time.",
+            ImportOutcomes.HostedMessage(ImportOutcome.NotSaved, "Import cancelled: your changes were not saved."));
+        Assert.Equal(
+            "Hosted config was not imported: Import failed: disk full. It will be offered again next time.",
+            ImportOutcomes.HostedMessage(ImportOutcome.WriteFailed, "Import failed: disk full"));
+        Assert.EndsWith("It will be offered again next time.", ImportOutcomes.HostedMessage(ImportOutcome.Busy, "Another import is running."));
     }
 }

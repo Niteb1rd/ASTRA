@@ -172,17 +172,45 @@ public class SocialListStoreTests : IDisposable
     }
 
     [Fact]
-    public void FailedSave_PutsTheBackupBack_WhenTheRealFileIsMissing()
+    public void FailedWrite_DoesNotBringAnOldBackupBack_WhenThereWasNoFile()
     {
+        // The list file is gone (an import moved it away first) and an old .bak is lying around.
+        // A write that fails before the swap must not copy that stale .bak into place and pretend nothing changed.
         var path = _dir.File("list.toml");
-        File.WriteAllText(path + ".bak", "previous version");
+        File.WriteAllText(path + ".bak", "old backup");
         Directory.CreateDirectory(path + ".tmp"); // a directory where the temp file must go: writing it fails on every OS
 
         var result = SocialListStore.Save(path, Sample());
 
         Assert.False(result.Success);
-        Assert.Equal("previous version", File.ReadAllText(path));
-        Assert.Equal("previous version", File.ReadAllText(path + ".bak"));
+        Assert.False(File.Exists(path));
+        Assert.Equal("old backup", File.ReadAllText(path + ".bak"));
+    }
+
+    [Fact]
+    public void AtomicFile_FailedWrite_Throws_AndLeavesNoFileBehind()
+    {
+        var path = _dir.File("plain.toml");
+        File.WriteAllText(path + ".bak", "old backup");
+        Directory.CreateDirectory(path + ".tmp");
+
+        Assert.ThrowsAny<Exception>(() => AtomicFile.WriteText(path, "new", keepBackup: true));
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public void AtomicFile_ReplacingAnExistingFile_KeepsTheBackup_OnlyWhenAsked()
+    {
+        var path = _dir.File("plain.toml");
+        AtomicFile.WriteText(path, "one", keepBackup: true);
+        AtomicFile.WriteText(path, "two", keepBackup: true);
+        Assert.Equal("one", File.ReadAllText(path + ".bak"));
+
+        var other = _dir.File("other.toml");
+        AtomicFile.WriteText(other, "one", keepBackup: false);
+        AtomicFile.WriteText(other, "two", keepBackup: false);
+        Assert.Equal("two", File.ReadAllText(other));
+        Assert.False(File.Exists(other + ".bak"));
     }
 
     [Fact]
