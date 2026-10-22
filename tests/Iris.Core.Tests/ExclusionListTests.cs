@@ -134,7 +134,7 @@ public class ExclusionListTests : IDisposable
         list.ReloadIfChanged();
 
         Assert.Equal(1, list.Count);
-        Assert.Empty(_log.Entries.Where(e => e.Message.Contains("could not")));
+        Assert.DoesNotContain(_log.Entries, e => e.Message.Contains("could not"));
     }
 
     [Fact]
