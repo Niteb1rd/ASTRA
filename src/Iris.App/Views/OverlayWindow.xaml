@@ -1,0 +1,20 @@
+<Window x:Class="Iris.App.Views.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:Iris.App.Views"
+        Title="IRIS overlay"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        ResizeMode="NoResize"
+        Focusable="False"
+        IsHitTestVisible="False"
+        WindowStartupLocation="Manual"
+        Left="0" Top="0" Width="100" Height="100">
+    <!-- The window is an invisible, click-through layer exactly over the game window. Its size and place are set in real pixels
+         from code (OverlayWindow.ApplyBounds); the numbers above are only the starting values. -->
+    <local:OverlayCanvas x:Name="Surface" />
+</Window>

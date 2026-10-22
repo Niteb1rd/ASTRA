@@ -12,7 +12,16 @@
     <AssemblyName>IRIS</AssemblyName>
     <RootNamespace>Iris.App</RootNamespace>
     <ImplicitUsings>disable</ImplicitUsings>
+    <!-- PerMonitorV2 DPI awareness, so the overlay lines up with the game window in real pixels on every monitor. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The overlay font (Quantico, SIL Open Font License). The wildcards make the build work with or without the files:
+         put Quantico-Bold.ttf and OFL.txt into Assets\Fonts and rebuild. Without the font the overlay uses Segoe UI Bold. -->
+    <Resource Include="Assets\Fonts\*.ttf" />
+    <None Include="Assets\Fonts\OFL*.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Iris.Core\Iris.Core.csproj" />
