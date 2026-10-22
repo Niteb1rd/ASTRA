@@ -224,8 +224,11 @@ public static class AppSettingsToml
         return Read(text);
     }
 
-    /// <summary>Writes the settings safely (tmp file, then replace; the previous version stays as settings.toml.bak).</summary>
-    public static SaveResult Save(string path, AppSettings settings)
+    /// <summary>
+    /// Writes the settings safely (tmp file, then replace; the previous version stays as settings.toml.bak).
+    /// With <paramref name="watched"/> the save is remembered (not an outside edit) and becomes the last-good copy.
+    /// </summary>
+    public static SaveResult Save(string path, AppSettings settings, WatchedFile? watched = null)
     {
         var text = Write(settings);
 
@@ -237,6 +240,7 @@ public static class AppSettingsToml
         try
         {
             AtomicFile.WriteText(path, text, keepBackup: true);
+            watched?.Wrote(text);
             return SaveResult.Ok();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

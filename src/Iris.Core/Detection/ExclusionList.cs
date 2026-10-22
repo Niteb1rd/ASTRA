@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Reflection;
 using System.Text;
+using Iris.Core.Storage;
 
 namespace Iris.Core.Detection;
 
@@ -14,7 +15,9 @@ namespace Iris.Core.Detection;
 /// the program (<c>exclusions.default.txt</c>). Where the file lives is decided by the app layer.
 ///
 /// IRIS itself only ever APPENDS to the file (<see cref="AddAutomatic"/>); it never rewrites what the user wrote.
-/// Call <see cref="ReloadIfChanged"/> now and then (for example once a second) to pick up hand edits.
+/// Call <see cref="ReloadIfChanged"/> now and then (the config window does it every 2 seconds while it is open) to pick up hand edits.
+/// A <see cref="FileChangeDetector"/> decides whether the file really changed: its time or length differ AND its content hash differs,
+/// and IRIS's own appends are never mistaken for outside edits.
 /// All methods are safe to call from several threads.
 /// </summary>
 public sealed class ExclusionList
@@ -28,11 +31,8 @@ public sealed class ExclusionList
     private readonly IClock _clock;
     private readonly ILog _log;
     private readonly object _gate = new();
+    private readonly FileChangeDetector _detector;
     private HashSet<string> _names = new(StringComparer.OrdinalIgnoreCase);
-
-    // What the file looked like when we last read it successfully. Null = never read.
-    private DateTime? _lastWriteUtc;
-    private long _length;
 
     // True while a problem (locked or missing file) has already been logged, so we log it only once.
     private bool _problemLogged;
@@ -42,6 +42,7 @@ public sealed class ExclusionList
         _path = path;
         _clock = clock;
         _log = log;
+        _detector = new FileChangeDetector(path);
     }
 
     /// <summary>
@@ -106,13 +107,14 @@ public sealed class ExclusionList
     }
 
     /// <summary>
-    /// Re-reads the file if its last-write time or length changed since the last read.
+    /// Re-reads the file if it changed from outside since IRIS last read or wrote it (see <see cref="FileChangeDetector"/>).
     /// If the file is locked or missing at the moment, the previous list is kept and the problem is logged once.
+    /// Returns true when the list was reloaded from a changed file (even if the names turned out to be the same).
     /// </summary>
-    public void ReloadIfChanged()
+    public bool ReloadIfChanged()
     {
         lock (_gate)
-            ReloadCore();
+            return ReloadCore();
     }
 
     /// <summary>
@@ -164,51 +166,48 @@ public sealed class ExclusionList
                 return false;
             }
 
+            _detector.RememberFromDisk(); // our own append is not an outside edit
             _names.Add(trimmed);
             _log.Write(_clock.UtcNow, "Exclusion list: added \"" + trimmed + "\" automatically (" + cleanReason + ").");
             return true;
         }
     }
 
-    // Caller holds _gate.
-    private void ReloadCore()
+    // Caller holds _gate. True when the list was replaced by the content of a changed file.
+    private bool ReloadCore()
     {
-        try
+        var change = _detector.Check();
+        switch (change.Kind)
         {
-            var info = new FileInfo(_path);
-            if (!info.Exists)
-            {
-                LogProblemOnce("the file is missing; keeping the list from before");
-                return;
-            }
-
-            var writeTime = info.LastWriteTimeUtc;
-            var length = info.Length;
-            if (_lastWriteUtc == writeTime && _length == length)
-                return;
-
-            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            using (var stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-            using (var reader = new StreamReader(stream, Utf8NoBom, detectEncodingFromByteOrderMarks: true))
-            {
-                string? line;
-                while ((line = reader.ReadLine()) is not null)
+            case FileChangeKind.Changed:
+                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                using (var reader = new StringReader(change.Text!))
                 {
-                    var trimmed = line.Trim();
-                    if (trimmed.Length == 0 || trimmed[0] == '#')
-                        continue;
-                    names.Add(trimmed);
+                    string? line;
+                    while ((line = reader.ReadLine()) is not null)
+                    {
+                        var trimmed = line.Trim();
+                        if (trimmed.Length == 0 || trimmed[0] == '#')
+                            continue;
+                        names.Add(trimmed);
+                    }
                 }
-            }
 
-            _names = names;
-            _lastWriteUtc = writeTime;
-            _length = length;
-            _problemLogged = false;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            LogProblemOnce("could not read the file (" + ex.Message + "); keeping the list from before");
+                _names = names;
+                _problemLogged = false;
+                return true;
+
+            case FileChangeKind.Missing:
+                LogProblemOnce("the file is missing; keeping the list from before");
+                return false;
+
+            case FileChangeKind.Locked:
+                LogProblemOnce("could not read the file (another program has it open); keeping the list from before");
+                return false;
+
+            default:
+                _problemLogged = false;
+                return false;
         }
     }
 

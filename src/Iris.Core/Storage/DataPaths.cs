@@ -9,6 +9,8 @@ public sealed class DataPaths
     public const string DataFolderName = "Data";
     public const string SocialListFileName = "social-overlay.toml";
     public const string SettingsFileName = "settings.toml";
+    public const string SocialListLastGoodFileName = "social-overlay.lastgood.toml";
+    public const string SettingsLastGoodFileName = "settings.lastgood.toml";
     public const string CacheFileName = "cache.db";
     public const string ExclusionsFileName = "exclusions.txt";
     public const string LogsFolderName = "logs";
@@ -34,6 +36,12 @@ public sealed class DataPaths
 
     /// <summary>This PC's app settings (TOML). Never shared or exported with the lists.</summary>
     public string SettingsFile => Path.Combine(DataFolder, SettingsFileName);
+
+    /// <summary>The last version of the list file that was valid (kept up to date by IRIS; used when the list file has errors at startup).</summary>
+    public string SocialListLastGoodFile => Path.Combine(DataFolder, SocialListLastGoodFileName);
+
+    /// <summary>The last version of the settings file that was valid.</summary>
+    public string SettingsLastGoodFile => Path.Combine(DataFolder, SettingsLastGoodFileName);
 
     /// <summary>The RSI lookup cache (SQLite).</summary>
     public string CacheFile => Path.Combine(DataFolder, CacheFileName);

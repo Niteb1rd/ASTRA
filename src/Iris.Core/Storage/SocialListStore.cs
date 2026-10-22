@@ -76,8 +76,12 @@ public static class SocialListStore
         return new SocialListLoadResult(SocialConfigToml.Read(text), isNew: false);
     }
 
-    /// <summary>Writes the list safely (see the class summary). The folder is created if needed.</summary>
-    public static SaveResult Save(string path, SocialConfig config)
+    /// <summary>
+    /// Writes the list safely (see the class summary). The folder is created if needed.
+    /// With <paramref name="watched"/> (the app's watched copy of this file) the save is also remembered, so it is never taken for an outside
+    /// edit, and its text becomes the last-good copy.
+    /// </summary>
+    public static SaveResult Save(string path, SocialConfig config, WatchedFile? watched = null)
     {
         var text = SocialConfigToml.Write(config);
 
@@ -89,6 +93,7 @@ public static class SocialListStore
         try
         {
             AtomicFile.WriteText(path, text, keepBackup: true);
+            watched?.Wrote(text);
             return SaveResult.Ok();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
