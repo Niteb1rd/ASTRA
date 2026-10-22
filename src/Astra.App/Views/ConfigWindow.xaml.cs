@@ -171,7 +171,7 @@ public partial class ConfigWindow : Window
     }
 
     /// <summary>
-    /// Enter in a name box ends editing instead of pressing Save: the keyboard focus moves to the window itself
+    /// Enter in a name box ends editing instead of pressing Save: the keyboard focus moves to an invisible element
     /// (a neutral target, so it does not jump into another row), which raises LostKeyboardFocus and starts the check.
     /// </summary>
     private void OnNameKeyDown(object sender, KeyEventArgs e)
@@ -179,7 +179,17 @@ public partial class ConfigWindow : Window
         if (e.Key != Key.Enter)
             return;
         e.Handled = true;
-        Keyboard.Focus(this);
+        EndEditing();
+    }
+
+    /// <summary>
+    /// Moves keyboard focus (and the window's remembered focus) to <c>FocusSink</c>. Focusing the window itself does not
+    /// work: a Window is a focus scope and passes keyboard focus straight back to the element it remembers.
+    /// </summary>
+    private void EndEditing()
+    {
+        FocusManager.SetFocusedElement(this, FocusSink);
+        Keyboard.Focus(FocusSink);
     }
 
     /// <summary>A click on empty space ends editing: a focused text box gives up focus (and so gets checked).</summary>
@@ -189,7 +199,7 @@ public partial class ConfigWindow : Window
             return;
         if (IsInteractive(e.OriginalSource as DependencyObject))
             return;
-        Keyboard.Focus(this);
+        EndEditing();
     }
 
     private static bool IsInteractive(DependencyObject? element)

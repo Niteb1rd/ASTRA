@@ -7,7 +7,6 @@
         Width="760" Height="520"
         MinWidth="640" MinHeight="380"
         WindowStartupLocation="CenterScreen"
-        Focusable="True" FocusVisualStyle="{x:Null}"
         PreviewMouseDown="OnWindowPreviewMouseDown"
         Closing="OnWindowClosing">
 
@@ -294,6 +293,10 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
+            <!-- Invisible element that takes the keyboard focus when an edit ends (Enter, or a click on blank space).
+                 Focusing the window itself does not work: WPF hands the focus straight back to the last text box. -->
+            <Border x:Name="FocusSink" Grid.Column="0" Width="1" Height="1" HorizontalAlignment="Left"
+                    Focusable="True" FocusVisualStyle="{x:Null}" KeyboardNavigation.IsTabStop="False" />
             <TextBlock x:Name="FooterStatus" Grid.Column="0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
             <Button Grid.Column="1" Content="Save" Width="80" Padding="0,4" Click="OnSave" />
             <Button Grid.Column="2" Content="Cancel" Width="80" Padding="0,4" Margin="8,0,0,0" IsCancel="True" Click="OnCancel" />
