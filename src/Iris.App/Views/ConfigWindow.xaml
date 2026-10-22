@@ -186,7 +186,7 @@
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="#616161"
-                               Text="If name is in org member list, use selected color. Provide a priority number for tiebreak 1=highest." />
+                               Text="If player is in org, use selected color. Priority number used for tiebreaks 1=highest. Last tiebreak is entry order." />
 
                     <Grid Grid.Row="1" Margin="0,0,0,4">
                         <Grid.ColumnDefinitions>
