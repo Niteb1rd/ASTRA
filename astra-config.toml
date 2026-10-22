@@ -4,7 +4,7 @@ format_version = 1
 
 [[players]]
 handle = "nitebird"
-color = "Cyan"
+color = "Red"
 
 [[players]]
 handle = "jettt"
