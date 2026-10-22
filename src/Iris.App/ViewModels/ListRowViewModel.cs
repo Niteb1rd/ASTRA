@@ -153,6 +153,9 @@ public sealed class PlayerRowViewModel : ListRowViewModel
 
     protected override void OnValueEdited() => UpdateNote();
 
+    /// <summary>The exclusion list changed: show or hide the "on the exclusion list" note for this row.</summary>
+    public void RefreshExclusionNote() => UpdateNote();
+
     private void UpdateNote()
     {
         var text = Value.Trim();

@@ -39,8 +39,10 @@ public interface IImportHost
 public sealed record ImportAttempt(ImportOutcome Outcome, string Message);
 
 /// <summary>
-/// The whole "bring in a config" flow, used by the Settings tab buttons and by the hosted-config check of "Update database now":
+/// The whole "bring in a config" flow, used by the Import buttons of the Settings tab (file and URL):
 /// check the text, ask about warnings, ask to save unsaved window changes, ask which mode, write the file, update the app.
+/// After the file was written <see cref="AppServices.ApplyImport"/> raises <see cref="AppServices.ListApplied"/>, which starts the
+/// background fill-missing refresh; an import never runs the full refresh.
 /// Everything here runs on the UI thread (dialogs); the entry points hop onto it if they are called from another thread.
 /// Only one import runs at a time (<see cref="IsBusy"/>).
 /// If the config window is open it is the <see cref="Host"/> (it reloads its rows); if not, the file and the app's config are updated directly.
@@ -76,15 +78,14 @@ public sealed class ImportCoordinator
     /// </summary>
     /// <param name="text">The file content.</param>
     /// <param name="headline">Heading of the choice dialog.</param>
-    /// <param name="showDeclineNote">True for the hosted config: the dialog says that Cancel is remembered.</param>
     /// <param name="ignoreHostedUrl">True when the caller is about to store the address itself, so an edited address box is not an "unsaved change".</param>
-    public async Task<ImportAttempt> ImportTextAsync(string text, string headline, bool showDeclineNote, bool ignoreHostedUrl)
+    public async Task<ImportAttempt> ImportTextAsync(string text, string headline, bool ignoreHostedUrl)
     {
         var dispatcher = Application.Current?.Dispatcher;
         if (dispatcher is not null && !dispatcher.CheckAccess())
         {
             var inner = await dispatcher.InvokeAsync<Task<ImportAttempt>>(
-                () => ImportTextAsync(text, headline, showDeclineNote, ignoreHostedUrl)).Task;
+                () => ImportTextAsync(text, headline, ignoreHostedUrl)).Task;
             return await inner;
         }
 
@@ -134,7 +135,7 @@ public sealed class ImportCoordinator
 
             // 3. Which mode? (Asked after the save above, because saving may have just created the list file.)
             var hasExisting = File.Exists(_services.Paths.SocialListFile);
-            var mode = ImportChoiceDialog.Ask(owner, read.Config, hasExisting, headline, showDeclineNote);
+            var mode = ImportChoiceDialog.Ask(owner, read.Config, hasExisting, headline, showDeclineNote: false);
             if (mode is null)
                 return new ImportAttempt(ImportOutcome.Cancelled, "Import cancelled.");
 
@@ -154,75 +155,6 @@ public sealed class ImportCoordinator
         {
             host?.EndBusy();
             _active = false;
-        }
-    }
-
-    /// <summary>
-    /// The first half of "Update database now": when a hosted config address is set, fetch it, and if it is a version IRIS has not
-    /// applied or declined yet, offer it through the normal import flow. The version's hash is stored when the user applied it,
-    /// declined it, or it has problems (<see cref="ImportOutcomes.ShouldRememberHostedVersion"/>); in every other case (the save-first
-    /// step failed, the file could not be written, another import was running) it is offered again next time.
-    /// Returns a short note for the result message, or null when there is nothing to report.
-    /// Problems become the note; they never stop the caller (the RSI refresh goes on).
-    /// </summary>
-    public async Task<string?> CheckHostedConfigAsync()
-    {
-        var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher is not null && !dispatcher.CheckAccess())
-        {
-            var inner = await dispatcher.InvokeAsync<Task<string?>>(CheckHostedConfigAsync).Task;
-            return await inner;
-        }
-
-        var url = _services.Settings.HostedConfigUrl;
-        if (string.IsNullOrWhiteSpace(url))
-            return null;
-
-        try
-        {
-            var fetched = await _services.FetchHostedConfigAsync(url);
-            if (IsQuitting)
-                throw new OperationCanceledException(); // IRIS is quitting: no question now
-
-            if (!fetched.Success || fetched.Text is null || fetched.Hash is null)
-            {
-                _services.Log.Write(_services.Clock.UtcNow, "Hosted config not fetched: " + fetched.Error);
-                return "Hosted config not fetched: " + fetched.Error;
-            }
-
-            if (string.Equals(fetched.Hash, _services.Settings.HostedConfigLastHash, StringComparison.OrdinalIgnoreCase))
-            {
-                _services.Log.Write(_services.Clock.UtcNow, "Hosted config unchanged since the last time.");
-                return null;
-            }
-
-            var attempt = await ImportTextAsync(fetched.Text, "Your hosted config has changed", showDeclineNote: true, ignoreHostedUrl: false);
-            if (IsQuitting)
-                throw new OperationCanceledException(); // a "cancelled" caused by quitting is not the user's decision: remember nothing
-
-            if (ImportOutcomes.ShouldRememberHostedVersion(attempt.Outcome))
-            {
-                var hash = fetched.Hash;
-                var saved = _services.UpdateSettings(s => s with { HostedConfigLastHash = hash });
-                if (!saved.Success)
-                    _services.Log.Write(_services.Clock.UtcNow, "Could not remember the hosted config version: " + saved.Error);
-            }
-            else
-            {
-                _services.Log.Write(_services.Clock.UtcNow,
-                    $"Hosted config version not remembered ({attempt.Outcome}); it will be offered again.");
-            }
-
-            return ImportOutcomes.HostedMessage(attempt.Outcome, attempt.Message);
-        }
-        catch (OperationCanceledException)
-        {
-            throw; // IRIS is quitting
-        }
-        catch (Exception ex)
-        {
-            _services.Log.Write(_services.Clock.UtcNow, "Hosted config check failed: " + ex);
-            return "Hosted config check failed: " + ex.Message;
         }
     }
 

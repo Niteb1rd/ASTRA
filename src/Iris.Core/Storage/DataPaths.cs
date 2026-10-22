@@ -9,6 +9,8 @@ public sealed class DataPaths
     public const string DataFolderName = "Data";
     public const string SocialListFileName = "social-overlay.toml";
     public const string SettingsFileName = "settings.toml";
+    public const string SocialListLastGoodFileName = "social-overlay.lastgood.toml";
+    public const string SettingsLastGoodFileName = "settings.lastgood.toml";
     public const string CacheFileName = "cache.db";
     public const string ExclusionsFileName = "exclusions.txt";
     public const string LogsFolderName = "logs";
@@ -35,6 +37,12 @@ public sealed class DataPaths
     /// <summary>This PC's app settings (TOML). Never shared or exported with the lists.</summary>
     public string SettingsFile => Path.Combine(DataFolder, SettingsFileName);
 
+    /// <summary>The last version of the list file that was valid (kept up to date by IRIS; used when the list file has errors at startup).</summary>
+    public string SocialListLastGoodFile => Path.Combine(DataFolder, SocialListLastGoodFileName);
+
+    /// <summary>The last version of the settings file that was valid.</summary>
+    public string SettingsLastGoodFile => Path.Combine(DataFolder, SettingsLastGoodFileName);
+
     /// <summary>The RSI lookup cache (SQLite).</summary>
     public string CacheFile => Path.Combine(DataFolder, CacheFileName);
 
@@ -43,6 +51,24 @@ public sealed class DataPaths
 
     /// <summary>Session log files.</summary>
     public string LogsFolder => Path.Combine(DataFolder, LogsFolderName);
+
+    /// <summary>
+    /// True when <paramref name="path"/> is IRIS's own list file or settings file (full path compared, upper/lower case ignored).
+    /// An export must not be written onto either of them. A path that cannot be made into a full path is not one of them.
+    /// </summary>
+    public bool IsOwnConfigFile(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            return string.Equals(full, Path.GetFullPath(SocialListFile), StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(full, Path.GetFullPath(SettingsFile), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>Creates the Data folder and the logs folder if they are missing. Safe to call every start.</summary>
     public void EnsureCreated()

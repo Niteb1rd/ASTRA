@@ -71,19 +71,23 @@ public sealed class RefreshSummary
     public int OrgsRefreshed { get; set; }
     public int OrgsNotFound { get; set; }
     public List<string> Failures { get; } = new();
+
+    /// <summary>How many list entries were asked of RSI (found, not found or failed). Zero means there was nothing to do.</summary>
+    public int Attempted => PlayersRefreshed + PlayersNotFound + OrgsRefreshed + OrgsNotFound + Failures.Count;
 }
 
 /// <summary>
 /// The rules that turn "what is cached" plus "what RSI says" into a cache. It decides what is stale,
-/// refreshes through the <see cref="IRsiClient"/> (which does the 3-second rate limiting) and writes to the
+/// refreshes through the <see cref="IRsiClient"/> (which does the rate limiting) and writes to the
 /// <see cref="CacheDatabase"/>. The rules:
 /// - An entry is stale when it is older than the TTL (30 or 7 days, see <see cref="CacheSettings"/>).
-/// - "Update database now" (<see cref="UpdateDatabaseNowAsync"/>) refreshes ONLY the user's player list and org list,
-///   whatever their age. It never touches 'hotkey' or 'org_list_member' entries.
-/// - Automatic refresh (<see cref="RefreshStaleAsync"/>) refreshes only the stale or missing entries of those same lists.
+/// - The full refresh (<see cref="RefreshAllAsync"/>, the "Refresh Cache (long time)" button) refreshes ONLY the user's player list
+///   and org list, whatever their age. It never touches 'hotkey' or 'org_list_member' entries.
+/// - The fill-missing refresh (<see cref="RefreshMissingOrStaleAsync"/>, run in the background after a config was imported or
+///   loaded) fetches only the entries of those same lists that have no cache entry or whose entry is stale. Orgs: org page and member list.
 /// - Only a definite 404 is negative-cached (30 days). Timeouts and other failures cache nothing.
 ///   A name with a "not found" note is never refetched automatically; it is retried only when its nameplate is
-///   encountered again after the note expired (hotkey / org-list-member lookups), or by "Update database now".
+///   encountered again after the note expired (hotkey / org-list-member lookups), or by the full refresh.
 /// - Player-list caching stores only the player's primary page. Org-list caching stores only the org's long name
 ///   and member list. Neither follows links to other pages.
 /// </summary>
@@ -115,51 +119,63 @@ public sealed class CacheRefresher
     public StaleEntries FindStale(SocialConfig config)
     {
         var now = _clock.UtcNow;
-
-        var players = new List<string>();
-        foreach (var handle in ListedHandles(config))
-        {
-            if (_database.GetNotFoundTime(NotFoundKind.Player, handle) is not null)
-                continue;
-            var cached = _database.GetPlayer(handle);
-            if (cached is null || IsStale(cached.LastRefreshed, now))
-                players.Add(handle);
-        }
-
-        var orgs = new List<string>();
-        foreach (var sid in ListedSids(config))
-        {
-            if (_database.GetNotFoundTime(NotFoundKind.Org, sid) is not null)
-                continue;
-            var cached = _database.GetOrg(sid);
-            if (cached?.MembersRefreshed is not { } refreshed || IsStale(refreshed, now))
-                orgs.Add(sid);
-        }
-
+        var players = ListedHandles(config).Where(handle => NeedsPlayerFetch(handle, now)).ToList();
+        var orgs = ListedSids(config).Where(sid => NeedsOrgFetch(sid, now)).ToList();
         return new StaleEntries(players, orgs);
     }
 
-    /// <summary>Automatic refresh: fetches the stale or missing entries of the user's lists.</summary>
-    public Task<RefreshSummary> RefreshStaleAsync(SocialConfig config, CancellationToken ct = default)
+    // A listed player needs fetching when it has no "not found" note and no cache entry, or an entry older than the TTL.
+    private bool NeedsPlayerFetch(string handle, DateTimeOffset now)
     {
-        var stale = FindStale(config);
-        return RefreshListEntriesAsync(stale.Players, stale.Orgs, ct);
+        if (_database.GetNotFoundTime(NotFoundKind.Player, handle) is not null)
+            return false;
+        var cached = _database.GetPlayer(handle);
+        return cached is null || IsStale(cached.LastRefreshed, now);
+    }
+
+    // A listed org needs fetching when it has no "not found" note and no member list, or a member list older than the TTL.
+    private bool NeedsOrgFetch(string sid, DateTimeOffset now)
+    {
+        if (_database.GetNotFoundTime(NotFoundKind.Org, sid) is not null)
+            return false;
+        var cached = _database.GetOrg(sid);
+        return cached?.MembersRefreshed is not { } refreshed || IsStale(refreshed, now);
     }
 
     /// <summary>
-    /// Manual "Update database now": refetches every entry of the user's player list and org list,
+    /// "Fill missing": fetches only the entries of the user's lists that have no cache entry or whose entry is older than the TTL
+    /// (players: the player page; orgs: the org page and the member list). Fresh entries and names with a "not found" note are left alone.
+    /// Stops with <see cref="OperationCanceledException"/> when <paramref name="ct"/> is cancelled; what was fetched until then is kept.
+    /// </summary>
+    public Task<RefreshSummary> RefreshMissingOrStaleAsync(SocialConfig config, CancellationToken ct = default)
+    {
+        var stale = FindStale(config);
+        return RefreshListEntriesAsync(stale.Players, stale.Orgs, onlyStale: true, ct);
+    }
+
+    /// <summary>
+    /// The full refresh ("Refresh Cache (long time)"): refetches every entry of the user's player list and org list,
     /// fresh or not (names with an old "not found" note are tried again too). Entries that came from
     /// hotkey lookups or org-list members and are not on the lists are not touched.
+    /// Stops with <see cref="OperationCanceledException"/> when <paramref name="ct"/> is cancelled.
     /// </summary>
-    public Task<RefreshSummary> UpdateDatabaseNowAsync(SocialConfig config, CancellationToken ct = default) =>
-        RefreshListEntriesAsync(ListedHandles(config).ToList(), ListedSids(config).ToList(), ct);
+    public Task<RefreshSummary> RefreshAllAsync(SocialConfig config, CancellationToken ct = default) =>
+        RefreshListEntriesAsync(ListedHandles(config).ToList(), ListedSids(config).ToList(), onlyStale: false, ct);
 
-    private async Task<RefreshSummary> RefreshListEntriesAsync(IReadOnlyList<string> handles, IReadOnlyList<string> sids, CancellationToken ct)
+    /// <summary>
+    /// With <paramref name="onlyStale"/> (fill missing) each entry is looked at again right before it is fetched: the run can take minutes
+    /// (one request per second), and a hotkey lookup or another run may have filled the entry meanwhile. Such an entry is skipped.
+    /// </summary>
+    private async Task<RefreshSummary> RefreshListEntriesAsync(
+        IReadOnlyList<string> handles, IReadOnlyList<string> sids, bool onlyStale, CancellationToken ct)
     {
         var summary = new RefreshSummary();
 
         foreach (var handle in handles)
         {
+            ct.ThrowIfCancellationRequested();
+            if (onlyStale && !NeedsPlayerFetch(handle, _clock.UtcNow))
+                continue;
             var result = await FetchAndStorePlayerAsync(handle, CacheSource.PlayerList, ct).ConfigureAwait(false);
             switch (result.Status)
             {
@@ -176,7 +192,12 @@ public sealed class CacheRefresher
         }
 
         foreach (var sid in sids)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (onlyStale && !NeedsOrgFetch(sid, _clock.UtcNow))
+                continue;
             await RefreshOrgListEntryAsync(sid, summary, ct).ConfigureAwait(false);
+        }
 
         return summary;
     }

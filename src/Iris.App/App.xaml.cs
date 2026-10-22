@@ -10,6 +10,7 @@ using System.Windows;
 using System.Windows.Threading;
 using Iris.App.Services;
 using Iris.App.Views;
+using Iris.Core.Storage;
 
 namespace Iris.App;
 
@@ -27,7 +28,7 @@ public partial class App : Application
     private TrayIcon? _tray;
     private ConfigWindow? _configWindow;
     private ImportCoordinator? _imports;
-    private DatabaseUpdater? _updater;
+    private CacheUpdater? _updater;
     private bool _shuttingDown;
 
     private const string AnswerFirstText = "Answer the open IRIS question first.";
@@ -70,15 +71,16 @@ public partial class App : Application
         DispatcherUnhandledException += OnUnhandledException;
 
         var imports = new ImportCoordinator(services);
-        var updater = new DatabaseUpdater(services, imports);
+        var updater = new CacheUpdater(services);
         _imports = imports;
         _updater = updater;
 
         var tray = new TrayIcon();
         _tray = tray;
-        updater.RunningChanged += (_, _) => tray.SetUpdateRunning(updater.IsRunning);
+        services.Notify = text => tray.ShowBalloon(text);
+        updater.RefreshingChanged += (_, _) => tray.SetActivity(updater.IsRefreshing ? "refreshing the cache..." : null);
+        updater.FillMissingFinished += (_, message) => ShowStatus(message);
         tray.SettingsRequested += (_, _) => OpenSettings();
-        tray.UpdateDatabaseRequested += (_, _) => StartDatabaseUpdate();
         tray.PauseChanged += (_, paused) => services.IsOverlayPaused = paused;
         tray.OpenLogRequested += (_, _) => OpenLog();
         tray.OpenConfigLocationRequested += (_, _) => OpenConfigLocation();
@@ -92,28 +94,42 @@ public partial class App : Application
         if (_shuttingDown)
             return;
 
-        if (load.IsValid)
+        // Files with errors that IRIS could work around with the last good copy, and settings it could not read at all, are worth a
+        // balloon of their own (they replace the greeting).
+        var problems = new List<string>();
+        if (services.ListStartup.UsedLastGood)
+            problems.Add(ConfigMessages.UsingLastGood(DataPaths.SocialListFileName, services.ListStartup.LastGoodTime!.Value));
+        if (services.SettingsStartup.UsedLastGood)
+            problems.Add(ConfigMessages.UsingLastGood(DataPaths.SettingsFileName, services.SettingsStartup.LastGoodTime!.Value));
+        else if (!services.SettingsLoad.IsValid)
+            problems.Add("Could not read Data\\settings.toml (" + services.SettingsLoad.Errors[0] + "). Default settings are used until you save in the Settings tab.");
+
+        if (problems.Count > 0)
         {
-            if (load.Warnings.Count > 0)
-            {
-                // Notes only (for example keys from a newer version): worth a mention, not a dialog.
-                var extra = load.Warnings.Count > 1 ? $" (and {load.Warnings.Count - 1} more)" : string.Empty;
-                _tray?.ShowBalloon("IRIS is running in the system tray. Note about your list file: " + load.Warnings[0] + extra);
-            }
-            else
-            {
-                _tray?.ShowBalloon("IRIS is running in the system tray. Right-click the icon for Settings.");
-            }
+            // A pop-up, not a balloon: Windows can hide balloons (focus assist, full-screen game), and the user must know
+            // that IRIS is not running on the file they edited.
+            var answer = MessageBox.Show(
+                "Errors were detected in your config files:\n\n- " + string.Join(".\n- ", problems) + ".\n\n"
+                + "Your files were not changed. Open Settings to see the errors and fix them now?",
+                "IRIS", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.Yes);
+            if (_shuttingDown)
+                return;
+            if (answer == MessageBoxResult.Yes && load.IsValid)
+                OpenSettings();
         }
-        else
+        else if (load.IsValid && load.Warnings.Count > 0)
         {
-            OpenSettings(); // let the user fix the list; the file itself is untouched until they press Save
+            // Notes only (for example keys from a newer version): worth a mention, not a dialog.
+            var extra = load.Warnings.Count > 1 ? $" (and {load.Warnings.Count - 1} more)" : string.Empty;
+            _tray?.ShowBalloon("IRIS is running in the system tray. Note about your list file: " + load.Warnings[0] + extra);
+        }
+        else if (load.IsValid)
+        {
+            _tray?.ShowBalloon("IRIS is running in the system tray. Right-click the icon for Settings.");
         }
 
-        // A settings file that could not be read is the one thing worth a balloon of its own (it replaces the greeting).
-        var settingsLoad = services.SettingsLoad;
-        if (!settingsLoad.IsValid)
-            _tray?.ShowBalloon("Could not read Data\\settings.toml (" + settingsLoad.Errors[0] + "). Default settings are used until you save in the Settings tab.");
+        if (!load.IsValid)
+            OpenSettings(); // let the user fix the list; the file itself is untouched until they press Save
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -163,6 +179,8 @@ public partial class App : Application
             return;
         }
 
+        // The config files may have been edited while the window was closed. The window looks at them itself as soon as it is shown
+        // (its first check runs at once, on a background thread, not after 2 seconds), so nothing is read on the UI thread here.
         var window = new ConfigWindow(_services, _imports!, _updater!);
         window.Closed += (_, _) => _configWindow = null;
         _configWindow = window;
@@ -170,14 +188,14 @@ public partial class App : Application
         window.Activate();
     }
 
-    private async void StartDatabaseUpdate()
+    /// <summary>Tells the user something: in the open config window's status bar, otherwise as a tray balloon.</summary>
+    private void ShowStatus(string message)
     {
-        var updater = _updater;
-        if (updater is null || _tray is null || _shuttingDown)
+        if (_shuttingDown)
             return;
-
-        var message = await updater.RunAsync(); // null: already running, or IRIS is quitting
-        if (message is not null)
+        if (_configWindow is not null)
+            _configWindow.ShowStatus(message);
+        else
             _tray?.ShowBalloon(message);
     }
 
@@ -269,7 +287,8 @@ public partial class App : Application
         _shuttingDown = true;
         if (_imports is not null)
             _imports.IsQuitting = true; // no new import question from here on
-        _services?.RequestShutdown(); // a running database update (no question open) stops cleanly: its RSI requests are cancelled
+        _services?.RequestShutdown(); // a running cache refresh (no question open) stops cleanly: its RSI requests are cancelled
+        _updater?.StopFillMissing(TimeSpan.FromMilliseconds(500)); // give the background fill a moment to stop before the database is disposed
         Shutdown();
     }
 

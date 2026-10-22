@@ -118,12 +118,13 @@ public static class ConfigImporter
     /// <summary>
     /// Applies <paramref name="imported"/> to the list file at <paramref name="listFilePath"/> using <paramref name="mode"/>.
     /// With no list file yet the imported config is simply written (every mode then means the same thing).
+    /// With <paramref name="watched"/> (the app's watched copy of the list file) every write is remembered as IRIS's own.
     /// </summary>
-    public static ImportResult Import(string listFilePath, SocialConfig imported, ImportMode mode, IClock clock)
+    public static ImportResult Import(string listFilePath, SocialConfig imported, ImportMode mode, IClock clock, WatchedFile? watched = null)
     {
         if (!File.Exists(listFilePath))
         {
-            var created = SocialListStore.Save(listFilePath, imported);
+            var created = SocialListStore.Save(listFilePath, imported, watched);
             return created.Success
                 ? ImportResult.Done(mode, hadExisting: false, imported, imported.Players.Count, imported.Orgs.Count, imported.OrgRules.Count, 0, null)
                 : ImportResult.Fail(mode, created.Error ?? "The imported config could not be saved.");
@@ -133,7 +134,7 @@ public static class ConfigImporter
         {
             case ImportMode.Replace:
             {
-                var saved = SocialListStore.Save(listFilePath, imported);
+                var saved = SocialListStore.Save(listFilePath, imported, watched);
                 return saved.Success
                     ? ImportResult.Done(mode, true, imported, imported.Players.Count, imported.Orgs.Count, imported.OrgRules.Count, 0, null)
                     : ImportResult.Fail(mode, saved.Error ?? "The imported config could not be saved.");
@@ -147,21 +148,21 @@ public static class ConfigImporter
                         "Your current list file has problems, so it cannot be merged safely. Choose \"Backup existing config\" or \"Replace existing config\" instead.");
 
                 var merged = SocialConfigMerger.Merge(current.Config, imported);
-                var saved = SocialListStore.Save(listFilePath, merged.Config);
+                var saved = SocialListStore.Save(listFilePath, merged.Config, watched);
                 return saved.Success
                     ? ImportResult.Done(mode, true, merged.Config, merged.AddedPlayers, merged.AddedOrgs, merged.AddedRules, merged.SkippedDuplicates, null)
                     : ImportResult.Fail(mode, saved.Error ?? "The merged config could not be saved.");
             }
 
             case ImportMode.BackupExisting:
-                return ImportWithBackup(listFilePath, imported, clock);
+                return ImportWithBackup(listFilePath, imported, clock, watched);
 
             default:
                 return ImportResult.Fail(mode, "Unknown import mode.");
         }
     }
 
-    private static ImportResult ImportWithBackup(string listFilePath, SocialConfig imported, IClock clock)
+    private static ImportResult ImportWithBackup(string listFilePath, SocialConfig imported, IClock clock, WatchedFile? watched)
     {
         const ImportMode mode = ImportMode.BackupExisting;
         string backupPath;
@@ -175,7 +176,7 @@ public static class ConfigImporter
             return ImportResult.Fail(mode, "The current list file could not be backed up, so nothing was changed: " + ex.Message);
         }
 
-        var saved = SocialListStore.Save(listFilePath, imported);
+        var saved = SocialListStore.Save(listFilePath, imported, watched);
         if (!saved.Success)
         {
             var error = saved.Error ?? "The imported config could not be saved.";

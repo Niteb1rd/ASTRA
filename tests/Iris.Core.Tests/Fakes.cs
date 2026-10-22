@@ -31,21 +31,27 @@ internal sealed class FakeRsiClient : IRsiClient
     public Dictionary<string, RsiResult<OrgMembers>> Members { get; } = new(StringComparer.OrdinalIgnoreCase);
     public List<string> Calls { get; } = new();
 
+    /// <summary>Runs at the start of every call with the call's text (for example "player:Name"), to make something happen "meanwhile".</summary>
+    public Action<string>? OnCall { get; set; }
+
     public Task<RsiResult<PlayerOrgs>> GetPlayerOrgsAsync(string handle, CancellationToken ct = default)
     {
         Calls.Add("player:" + handle);
+        OnCall?.Invoke("player:" + handle);
         return Task.FromResult(Players.TryGetValue(handle, out var r) ? r : RsiResult<PlayerOrgs>.Failed("not scripted"));
     }
 
     public Task<RsiResult<OrgInfo>> GetOrgInfoAsync(string sid, CancellationToken ct = default)
     {
         Calls.Add("org:" + sid);
+        OnCall?.Invoke("org:" + sid);
         return Task.FromResult(OrgInfos.TryGetValue(sid, out var r) ? r : RsiResult<OrgInfo>.Failed("not scripted"));
     }
 
     public Task<RsiResult<OrgMembers>> GetOrgMembersAsync(string sid, CancellationToken ct = default)
     {
         Calls.Add("members:" + sid);
+        OnCall?.Invoke("members:" + sid);
         return Task.FromResult(Members.TryGetValue(sid, out var r) ? r : RsiResult<OrgMembers>.Failed("not scripted"));
     }
 }
