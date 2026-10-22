@@ -71,6 +71,9 @@ public partial class ConfigWindow : Window, IImportHost
     private bool _saving;
     private bool _isClosed;
 
+    // The panel switch as the controls last knew it from the saved settings (see OnServicesSettingsApplied).
+    private bool _knownPanelEnabled = true;
+
     // Set once the window is built: the control events fire while it is still being created and must not touch anything yet.
     private bool _ready;
 
@@ -125,6 +128,8 @@ public partial class ConfigWindow : Window, IImportHost
         updater.RefreshingChanged += OnRefreshingChanged;
         RefreshCacheButton.IsEnabled = !updater.IsRefreshing;
         overlay.TestStateChanged += OnTestStateChanged;
+        overlay.Hotkeys.StatusChanged += OnHotkeyStatusChanged;
+        services.SettingsApplied += OnServicesSettingsApplied;
         UpdateTestButton();
 
         _watchTimer.Tick += OnWatchTick;
@@ -141,6 +146,8 @@ public partial class ConfigWindow : Window, IImportHost
             _watchTimer.Tick -= OnWatchTick;
             _updater.RefreshingChanged -= OnRefreshingChanged;
             _overlay.TestStateChanged -= OnTestStateChanged;
+            _overlay.Hotkeys.StatusChanged -= OnHotkeyStatusChanged;
+            _services.SettingsApplied -= OnServicesSettingsApplied;
             if (ReferenceEquals(_imports.Host, this))
                 _imports.Host = null;
             _closing.Cancel();
@@ -850,7 +857,10 @@ public partial class ConfigWindow : Window, IImportHost
     {
         var settings = _services.Settings;
         CacheTtlCombo.SelectedIndex = settings.CacheTtlDays == 7 ? 1 : 0;
-        PanelEnabledCheck.IsChecked = settings.PanelEnabled;
+        _knownPanelEnabled = settings.PanelEnabled;
+        PanelDisabledCheck.IsChecked = !settings.PanelEnabled;
+        OverlayHotkeyBox.HotkeyValue = settings.HotkeyToggleOverlay;
+        PanelHotkeyBox.HotkeyValue = settings.HotkeyTogglePanel;
         PanelWidthSlider.Value = settings.PanelWidthPercent;
         PanelTextSizeSlider.Value = settings.PanelTextSize;
         PanelRightGapSlider.Value = settings.PanelRightGapPercent;
@@ -862,6 +872,7 @@ public partial class ConfigWindow : Window, IImportHost
         HostedUrlError.Visibility = Visibility.Collapsed;
         HostedAutoCheck.IsChecked = settings.HostedConfigAutoCheck && IsHostedUrlUsable();
         UpdateAutoCheckState();
+        UpdateHotkeyErrors();
         UpdateSaveButton();
     }
 
@@ -872,7 +883,9 @@ public partial class ConfigWindow : Window, IImportHost
     private AppSettings BuildSettings() => _services.Settings with
     {
         CacheTtlDays = CacheTtlCombo.SelectedIndex == 1 ? 7 : 30,
-        PanelEnabled = PanelEnabledCheck.IsChecked == true,
+        PanelEnabled = PanelDisabledCheck.IsChecked != true,
+        HotkeyToggleOverlay = OverlayHotkeyBox.HotkeyValue,
+        HotkeyTogglePanel = PanelHotkeyBox.HotkeyValue,
         PanelWidthPercent = (int)Math.Round(PanelWidthSlider.Value),
         PanelTextSize = (int)Math.Round(PanelTextSizeSlider.Value),
         PanelRightGapPercent = (int)Math.Round(PanelRightGapSlider.Value),
@@ -891,6 +904,67 @@ public partial class ConfigWindow : Window, IImportHost
         HostedUrlError.Text = problem ?? string.Empty;
         HostedUrlError.Visibility = problem is null ? Visibility.Collapsed : Visibility.Visible;
         return problem is null;
+    }
+
+    // ---- Hotkeys section ----
+
+    private void OnHotkeyBoxChanged(object? sender, EventArgs e)
+    {
+        if (!_ready)
+            return;
+        UpdateHotkeyErrors();
+        UpdateSaveButton();
+    }
+
+    private void OnClearOverlayHotkey(object sender, RoutedEventArgs e) => OverlayHotkeyBox.Clear();
+
+    private void OnClearPanelHotkey(object sender, RoutedEventArgs e) => PanelHotkeyBox.Clear();
+
+    private void OnHotkeyStatusChanged(object? sender, EventArgs e) => UpdateHotkeyErrors();
+
+    /// <summary>
+    /// Shows in red, next to a box, why its hotkey does not work: the two boxes hold the same combination (checked on what is on screen), or
+    /// Windows refused the saved hotkey (only shown while the box still holds the saved one).
+    /// </summary>
+    private void UpdateHotkeyErrors()
+    {
+        if (OverlayHotkeyError is null || PanelHotkeyError is null)
+            return; // still being built
+        var saved = _services.Settings;
+        var overlayText = OverlayHotkeyBox.HotkeyValue;
+        var panelText = PanelHotkeyBox.HotkeyValue;
+        var same = overlayText.Length > 0 && overlayText == panelText;
+        const string SameText = "Both hotkeys are the same. Choose two different ones.";
+
+        ShowHotkeyError(OverlayHotkeyError,
+            same ? SameText : overlayText == saved.HotkeyToggleOverlay ? _overlay.Hotkeys.OverlayError : null);
+        ShowHotkeyError(PanelHotkeyError,
+            same ? SameText : panelText == saved.HotkeyTogglePanel ? _overlay.Hotkeys.PanelError : null);
+    }
+
+    private static void ShowHotkeyError(TextBlock block, string? message)
+    {
+        block.Text = message ?? string.Empty;
+        block.Visibility = message is null ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>
+    /// The saved settings changed (a tray click or a hotkey flipped the panel switch, or this window saved). If the panel switch differs from what
+    /// the checkbox last knew, the checkbox follows it; edits of all other controls stay as they are, so a tray or hotkey toggle never discards
+    /// unsaved edits. Because the saved value changed too, the window does not count that switch as an unsaved change.
+    /// </summary>
+    private void OnServicesSettingsApplied(object? sender, EventArgs e)
+    {
+        if (_isClosed || !_ready)
+            return;
+        var enabled = _services.Settings.PanelEnabled;
+        if (enabled != _knownPanelEnabled)
+        {
+            _knownPanelEnabled = enabled;
+            PanelDisabledCheck.IsChecked = !enabled;
+        }
+        UpdateHotkeyErrors();
+        UpdateSaveButton();
     }
 
     // ---- Overlay section ----

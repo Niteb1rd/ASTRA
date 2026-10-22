@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:Iris.App.Converters"
         xmlns:vm="clr-namespace:Iris.App.ViewModels"
+        xmlns:local="clr-namespace:Iris.App.Views"
         Title="IRIS &#8211; Companion App for Star Citizen"
         Width="760" Height="520"
         MinWidth="640" MinHeight="380"
@@ -364,6 +365,42 @@
                         <TextBlock Margin="0,0,0,12" TextWrapping="Wrap" Foreground="#616161"
                                    Text="App settings for this PC. These are not included when you share or export your lists." />
 
+                        <!-- Hotkeys (global: they work while the game is in front) -->
+                        <TextBlock Text="Hotkeys" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <TextBlock TextWrapping="Wrap" Foreground="#616161" Margin="0,0,0,6"
+                                   Text="Click a box and press a combination: Ctrl, Alt, Shift or Win plus a key. Esc cancels. Each press flips the matching tray check mark (Disable Overlay / Disable Info Panel)." />
+                        <Grid Margin="0,0,0,16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="230" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Toggle Overlay" VerticalAlignment="Center"
+                                       ToolTip="Flips the tray item Disable Overlay: hides everything and stops screen reading, or turns it back on." />
+                            <local:HotkeyBox x:Name="OverlayHotkeyBox" Grid.Row="0" Grid.Column="1" Margin="0,2" Padding="4,2"
+                                             HotkeyChanged="OnHotkeyBoxChanged" />
+                            <Button x:Name="ClearOverlayHotkeyButton" Grid.Row="0" Grid.Column="2" Content="Clear" Padding="10,2" Margin="8,2,0,2"
+                                    Click="OnClearOverlayHotkey" />
+                            <TextBlock x:Name="OverlayHotkeyError" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Foreground="#C62828"
+                                       TextWrapping="Wrap" Visibility="Collapsed" />
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Toggle Info Panel" VerticalAlignment="Center"
+                                       ToolTip="Flips the tray item Disable Info Panel: hides or shows the right panel. The brackets stay." />
+                            <local:HotkeyBox x:Name="PanelHotkeyBox" Grid.Row="2" Grid.Column="1" Margin="0,2" Padding="4,2"
+                                             HotkeyChanged="OnHotkeyBoxChanged" />
+                            <Button x:Name="ClearPanelHotkeyButton" Grid.Row="2" Grid.Column="2" Content="Clear" Padding="10,2" Margin="8,2,0,2"
+                                    Click="OnClearPanelHotkey" />
+                            <TextBlock x:Name="PanelHotkeyError" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Foreground="#C62828"
+                                       TextWrapping="Wrap" Visibility="Collapsed" />
+                        </Grid>
+
                         <!-- Logging -->
                         <TextBlock Text="Logging" FontWeight="SemiBold" Margin="0,0,0,4" />
                         <CheckBox x:Name="LogEnabledCheck" Content="Write a log file (Data\logs, kept 30 days)" Margin="0,0,0,6"
@@ -408,9 +445,9 @@
 
                         <!-- Overlay -->
                         <TextBlock Text="Overlay" FontWeight="SemiBold" Margin="0,16,0,4" />
-                        <CheckBox x:Name="PanelEnabledCheck" Content="Show right panel" Margin="0,0,0,6"
+                        <CheckBox x:Name="PanelDisabledCheck" Content="Disable Info Panel" Margin="0,0,0,6"
                                   Checked="OnOverlayCheckChanged" Unchecked="OnOverlayCheckChanged"
-                                  ToolTip="The panel lists every bracketed player with their orgs. The brackets around nameplates are always shown." />
+                                  ToolTip="Hides the right-hand panel (the same switch as the tray item Disable Info Panel). The brackets around nameplates stay." />
                         <Grid Margin="0,0,0,6">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="190" />

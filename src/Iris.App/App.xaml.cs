@@ -89,7 +89,26 @@ public partial class App : Application
         var overlay = new OverlayController(services);
         _overlay = overlay;
         overlay.Start();
-        tray.PauseChanged += (_, paused) => overlay.IsPaused = paused;
+
+        // "Disable Overlay" / "Disable Info Panel": the tray only asks; the check marks always follow the saved settings
+        // (also when a hotkey or the Settings tab changed them).
+        void SyncTrayChecks()
+        {
+            tray.SetOverlayDisabled(services.Settings.OverlayDisabled);
+            tray.SetPanelDisabled(!services.Settings.PanelEnabled);
+        }
+        tray.ToggleOverlayRequested += (_, _) =>
+        {
+            overlay.ToggleFromTray(HotkeyAction.ToggleOverlay);
+            SyncTrayChecks(); // also puts the mark back if saving failed
+        };
+        tray.TogglePanelRequested += (_, _) =>
+        {
+            overlay.ToggleFromTray(HotkeyAction.TogglePanel);
+            SyncTrayChecks();
+        };
+        services.SettingsApplied += (_, _) => SyncTrayChecks();
+        SyncTrayChecks();
         tray.OpenLogRequested += (_, _) => OpenLog();
         tray.OpenConfigLocationRequested += (_, _) => OpenConfigLocation();
         tray.QuitRequested += (_, _) => Quit();

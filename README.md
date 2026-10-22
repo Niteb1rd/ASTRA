@@ -96,7 +96,7 @@ IRIS now has the overlay window. It is driven by **test data only**; Phase 3 wil
 title bar or frame and exactly covers its monitor, because only then do window and screen coordinates line up. In the game, set
 *Graphics > Windowed mode* to **Borderless**. If the game is in front but not borderless, the overlay stays off and a tray message says
 "Star Citizen is not in borderless windowed mode, so the overlay is turned off. Switch to Borderless in the game's graphics settings." (once per game session).
-The tray's **Pause overlay** hides it. The overlay window is created the first time it is needed and afterwards only hidden. While the game is not in front, the only work IRIS does is
+**Disable Overlay** (tray) hides it, see "Disable Overlay, Disable Info Panel and hotkeys" below. The overlay window is created the first time it is needed and afterwards only hidden. While the game is not in front, the only work IRIS does is
 a check of the foreground window every 250 ms. State changes (game in front, borderless or not) are written to the log.
 
 **Test overlay.** Settings tab > Overlay > **Show test overlay (15 s)** shows a sample for 15 seconds: up to 3 players from your player list, 2 org-list
@@ -109,13 +109,36 @@ Settings tab, saved or not, and follows them while you move the sliders, so you 
 
 | Setting | Default | Range | Meaning |
 | --- | --- | --- | --- |
-| Show right panel | on | on/off | The brackets are always shown |
+| Disable Info Panel | off | on/off | Hides the right panel; the brackets stay. Stored as `panel_enabled` (true = panel shown) |
 | Panel width | 16 % | 8 to 40 | Of the game window width |
 | Text size | 18 px | 10 to 40 | Pixels at 1440p; scales linearly with the window height (27 px at 2160p) |
 | Right gap | 10 % | 0 to 40 | Panel right edge = width minus this share of the width |
 | Top gap | 15 % | 0 to 60 | Top of the panel, of the height |
 
 IRIS is per-monitor DPI aware (`app.manifest`, PerMonitorV2), so the overlay lines up with the game window in real pixels on every monitor and at any Windows scaling.
+
+### Disable Overlay, Disable Info Panel and hotkeys
+
+The tray menu has two check-mark items, and the same two switches exist as hotkeys and (for the panel) in the Settings tab. They always agree: all of them
+change the same saved setting.
+
+- **Disable Overlay** (`overlay_disabled`): hides everything **and stops all screen reading (OCR)**. Only the 250 ms "is Star Citizen in front?" check keeps running.
+  The future capture loop must check `AppServices.IsOverlayDisabled` before each capture (event: `OverlayDisabledChanged`). Kept across restarts.
+  The test overlay ignores this switch.
+- **Disable Info Panel** (`panel_enabled = false`): hides only the right panel; the brackets stay. The Settings tab's Overlay section has the checkbox with the
+  same name. The test overlay follows the checkbox as it is shown on screen.
+- A tray click or a hotkey saves just that one setting at once. If the settings window is open with other unsaved edits, they are kept; only the panel checkbox
+  follows the change.
+
+**Hotkeys** (Settings tab, top section, `hotkey_toggle_overlay` / `hotkey_toggle_panel`, empty by default): *Toggle Overlay* and *Toggle Info Panel*. Click a box,
+press a combination (at least one of Ctrl, Alt, Shift or Win, plus a key; Esc cancels), **Clear** removes it. Written as text such as `Ctrl+Shift+O`; keys: A-Z, 0-9, F1-F24,
+Num0-Num9, Space, Tab, Enter, Backspace, Insert, Delete, Home, End, PageUp, PageDown, arrows. They are global (they work while the game is in front) and are
+registered again whenever the settings change. If another program already owns a combination, or both are the same, the box shows a red message and the log has a line;
+neither of the two is active in the "same" case.
+
+When a hotkey is pressed and Star Citizen is in front and borderless, the overlay shows a short confirmation ("Overlay off", "Overlay on", "Info panel off", "Info panel on")
+for about 2 seconds at the top of the panel area, white text with a dark edge on a dark translucent box. After "Overlay off" nothing else is drawn. In any other case the
+result is a tray balloon instead. Clicking the tray items shows no on-screen text.
 
 ### Credits
 
@@ -177,14 +200,17 @@ hosted_config_url = ""         # https:// address of a config file you host your
 hosted_config_last_hash = ""   # SHA-256 (64 hex characters) of the last hosted file you applied or declined (IRIS fills this in)
 hosted_config_auto_check = false              # true: check the hosted address every 24 hours (see "Hosted config URL")
 hosted_config_last_check = "2026-10-22T09:30:00Z"   # optional; when the last automatic check was made (UTC text; IRIS fills this in)
-panel_enabled = true           # show the right-hand panel (the brackets are always shown)
+panel_enabled = true           # false = "Disable Info Panel": the right-hand panel is hidden (the brackets stay)
+overlay_disabled = false       # true = "Disable Overlay": nothing is drawn and no screen reading happens
+hotkey_toggle_overlay = ""     # global hotkey for Disable Overlay, e.g. "Ctrl+Shift+O"; empty = none
+hotkey_toggle_panel = ""       # global hotkey for Disable Info Panel; empty = none
 panel_width_percent = 16       # panel width, % of the game window width; 8 to 40
 panel_text_size = 18           # panel text size in pixels at 1440p (scales with the window height); 10 to 40
 panel_right_gap_percent = 10   # space right of the panel, % of the width; 0 to 40
 panel_top_gap_percent = 15     # space above the panel, % of the height; 0 to 60
 ```
 
-A `panel_*` value that is out of its range (or not a whole number) is noted in the log and replaced by its default.
+A hotkey that is not valid (no modifier, unknown key, wrong type) is noted in the log and becomes empty. A `panel_*` value that is out of its range (or not a whole number) is noted in the log and replaced by its default.
 `hosted_config_auto_check` is off by default. Switching it on without a valid `hosted_config_url` switches it off again, with a note; a
 `hosted_config_last_check` that is not a date and time is noted and counts as "never checked". Unknown keys are noted in the log and ignored. A file that is not valid TOML is not changed until you save; until then the defaults
 apply and IRIS tells you; a background change (such as the remembered hosted version) is then kept in memory only, and the file is

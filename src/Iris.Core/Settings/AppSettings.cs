@@ -57,4 +57,18 @@ public sealed record AppSettings
 
     /// <summary>Space between the top of the screen and the panel, as a percentage of the height (0 to 60).</summary>
     public int PanelTopGapPercent { get; init; } = 15;
+
+    // ---- Disabling the overlay, hotkeys ----
+
+    /// <summary>
+    /// "Disable Overlay": hides the whole overlay AND stops all screen reading (OCR). Set by the tray item or the hotkey, kept across restarts.
+    /// The panel has no matching setting of its own: "Disable Info Panel" is <see cref="PanelEnabled"/> = false.
+    /// </summary>
+    public bool OverlayDisabled { get; init; }
+
+    /// <summary>Global hotkey that toggles "Disable Overlay", like "Ctrl+Shift+O" (see <see cref="HotkeyText"/>), or empty for none.</summary>
+    public string HotkeyToggleOverlay { get; init; } = string.Empty;
+
+    /// <summary>Global hotkey that toggles "Disable Info Panel", or empty for none.</summary>
+    public string HotkeyTogglePanel { get; init; } = string.Empty;
 }

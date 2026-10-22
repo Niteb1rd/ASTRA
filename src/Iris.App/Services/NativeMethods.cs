@@ -78,6 +78,18 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
 
+    public const uint ModNoRepeat = 0x4000;
+    public const int WmHotkey = 0x0312;
+    public static readonly IntPtr HwndMessage = new IntPtr(-3);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
     [DllImport("dwmapi.dll")]
     public static extern int DwmGetWindowAttribute(IntPtr hWnd, int attribute, out NativeRect value, int size);
 

@@ -16,11 +16,14 @@ namespace Iris.App.Views;
 public sealed class OverlayCanvas : FrameworkElement
 {
     private static readonly Brush DarkBrush = Frozen(new SolidColorBrush(Color.FromArgb(0xE6, 0x0A, 0x0A, 0x0F)));
+    private static readonly Brush ToastFill = Frozen(new SolidColorBrush(Color.FromArgb(0xCC, 0x12, 0x12, 0x1A)));
     private static readonly Brush[] ColorBrushes = new Brush[8];
     private static readonly Brush[] PanelFills = new Brush[8];
 
     private OverlayModel _model = OverlayModel.Empty;
     private PanelLayoutResult _panel = PanelLayoutResult.Empty;
+    private ToastLayout? _toastLayout;
+    private string? _toastText;
 
     static OverlayCanvas()
     {
@@ -38,17 +41,19 @@ public sealed class OverlayCanvas : FrameworkElement
     }
 
     /// <summary>Replaces what is drawn and redraws once.</summary>
-    public void SetContent(OverlayModel model, PanelLayoutResult panel)
+    public void SetContent(OverlayModel model, PanelLayoutResult panel, ToastLayout? toastLayout, string? toastText)
     {
         _model = model;
         _panel = panel;
+        _toastLayout = toastLayout;
+        _toastText = toastText;
         InvalidateVisual();
     }
 
     protected override void OnRender(DrawingContext dc)
     {
         base.OnRender(dc);
-        if (_model.IsEmpty)
+        if (_model.IsEmpty && _toastText is null)
             return;
 
         var dpi = VisualTreeHelper.GetDpi(this);
@@ -58,6 +63,7 @@ public sealed class OverlayCanvas : FrameworkElement
             foreach (var item in _model.Brackets)
                 DrawBrackets(dc, item);
             DrawPanel(dc, dpi.PixelsPerDip);
+            DrawToast(dc, dpi.PixelsPerDip);
         }
         finally
         {
@@ -175,7 +181,8 @@ public sealed class OverlayCanvas : FrameworkElement
 
     /// <summary>White text with a dark edge: the letters become a shape; the dark outline is drawn first, the white fill on top of it.</summary>
     private static void DrawOutlinedText(
-        DrawingContext dc, string text, double x, double lineTop, double maxWidth, PanelLayoutResult panel, Pen edgePen, double pixelsPerDip)
+        DrawingContext dc, string text, double x, double lineTop, double maxWidth, PanelLayoutResult panel, Pen edgePen, double pixelsPerDip,
+        bool center = false)
     {
         var size = panel.FontSize;
         var formatted = Format(text, size, pixelsPerDip);
@@ -189,12 +196,30 @@ public sealed class OverlayCanvas : FrameworkElement
         formatted.MaxLineCount = 1;
         formatted.Trimming = TextTrimming.CharacterEllipsis;
 
+        if (center)
+            x += Math.Max(0, maxWidth - formatted.WidthIncludingTrailingWhitespace) / 2;
         var origin = new Point(x, lineTop + (panel.LineHeight - formatted.Height) / 2);
         var shape = formatted.BuildGeometry(origin);
         if (shape is null)
             return;
         dc.DrawGeometry(null, edgePen, shape);
         dc.DrawGeometry(Brushes.White, null, shape);
+    }
+
+    /// <summary>The short confirmation ("Overlay off"): white outlined text, centered, on a dark translucent rounded box.</summary>
+    private void DrawToast(DrawingContext dc, double pixelsPerDip)
+    {
+        if (_toastText is null || _toastLayout is null)
+            return;
+
+        var t = _toastLayout;
+        var r = t.Rect;
+        dc.DrawRoundedRectangle(ToastFill, null, new Rect(r.X, r.Y, r.Width, r.Height), t.CornerRadius, t.CornerRadius);
+
+        // DrawOutlinedText takes its measurements from a panel layout; a one-line stand-in carries the toast's
+        var measures = new PanelLayoutResult(Array.Empty<PanelSlot>(), null, default, t.FontSize, t.LineHeight, t.PaddingX, t.PaddingY, t.CornerRadius);
+        var edgePen = RoundPen(DarkBrush, Math.Max(1.0, t.FontSize * 0.08) * 2);
+        DrawOutlinedText(dc, _toastText, r.X + t.PaddingX, r.Y + t.PaddingY, Math.Max(1.0, r.Width - 2 * t.PaddingX), measures, edgePen, pixelsPerDip, center: true);
     }
 
     private static FormattedText Format(string text, double size, double pixelsPerDip) =>

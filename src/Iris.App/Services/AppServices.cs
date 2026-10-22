@@ -204,8 +204,14 @@ public sealed class AppServices : IDisposable
     /// <summary>The list as last saved (or as loaded). Replaced, never changed in place, when the user saves.</summary>
     public SocialConfig CurrentConfig { get; private set; }
 
-    /// <summary>True while the tray's "Pause overlay" is ticked (the overlay controller keeps this up to date).</summary>
-    public bool IsOverlayPaused { get; set; }
+    /// <summary>
+    /// True while "Disable Overlay" is on (tray item or hotkey; saved as <c>overlay_disabled</c>). Then the overlay shows nothing AND all screen
+    /// reading / OCR must stand still: the Phase 3 capture loop checks this before every capture and listens to <see cref="OverlayDisabledChanged"/>.
+    /// </summary>
+    public bool IsOverlayDisabled => Settings.OverlayDisabled;
+
+    /// <summary>Raised on the UI thread when <see cref="IsOverlayDisabled"/> changed (after <see cref="SettingsApplied"/>).</summary>
+    public event EventHandler? OverlayDisabledChanged;
 
     /// <summary>Raised on the UI thread after new settings became the current ones (saved in the window, or loaded from an edited file).</summary>
     public event EventHandler? SettingsApplied;
@@ -486,9 +492,22 @@ public sealed class AppServices : IDisposable
             Log.Write(Clock.UtcNow, "Log file switched on (setting)");
 
         CacheSettings.TtlDays = ttl;
+        var disabledChanged = Settings.OverlayDisabled != settings.OverlayDisabled;
         Settings = settings;
+        if (disabledChanged)
+            Log.Write(Clock.UtcNow, settings.OverlayDisabled ? "Overlay disabled (screen reading stopped)" : "Overlay enabled");
         SettingsApplied?.Invoke(this, EventArgs.Empty);
+        if (disabledChanged)
+            OverlayDisabledChanged?.Invoke(this, EventArgs.Empty);
     }
+
+    /// <summary>Turns "Disable Overlay" on or off and saves just that setting (other settings are not touched). See <see cref="UpdateSettings"/>.</summary>
+    public SaveResult SetOverlayDisabled(bool disabled) =>
+        Settings.OverlayDisabled == disabled ? SaveResult.Ok() : UpdateSettings(s => s with { OverlayDisabled = disabled });
+
+    /// <summary>Shows or hides the right panel (<c>panel_enabled</c>) and saves just that setting.</summary>
+    public SaveResult SetPanelEnabled(bool enabled) =>
+        Settings.PanelEnabled == enabled ? SaveResult.Ok() : UpdateSettings(s => s with { PanelEnabled = enabled });
 
     /// <summary>Downloads the user's hosted config file (see <see cref="HostedConfigClient"/>). Stops when IRIS quits.</summary>
     public Task<HostedConfigResult> FetchHostedConfigAsync(string url) => _hostedClient.FetchAsync(url, _shutdown.Token);

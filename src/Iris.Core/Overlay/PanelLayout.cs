@@ -24,6 +24,9 @@ public sealed record PanelLayoutResult(
     public bool IsEmpty => Slots.Count == 0 && MoreText is null;
 }
 
+/// <summary>Where the short on-screen confirmation box ("Overlay off") goes: the top of the panel area, one line high.</summary>
+public sealed record ToastLayout(PixelRect Rect, double FontSize, double LineHeight, double PaddingX, double PaddingY, double CornerRadius);
+
 /// <summary>
 /// Computes the right-hand panel's rectangles from the settings and the game window size:
 /// - the panel's right edge is the window width minus <c>panel_right_gap_percent</c> of the width; its width is <c>panel_width_percent</c> of the width;
@@ -49,10 +52,10 @@ public static class PanelLayout
             return PanelLayoutResult.Empty;
 
         var fontSize = ScaledTextSize(settings.PanelTextSize, windowHeight);
-        var lineHeight = fontSize * 1.25;
-        var paddingX = fontSize * 0.7;
-        var paddingY = fontSize * 0.45;
-        var corner = fontSize * 0.5;
+        var lineHeight = LineHeightFor(fontSize);
+        var paddingX = PaddingXFor(fontSize);
+        var paddingY = PaddingYFor(fontSize);
+        var corner = CornerFor(fontSize);
         var entryHeight = 2 * lineHeight + 2 * paddingY;
         var gap = fontSize * 0.4;
 
@@ -96,5 +99,34 @@ public static class PanelLayout
         }
 
         return new PanelLayoutResult(slots, moreText, moreRect, fontSize, lineHeight, paddingX, paddingY, corner);
+    }
+
+    private static double LineHeightFor(double fontSize) => fontSize * 1.25;
+
+    private static double PaddingXFor(double fontSize) => fontSize * 0.7;
+
+    private static double PaddingYFor(double fontSize) => fontSize * 0.45;
+
+    private static double CornerFor(double fontSize) => fontSize * 0.5;
+
+    /// <summary>
+    /// The box for the on-screen confirmation text: same left edge, width and top as the panel, one text line high, same text size.
+    /// It does not depend on <c>panel_enabled</c> (the confirmation also shows while the panel is off). Null for an unusable window size.
+    /// </summary>
+    public static ToastLayout? ComputeToast(double windowWidth, double windowHeight, AppSettings settings)
+    {
+        if (windowWidth <= 0 || windowHeight <= 0)
+            return null;
+
+        var fontSize = ScaledTextSize(settings.PanelTextSize, windowHeight);
+        var lineHeight = LineHeightFor(fontSize);
+        var paddingY = PaddingYFor(fontSize);
+        var panelWidth = windowWidth * settings.PanelWidthPercent / 100.0;
+        var right = windowWidth - windowWidth * settings.PanelRightGapPercent / 100.0;
+        var left = Math.Max(0, right - panelWidth);
+        var top = windowHeight * settings.PanelTopGapPercent / 100.0;
+        return new ToastLayout(
+            new PixelRect(left, top, panelWidth, lineHeight + 2 * paddingY),
+            fontSize, lineHeight, PaddingXFor(fontSize), paddingY, CornerFor(fontSize));
     }
 }

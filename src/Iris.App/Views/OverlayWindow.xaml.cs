@@ -20,6 +20,7 @@ public partial class OverlayWindow : Window
     private bool _hasBounds;
     private OverlayModel? _model;
     private AppSettings? _settings;
+    private string? _toast;
 
     public OverlayWindow()
     {
@@ -51,17 +52,18 @@ public partial class OverlayWindow : Window
 
     /// <summary>
     /// Shows <paramref name="model"/> over <paramref name="bounds"/> (screen pixels). The model's coordinates are relative to the top-left
-    /// corner of that rectangle. Shows the window if it is hidden.
+    /// corner of that rectangle. Shows the window if it is hidden. <paramref name="toast"/> is a short confirmation text drawn at the top of the panel area.
     /// </summary>
-    public void Present(OverlayModel model, PixelRect bounds, AppSettings settings)
+    public void Present(OverlayModel model, PixelRect bounds, AppSettings settings, string? toast = null)
     {
         var boundsChanged = !_hasBounds || bounds != _bounds;
-        var contentChanged = boundsChanged || !ReferenceEquals(model, _model) || settings != _settings;
+        var contentChanged = boundsChanged || !ReferenceEquals(model, _model) || settings != _settings || toast != _toast;
 
         _bounds = bounds;
         _hasBounds = true;
         _model = model;
         _settings = settings;
+        _toast = toast;
 
         if (boundsChanged)
             ApplyBounds();
@@ -69,7 +71,8 @@ public partial class OverlayWindow : Window
         if (contentChanged)
         {
             var layout = PanelLayout.Compute(model.Panel, bounds.Width, bounds.Height, settings);
-            Surface.SetContent(model, layout);
+            var toastLayout = toast is null ? null : PanelLayout.ComputeToast(bounds.Width, bounds.Height, settings);
+            Surface.SetContent(model, layout, toastLayout, toastLayout is null ? null : toast);
         }
 
         if (!IsVisible)
