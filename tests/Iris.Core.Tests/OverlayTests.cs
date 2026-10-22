@@ -423,15 +423,32 @@ public class GameWindowRulesTests
     }
 
     [Fact]
-    public void BorderlessNotice_IsShownOncePerGameSession()
+    public void BorderlessNotice_IsShownOncePerRun()
     {
         var tracker = new BorderlessNoticeTracker();
 
-        Assert.True(tracker.ShouldNotify(1234));
-        Assert.False(tracker.ShouldNotify(1234));
-        Assert.True(tracker.ShouldNotify(5678)); // the game was restarted: a new session
-        Assert.False(tracker.ShouldNotify(5678));
-        Assert.False(tracker.ShouldNotify(1234));
+        Assert.True(tracker.ShouldNotify());
+        tracker.MarkShown();
+        Assert.False(tracker.ShouldNotify());
+        Assert.True(tracker.WasShown);
+    }
+
+    [Fact]
+    public void BorderlessNotice_NotUsedUpUntilMarkedShown()
+    {
+        var tracker = new BorderlessNoticeTracker();
+
+        Assert.True(tracker.ShouldNotify());
+        Assert.True(tracker.ShouldNotify()); // asking does not use it up: it may have been skipped because a question was open
+        Assert.False(tracker.WasShown);
+    }
+
+    [Fact]
+    public void BorderlessNotice_TextNamesTheIrisOverlay()
+    {
+        Assert.Equal(
+            "Star Citizen is not in borderless windowed mode, so the IRIS overlay is turned off. Switch to Borderless in the game's graphics settings.",
+            BorderlessNoticeTracker.Text);
     }
 }
 

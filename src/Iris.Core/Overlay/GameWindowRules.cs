@@ -45,16 +45,21 @@ public static class GameWindowRules
 }
 
 /// <summary>
-/// Remembers for which game sessions (process ids) the "not in borderless mode" notice was already shown,
-/// so the user hears it once per game session and not every time they alt-tab.
+/// Remembers whether the "not in borderless mode" notice was already shown during this run of IRIS. It is shown at most once per run
+/// (not once per game session). It is only counted as shown when <see cref="MarkShown"/> is called, so a moment in which the notice
+/// could not be shown (another question is open) does not use it up.
 /// </summary>
 public sealed class BorderlessNoticeTracker
 {
-    private readonly HashSet<int> _notified = new();
+    /// <summary>True when the notice was shown already during this run.</summary>
+    public bool WasShown { get; private set; }
 
-    /// <summary>True the first time it is asked for this process id; false afterwards.</summary>
-    public bool ShouldNotify(int processId) => _notified.Add(processId);
+    /// <summary>True as long as the notice has not been shown during this run.</summary>
+    public bool ShouldNotify() => !WasShown;
+
+    /// <summary>Records that the notice is being shown now; <see cref="ShouldNotify"/> is false from here on.</summary>
+    public void MarkShown() => WasShown = true;
 
     public const string Text =
-        "Star Citizen is not in borderless windowed mode, so the overlay is turned off. Switch to Borderless in the game's graphics settings.";
+        "Star Citizen is not in borderless windowed mode, so the IRIS overlay is turned off. Switch to Borderless in the game's graphics settings.";
 }

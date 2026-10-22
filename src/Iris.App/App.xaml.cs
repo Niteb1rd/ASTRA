@@ -86,7 +86,7 @@ public partial class App : Application
 
         // The overlay: watches the game window every 250 ms and shows or hides the overlay window (nothing is drawn until Phase 3 feeds it detections;
         // the Settings tab's test overlay uses it already).
-        var overlay = new OverlayController(services);
+        var overlay = new OverlayController(services, imports);
         _overlay = overlay;
         overlay.Start();
 

@@ -13,6 +13,9 @@ public class HotkeyTextTests
     [InlineData("Ctrl+Alt+Shift+Win+Delete", HotkeyModifiers.Control | HotkeyModifiers.Alt | HotkeyModifiers.Shift | HotkeyModifiers.Windows, 0x2E)]
     [InlineData("Ctrl+0", HotkeyModifiers.Control, 0x30)]
     [InlineData("Shift+PageDown", HotkeyModifiers.Shift, 0x22)]
+    [InlineData("O", HotkeyModifiers.None, 0x4F)]
+    [InlineData("F5", HotkeyModifiers.None, 0x74)]
+    [InlineData("Shift+O", HotkeyModifiers.Shift, 0x4F)]
     public void Valid_IsParsed(string text, HotkeyModifiers modifiers, int key)
     {
         Assert.True(HotkeyText.TryParse(text, out var hotkey, out var error), error);
@@ -34,8 +37,6 @@ public class HotkeyTextTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    [InlineData("O")]                // no modifier
-    [InlineData("F5")]               // no modifier
     [InlineData("Ctrl+Shift")]       // no key
     [InlineData("Ctrl+")]
     [InlineData("+O")]
@@ -54,51 +55,45 @@ public class HotkeyTextTests
     }
 
     [Theory]
+    [InlineData("O")]
+    [InlineData("5")]
+    [InlineData("Num3")]
     [InlineData("Shift+O")]
-    [InlineData("Shift+5")]
-    [InlineData("Shift+Num3")]
     [InlineData("shift+a")]
-    public void ShiftAlone_WithALetterOrDigit_IsRejected(string text)
-    {
-        Assert.False(HotkeyText.TryParse(text, out var hotkey, out var error));
-        Assert.Null(hotkey);
-        Assert.Contains("Shift", error);
-        Assert.Equal(string.Empty, HotkeyText.Normalize(text));
-    }
-
-    [Theory]
     [InlineData("Ctrl+O")]
     [InlineData("Alt+5")]
     [InlineData("Win+Q")]
-    [InlineData("Ctrl+Shift+O")]
-    [InlineData("Shift+Alt+7")]
-    [InlineData("Shift+F5")]        // not a typing key: Shift alone is fine
-    [InlineData("Shift+Delete")]
-    [InlineData("Shift+Space")]
-    [InlineData("Shift+Up")]
-    public void LetterOrDigit_NeedsCtrlAltOrWin_OtherKeysDoNot(string text)
+    [InlineData("F5")]
+    [InlineData("Space")]
+    [InlineData("Up")]
+    public void LettersDigitsAndOtherKeys_AreAllowedWithOrWithoutModifiers(string text)
     {
         Assert.True(HotkeyText.TryParse(text, out _, out var error), error);
     }
 
     [Fact]
-    public void TryCreate_RejectsShiftAlone_WithATypingKey_AndSaysWhy()
+    public void SingleKey_FormatsWithoutAPlus_AndRoundTrips()
     {
-        Assert.False(HotkeyText.TryCreate(HotkeyModifiers.Shift, 0x4F, out var hotkey, out var error));
-        Assert.Null(hotkey);
-        Assert.Contains("Ctrl, Alt or Win", error);
-        Assert.False(HotkeyText.TryCreate(HotkeyModifiers.Shift, 0x35, out _));   // 5
-        Assert.False(HotkeyText.TryCreate(HotkeyModifiers.Shift, 0x65, out _));   // Num5
-        Assert.True(HotkeyText.TryCreate(HotkeyModifiers.Shift, 0x74, out _));    // F5
-        Assert.True(HotkeyText.TryCreate(HotkeyModifiers.Shift | HotkeyModifiers.Windows, 0x4F, out _));
+        Assert.Equal("O", HotkeyText.Normalize("o"));
+        Assert.Equal("F9", HotkeyText.Normalize(" f9 "));
+        Assert.Equal("Space", HotkeyText.Format(new Hotkey(HotkeyModifiers.None, 0x20)));
     }
 
     [Fact]
-    public void TryCreate_NoModifier_AndUnsupportedKey_HaveTheirOwnMessages()
+    public void TryCreate_AllowsNoModifier_AndShiftAlone_WithAnyKind()
     {
-        Assert.False(HotkeyText.TryCreate(HotkeyModifiers.None, 0x4F, out _, out var noModifier));
-        Assert.False(HotkeyText.TryCreate(HotkeyModifiers.Control, 0x1B, out _, out var badKey));
-        Assert.Contains("Hold", noModifier);
+        Assert.True(HotkeyText.TryCreate(HotkeyModifiers.None, 0x4F, out var plain));
+        Assert.Equal(new Hotkey(HotkeyModifiers.None, 0x4F), plain);
+        Assert.True(HotkeyText.TryCreate(HotkeyModifiers.Shift, 0x4F, out _));   // Shift+O
+        Assert.True(HotkeyText.TryCreate(HotkeyModifiers.Shift, 0x35, out _));   // Shift+5
+        Assert.True(HotkeyText.TryCreate(HotkeyModifiers.None, 0x74, out _));    // F5
+    }
+
+    [Fact]
+    public void TryCreate_UnsupportedKey_HasItsOwnMessage()
+    {
+        Assert.False(HotkeyText.TryCreate(HotkeyModifiers.None, 0x1B, out var hotkey, out var badKey)); // Esc
+        Assert.Null(hotkey);
         Assert.Contains("cannot be used", badKey);
     }
 
@@ -120,9 +115,9 @@ public class HotkeyTextTests
     }
 
     [Fact]
-    public void TryCreate_NeedsAModifierAndASupportedKey()
+    public void TryCreate_NeedsASupportedKey()
     {
-        Assert.False(HotkeyText.TryCreate(HotkeyModifiers.None, 0x4F, out _));
+        Assert.False(HotkeyText.TryCreate(HotkeyModifiers.None, 0x1B, out _)); // Esc
         Assert.False(HotkeyText.TryCreate(HotkeyModifiers.Control, 0x1B, out _)); // Esc
         Assert.False(HotkeyText.TryCreate(HotkeyModifiers.Control, 0x10, out _)); // Shift key itself
         Assert.True(HotkeyText.TryCreate(HotkeyModifiers.Control, 0x4F, out _));
@@ -188,9 +183,8 @@ public class HotkeySettingsTests : IDisposable
     }
 
     [Theory]
-    [InlineData("hotkey_toggle_overlay = \"O\"", "hotkey_toggle_overlay")]
     [InlineData("hotkey_toggle_overlay = \"Ctrl+Esc\"", "hotkey_toggle_overlay")]
-    [InlineData("hotkey_toggle_overlay = \"Shift+O\"", "hotkey_toggle_overlay")] // Shift alone with a letter would fire while typing
+    [InlineData("hotkey_toggle_overlay = \"Ctrl+Shift\"", "hotkey_toggle_overlay")] // no key
     [InlineData("hotkey_toggle_panel = \"nonsense\"", "hotkey_toggle_panel")]
     [InlineData("hotkey_toggle_panel = 5", "hotkey_toggle_panel")]
     public void InvalidHotkey_BecomesEmptyWithAWarning(string line, string key)
@@ -202,6 +196,15 @@ public class HotkeySettingsTests : IDisposable
         Assert.Equal(string.Empty, result.Settings.HotkeyToggleOverlay);
         Assert.Equal(string.Empty, result.Settings.HotkeyTogglePanel);
         Assert.True(result.Settings.OverlayDisabled); // the other settings are still read
+    }
+
+    [Fact]
+    public void SingleKeyHotkey_IsReadWithoutAWarning()
+    {
+        var result = AppSettingsToml.Read("hotkey_toggle_overlay = \"f9\"\n");
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal("F9", result.Settings.HotkeyToggleOverlay);
     }
 
     [Fact]

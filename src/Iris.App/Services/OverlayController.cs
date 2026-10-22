@@ -29,6 +29,7 @@ public sealed class OverlayController : IDisposable
     public const double ToastSeconds = 2;
 
     private readonly AppServices _services;
+    private readonly ImportCoordinator _imports;
     private readonly GameWindowTracker _tracker;
     private readonly BorderlessNoticeTracker _notice = new();
     private readonly DispatcherTimer _testTimer = new() { Interval = TimeSpan.FromSeconds(1) };
@@ -47,9 +48,10 @@ public sealed class OverlayController : IDisposable
     private AppSettings? _testSettings;
     private long _testEndTick;
 
-    public OverlayController(AppServices services)
+    public OverlayController(AppServices services, ImportCoordinator imports)
     {
         _services = services;
+        _imports = imports;
         _tracker = new GameWindowTracker(services.Log, services.Clock);
         _tracker.Changed += OnGameWindowChanged;
         _testTimer.Tick += OnTestTick;
@@ -268,13 +270,38 @@ public sealed class OverlayController : IDisposable
 
     private void OnGameWindowChanged(object? sender, GameWindowSnapshot snapshot)
     {
-        // no notice while the overlay is disabled (the user switched it off on purpose); it is not used up then, so it can still come later
-        if (snapshot.State == GameWindowState.NotBorderless && !_services.IsOverlayDisabled && _notice.ShouldNotify(snapshot.ProcessId))
-        {
-            _services.Log.Write(_services.Clock.UtcNow, "Told the user that Star Citizen is not in borderless windowed mode");
-            _services.Notify?.Invoke(BorderlessNoticeTracker.Text);
-        }
         Evaluate();
+
+        // No notice while the overlay is disabled (the user switched it off on purpose); it is not used up then, so it can still come later.
+        if (snapshot.State == GameWindowState.NotBorderless && !_services.IsOverlayDisabled && _notice.ShouldNotify())
+            ShowBorderlessNotice();
+    }
+
+    /// <summary>
+    /// The "not in borderless mode" pop-up, at most once per run of IRIS. Skipped (and tried again at the next state change) while another IRIS
+    /// question or pop-up is open. It follows the pop-up policy: with the game in front it is not activated and waits in the taskbar; there is
+    /// no tray balloon.
+    /// </summary>
+    private void ShowBorderlessNotice()
+    {
+        if (_disposed || _imports.IsQuitting || PromptDialog.IsAnyOpen)
+            return;
+        var host = _imports.Host;
+        if (host is not null && !host.IsIdleForPrompt)
+            return;
+        if (!_imports.TryBeginQuestion())
+            return; // an import or another question is open
+
+        try
+        {
+            _notice.MarkShown(); // before the dialog opens: its modal loop keeps the timers running and must not open a second one
+            _services.Log.Write(_services.Clock.UtcNow, "Told the user that Star Citizen is not in borderless windowed mode");
+            PromptDialog.TellWithClose(BorderlessNoticeTracker.Text, host?.DialogOwner);
+        }
+        finally
+        {
+            _imports.EndQuestion();
+        }
     }
 
     private void OnSettingsApplied(object? sender, EventArgs e)

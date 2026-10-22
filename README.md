@@ -94,8 +94,9 @@ IRIS now has the overlay window. It is driven by **test data only**; Phase 3 wil
 
 **When it shows.** Star Citizen must be the window in front and must run in **borderless windowed mode**: IRIS only overlays a window that has no
 title bar or frame and exactly covers its monitor, because only then do window and screen coordinates line up. In the game, set
-*Graphics > Windowed mode* to **Borderless**. If the game is in front but not borderless, the overlay stays off and a tray message says
-"Star Citizen is not in borderless windowed mode, so the overlay is turned off. Switch to Borderless in the game's graphics settings." (once per game session, and not while Disable Overlay is on).
+*Graphics > Windowed mode* to **Borderless**. If the game is in front but not borderless, the overlay stays off and IRIS shows a small pop-up with a single **Close** button:
+"Star Citizen is not in borderless windowed mode, so the IRIS overlay is turned off. Switch to Borderless in the game's graphics settings." It is shown at most once per run of IRIS (not once per game session),
+never while Disable Overlay is on, and not while another IRIS question or pop-up is open (IRIS then tries again at the next change of the game window state). Like IRIS's other pop-ups it does not take the focus from the game: it waits in the taskbar, and there is no tray balloon.
 **Disable Overlay** (tray) hides it, see "Disable Overlay, Disable Info Panel and hotkeys" below. The overlay window is created the first time it is needed and afterwards only hidden. While the game is not in front, the only work IRIS does is
 a check of the foreground window every 250 ms. State changes (game in front, borderless or not) are written to the log.
 
@@ -131,9 +132,10 @@ change the same saved setting.
 - A tray click, a hotkey or the *Disable Overlay* check box saves just that one setting at once. If the settings window is open with other unsaved edits, they are kept; only the
   check boxes of these two switches follow the change.
 
-**Hotkeys** (Settings tab, top section, `hotkey_toggle_overlay` / `hotkey_toggle_panel`, empty by default): *Toggle Overlay* and *Toggle Info Panel*. Click a box,
-press a combination (at least one of Ctrl, Alt, Shift or Win, plus a key; Esc cancels), **Clear** removes it. With a letter or digit as the key (A-Z, 0-9, Num0-Num9) the
-combination must include Ctrl, Alt or Win: Shift alone is not enough, because Shift+letter is typed in chat and the hotkey would fire while typing. While a box is recording, hotkeys do not fire. Written as text such as `Ctrl+Shift+O`; keys: A-Z, 0-9, F1-F24,
+**Hotkeys** (Settings tab, top section, `hotkey_toggle_overlay` / `hotkey_toggle_panel`, empty by default): *Toggle Overlay* and *Toggle Info Panel*. No box has the focus when the window or the tab opens. **Click** a box (or Tab to it and press Enter or Space) to start recording, then
+press the hotkey; Esc cancels (Esc itself cannot be assigned), **Clear** removes it. Merely focusing a box does not start recording. A single key without any modifier is allowed (for example `F9` or `O`), because the key press
+always reaches the game as well; combine it with Ctrl, Alt, Shift or Win if you prefer. The modifiers must match exactly: a plain `O` hotkey does not fire while Ctrl is held. While a box is recording, hotkeys do not fire.
+An empty box shows "(none)". Written as text such as `Ctrl+Shift+O` or `F9`; keys: A-Z, 0-9, F1-F24,
 Num0-Num9, Space, Tab, Enter, Backspace, Insert, Delete, Home, End, PageUp, PageDown, arrows.
 
 Hotkeys are global and work while the game is in front. IRIS reads them with a low-level keyboard hook rather than by claiming the combination, so **the key press
@@ -206,11 +208,11 @@ session_log_enabled = true     # write Data\logs\iris-yyyy-MM-dd.log
 check_for_updates = true       # a setting only for now: the GitHub version check arrives in a later version
 hosted_config_url = ""         # https:// address of a config file you host yourself
 hosted_config_last_hash = ""   # SHA-256 (64 hex characters) of the last hosted file you applied or declined (IRIS fills this in)
-hosted_config_auto_check = false              # true: check the hosted address every 24 hours (see "Hosted config URL")
+hosted_config_auto_check = false              # true: check the hosted address every 24 hours (see "Hosted Config URL")
 hosted_config_last_check = "2026-10-22T09:30:00Z"   # optional; when the last automatic check was made (UTC text; IRIS fills this in)
 panel_enabled = true           # false = "Disable Info Panel": the right-hand panel is hidden (the brackets stay)
 overlay_disabled = false       # true = "Disable Overlay": nothing is drawn and no screen reading happens
-hotkey_toggle_overlay = ""     # global hotkey for Disable Overlay, e.g. "Ctrl+Shift+O"; empty = none
+hotkey_toggle_overlay = ""     # global hotkey for Disable Overlay, e.g. "Ctrl+Shift+O" or "F9"; empty = none
 hotkey_toggle_panel = ""       # global hotkey for Disable Info Panel; empty = none
 panel_width_percent = 16       # panel width, % of the game window width; 8 to 40
 panel_text_size = 18           # panel text size in pixels at 1440p (scales with the window height); 10 to 40
@@ -218,7 +220,7 @@ panel_right_gap_percent = 10   # space right of the panel, % of the width; 0 to 
 panel_top_gap_percent = 15     # space above the panel, % of the height; 0 to 60
 ```
 
-A hotkey that is not valid (no modifier, Shift as the only modifier of a letter or digit, unknown key, wrong type) is noted in the log and becomes empty. A `panel_*` value that is out of its range (or not a whole number) is noted in the log and replaced by its default.
+A hotkey that is not valid (no key, unknown key, more than one key, wrong type) is noted in the log and becomes empty. A `panel_*` value that is out of its range (or not a whole number) is noted in the log and replaced by its default.
 `hosted_config_auto_check` is off by default. Switching it on without a valid `hosted_config_url` switches it off again, with a note; a
 `hosted_config_last_check` that is not a date and time is noted and counts as "never checked". Unknown keys are noted in the log and ignored. A file that is not valid TOML is not changed until you save; until then the defaults
 apply and IRIS tells you; a background change (such as the remembered hosted version) is then kept in memory only, and the file is
@@ -283,9 +285,9 @@ You then pick what happens to your current lists, every time:
 With no list file yet, the import just asks for confirmation and writes the file. Afterwards the window shows the new rows, every
 name is checked against RSI, and the status bar says what was added.
 
-### Hosted config URL
+### Hosted Config URL
 
-Put the address of your own config file (for example a raw file in your own repository or a web space) into **Hosted config URL**.
+Put the address of your own config file (for example a raw file in your own repository or a web space) into **Hosted Config URL**.
 Rules IRIS follows when it fetches it: `https://` only, no user name or password in the address; one GET, 15 seconds, at most 1 MB;
 redirects are followed by hand only within the same site, same port (up to 3), a redirect to another site is refused with a message;
 every request URL, refused ones too, is logged without any user name or password; a failed fetch is never remembered.
@@ -295,7 +297,7 @@ imported from there, nothing is imported and IRIS says "Your hosted config has n
 
 #### Checking the hosted config every 24 hours (opt-in)
 
-Below the **Import from URL** button the Settings tab has the check box **Check hosted config URL for updates every 24 hrs**. It is greyed out
+Beside the **Import from URL** button the Settings tab has the check box **Check URL for updates every 24 hrs**. It is greyed out
 while the address box is empty or not a valid `https://` address (clearing the address unticks it); when a valid address is there it is enabled,
 and stays unticked until you tick it. It is saved with the Save button like every other setting.
 

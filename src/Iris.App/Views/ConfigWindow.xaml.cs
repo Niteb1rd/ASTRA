@@ -353,6 +353,22 @@ public partial class ConfigWindow : Window, IImportHost
         Keyboard.Focus(FocusSink);
     }
 
+    /// <summary>
+    /// Opening a tab must not leave the keyboard focus in a hotkey box (focus alone starts no recording, but the box would look selected):
+    /// when a tab was selected and a hotkey box ended up with the focus, the invisible <c>FocusSink</c> takes it. Done after WPF has finished
+    /// moving the focus. A Tab key press into the box later is the user's own choice and is left alone.
+    /// </summary>
+    private void OnTabsSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, Tabs))
+            return; // a drop-down inside a tab raised it
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            if (!_isClosed && Keyboard.FocusedElement is HotkeyBox)
+                EndEditing();
+        }));
+    }
+
     /// <summary>A click on empty space ends editing: a focused text box gives up focus (and so gets checked).</summary>
     private void OnWindowPreviewMouseDown(object sender, MouseButtonEventArgs e)
     {

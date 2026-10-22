@@ -11,14 +11,13 @@ public enum HotkeyModifiers
     Windows = 8,
 }
 
-/// <summary>A global hotkey: at least one modifier plus one key (a Windows virtual-key code from the supported list).</summary>
+/// <summary>A global hotkey: zero or more modifiers plus one key (a Windows virtual-key code from the supported list).</summary>
 public sealed record Hotkey(HotkeyModifiers Modifiers, int VirtualKey);
 
 /// <summary>
-/// Reads and writes hotkeys as text, e.g. "Ctrl+Shift+O". Rules:
-/// - at least one of Ctrl, Alt, Shift, Win, and exactly one other key;
-/// - when that key is a letter or a digit (A-Z, 0-9, Num0-Num9) the modifiers must include Ctrl, Alt or Win: Shift alone is not enough,
-///   because Shift+letter is typed in chat and the hotkey would fire while typing;
+/// Reads and writes hotkeys as text, e.g. "Ctrl+Shift+O" or just "F9". Rules:
+/// - exactly one key, with any number of Ctrl, Alt, Shift, Win (none is fine: a single key is allowed, since the key also reaches the game);
+/// - the modifiers must match exactly when the hotkey fires (done by the hotkey manager): a plain "O" does not fire while Ctrl is held;
 /// - modifiers may come in any order and any letter case when read ("control+shift+o"); they are written as Ctrl+Alt+Shift+Win+Key;
 /// - supported keys: A-Z, 0-9, F1-F24, Num0-Num9, Space, Tab, Enter, Backspace, Insert, Delete, Home, End, PageUp, PageDown and the arrow keys
 ///   (Up, Down, Left, Right). Anything else (Esc, punctuation...) is not accepted.
@@ -73,11 +72,7 @@ public static class HotkeyText
     /// <summary>True when <paramref name="virtualKey"/> is a key hotkeys may use.</summary>
     public static bool IsSupportedKey(int virtualKey) => NameByKey.ContainsKey(virtualKey);
 
-    /// <summary>True for the keys that type a character in a chat box: A-Z, 0-9 and the number pad digits.</summary>
-    public static bool IsTypingKey(int virtualKey) =>
-        virtualKey is >= 0x30 and <= 0x39 or >= 0x41 and <= 0x5A or >= 0x60 and <= 0x69;
-
-    /// <summary>Makes a hotkey from what the picker saw. False when there is no modifier, the key is not supported, or Shift is the only modifier of a typing key.</summary>
+    /// <summary>Makes a hotkey from what the picker saw (no modifier is fine). False when the key is not supported.</summary>
     public static bool TryCreate(HotkeyModifiers modifiers, int virtualKey, out Hotkey? hotkey) =>
         TryCreate(modifiers, virtualKey, out hotkey, out _);
 
@@ -86,19 +81,9 @@ public static class HotkeyText
     {
         hotkey = null;
         error = string.Empty;
-        if (modifiers == HotkeyModifiers.None)
-        {
-            error = "Hold Ctrl, Alt, Shift or Win too";
-            return false;
-        }
         if (!IsSupportedKey(virtualKey))
         {
             error = "That key cannot be used";
-            return false;
-        }
-        if (IsTypingKey(virtualKey) && (modifiers & (HotkeyModifiers.Control | HotkeyModifiers.Alt | HotkeyModifiers.Windows)) == 0)
-        {
-            error = "With a letter or digit, hold Ctrl, Alt or Win too";
             return false;
         }
         hotkey = new Hotkey(modifiers, virtualKey);
@@ -174,18 +159,6 @@ public static class HotkeyText
             error = $"\"{text}\" has no key, only Ctrl/Alt/Shift/Win.";
             return false;
         }
-        if (modifiers == HotkeyModifiers.None)
-        {
-            error = $"\"{text}\" needs at least one of Ctrl, Alt, Shift or Win.";
-            return false;
-        }
-
-        if (IsTypingKey(key.Value) && (modifiers & (HotkeyModifiers.Control | HotkeyModifiers.Alt | HotkeyModifiers.Windows)) == 0)
-        {
-            error = $"\"{text}\": with a letter or digit, Ctrl, Alt or Win is needed too (Shift alone would fire while typing).";
-            return false;
-        }
-
         hotkey = new Hotkey(modifiers, key.Value);
         return true;
     }
