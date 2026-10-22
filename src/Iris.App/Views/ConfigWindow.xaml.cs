@@ -1159,7 +1159,7 @@ public partial class ConfigWindow : Window, IImportHost
                 return;
             }
 
-            var attempt = await _imports.ImportTextAsync(read.Text, "Import " + Path.GetFileName(dialog.FileName), ignoreHostedUrl: false);
+            var attempt = await _imports.ImportTextAsync(read.Text, "Import " + Path.GetFileName(dialog.FileName), ignoreHostedUrl: false, userJustActed: true);
             if (!_isClosed && attempt.Outcome != ImportOutcome.Imported)
                 FooterStatus.Text = attempt.Message; // on success the reload has already shown the summary
         }
@@ -1195,6 +1195,8 @@ public partial class ConfigWindow : Window, IImportHost
         }
 
         BeginBusy();
+        // Read now: ReloadAfterImport (inside the import) resets the controls from the stored settings.
+        var wantAutoCheck = HostedAutoCheck.IsChecked == true;
         try
         {
             FooterStatus.ToolTip = null;
@@ -1219,7 +1221,7 @@ public partial class ConfigWindow : Window, IImportHost
                 return;
             }
 
-            var attempt = await _imports.ImportTextAsync(fetched.Text, "Import from " + new Uri(url).Host, ignoreHostedUrl: true);
+            var attempt = await _imports.ImportTextAsync(fetched.Text, "Import from " + new Uri(url).Host, ignoreHostedUrl: true, userJustActed: true);
             if (attempt.Outcome != ImportOutcome.Imported)
             {
                 FooterStatus.Text = attempt.Message;
@@ -1227,11 +1229,10 @@ public partial class ConfigWindow : Window, IImportHost
             }
 
             // Remember the address and this version, so the next "Import from URL" can tell whether the hosted file has changed.
-            // The 24-hour check goes with the address (it was left out of the save above, like the address): if the box still shows the
-            // address that was imported, its tick is kept too, so reloading the controls below does not throw it away.
-            var autoCheck = HostedAutoCheck.IsChecked == true && string.Equals(HostedUrlBox.Text.Trim(), url, StringComparison.Ordinal);
+            // The 24-hour check goes with the address (it was left out of the save above, like the address): the tick the user had when
+            // pressing the button (read before the import reset the controls) is stored together with the address.
             var remembered = _services.UpdateSettings(
-                s => s with { HostedConfigUrl = url, HostedConfigLastHash = hash, HostedConfigAutoCheck = autoCheck });
+                s => s with { HostedConfigUrl = url, HostedConfigLastHash = hash, HostedConfigAutoCheck = wantAutoCheck });
             LoadSettingsControls();
             FooterStatus.Text = remembered.Success
                 ? attempt.Message

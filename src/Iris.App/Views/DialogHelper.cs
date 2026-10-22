@@ -55,12 +55,16 @@ internal static class DialogHelper
     /// - IRIS is the foreground program: an ordinary dialog, centered on <paramref name="owner"/> if that window is open, else on the screen.
     /// - Another program is in front (the game): the dialog is never forced over it. It is not topmost and not activated, it has a taskbar
     ///   button, and a tray balloon with <paramref name="balloonText"/> tells the user that it is waiting.
+    /// - <paramref name="userJustActed"/> is true when the dialog is the direct follow-up of something the user just did in IRIS (they
+    /// answered Yes to an earlier question, or launched IRIS): it is shown normally (activated, with a taskbar button when it has no
+    /// owner, no balloon) even if IRIS is not the foreground program at that moment.
     /// </summary>
-    public static void PrepareBackgroundDialog(Window dialog, Window? owner, string balloonText, Action<string>? notify)
+    public static void PrepareBackgroundDialog(
+        Window dialog, Window? owner, string balloonText, Action<string>? notify, bool userJustActed = false)
     {
         dialog.Topmost = false;
 
-        if (IsIrisForeground())
+        if (userJustActed || IsIrisForeground())
         {
             if (owner is not null && PrepareOwner(owner))
             {

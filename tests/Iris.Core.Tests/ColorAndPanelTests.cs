@@ -134,7 +134,7 @@ public class ColorAndPanelTests
         var c = Config(c => c.OrgRules.Add(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Magenta)));
         var m = ColorResolver.Resolve("Nitebird", Nitebird, c);
 
-        Assert.Equal(MatchKind.OrgAttribute, m.Kind);
+        Assert.Equal(MatchKind.NoMatch, m.Kind);
         Assert.Equal(OverlayColor.Magenta, m.Color);
         Assert.Equal("<", m.OpenBracket);
         Assert.Equal(">", m.CloseBracket);
@@ -149,7 +149,7 @@ public class ColorAndPanelTests
     {
         var m = ColorResolver.Resolve("Nitebird", Nitebird, new SocialConfig());
 
-        Assert.Equal(MatchKind.OrgAttribute, m.Kind);
+        Assert.Equal(MatchKind.NoMatch, m.Kind);
         Assert.Equal(OverlayColor.Blue, m.Color);
         Assert.Equal("<", m.OpenBracket);
     }
@@ -163,7 +163,7 @@ public class ColorAndPanelTests
         var m = ColorResolver.Resolve("Loner", none, c);
 
         Assert.Equal(OverlayColor.Green, m.Color);
-        Assert.Equal(MatchKind.OrgAttribute, m.Kind);
+        Assert.Equal(MatchKind.NoMatch, m.Kind);
         Assert.Equal("Orgs: none found", PanelText.OrgLine(none, m));
     }
 

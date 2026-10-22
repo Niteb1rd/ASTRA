@@ -113,7 +113,7 @@ public partial class App : Application
             var answer = PromptDialog.Ask(
                 "Errors were detected in your config files:\n\n- " + string.Join(".\n- ", problems) + ".\n\n"
                 + "Your files were not changed. Open Settings to see the errors and fix them now?",
-                "Errors were detected in your config files.", services.Notify, owner: null);
+                "Errors were detected in your config files.", services.Notify, owner: null, userJustActed: true); // the user just launched IRIS
             if (_shuttingDown)
                 return;
             if (answer && load.IsValid)
@@ -328,13 +328,16 @@ public partial class App : Application
         }
 
         // Appears on its own at startup: the pop-up policy applies (see PromptDialog / DialogHelper.PrepareBackgroundDialog).
-        PromptDialog.Tell(text.ToString(), "IRIS found problems in your list file.", notify, owner: null);
+        PromptDialog.Tell(text.ToString(), "IRIS found problems in your list file.", notify, owner: null, userJustActed: true); // the user just launched IRIS
     }
 
     private void OnUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         _services?.Log.Write(DateTimeOffset.UtcNow, "Unexpected error: " + e.Exception);
         var message = "Something unexpected went wrong:\n\n" + e.Exception.Message + "\n\nIRIS keeps running.";
+        // Claim the question slot, so no import or automatic question starts under this pop-up. If the slot is taken (an import or another
+        // question is open) the pop-up is shown anyway: the error must not be lost.
+        var claimed = _imports?.TryBeginQuestion() == true;
         try
         {
             // Can happen at any time (also from a background check), so it follows the pop-up policy like the other pop-ups.
@@ -344,6 +347,11 @@ public partial class App : Application
         {
             // the dialog itself failed: fall back to the plain message box rather than letting the handler throw
             MessageBox.Show(message, "IRIS", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            if (claimed)
+                _imports?.EndQuestion();
         }
         e.Handled = true;
     }

@@ -112,13 +112,15 @@ public sealed class ImportCoordinator
     /// <param name="text">The file content.</param>
     /// <param name="headline">Heading of the choice dialog.</param>
     /// <param name="ignoreHostedUrl">True when the caller is about to store the address itself, so an edited address box is not an "unsaved change".</param>
-    public async Task<ImportAttempt> ImportTextAsync(string text, string headline, bool ignoreHostedUrl)
+    /// <param name="userJustActed">True when the import follows something the user just did (a button, a Yes to the update question): the
+    /// dialogs that have no config window to belong to are then shown normally, even if IRIS is not in front, and no balloon is shown.</param>
+    public async Task<ImportAttempt> ImportTextAsync(string text, string headline, bool ignoreHostedUrl, bool userJustActed = false)
     {
         var dispatcher = Application.Current?.Dispatcher;
         if (dispatcher is not null && !dispatcher.CheckAccess())
         {
             var inner = await dispatcher.InvokeAsync<Task<ImportAttempt>>(
-                () => ImportTextAsync(text, headline, ignoreHostedUrl)).Task;
+                () => ImportTextAsync(text, headline, ignoreHostedUrl, userJustActed)).Task;
             return await inner;
         }
 
@@ -138,7 +140,8 @@ public sealed class ImportCoordinator
             var read = ConfigImporter.ParseForImport(text);
             if (!read.IsValid || read.Config is null)
             {
-                Tell(owner, "This config cannot be imported. Nothing was changed.\n\n" + BulletList(read.Errors), MessageBoxImage.Warning);
+                Tell(owner, "This config cannot be imported. Nothing was changed.\n\n" + BulletList(read.Errors), MessageBoxImage.Warning,
+                    headline, userJustActed);
                 return new ImportAttempt(ImportOutcome.Rejected, "Import failed: the config has problems.");
             }
 
@@ -146,7 +149,7 @@ public sealed class ImportCoordinator
             {
                 var answer = Ask(owner,
                     "The config has some notes:\n\n" + BulletList(read.Warnings) + "\n\nContinue with the import?",
-                    MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+                    MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No, headline, userJustActed);
                 if (answer != MessageBoxResult.Yes)
                     return new ImportAttempt(ImportOutcome.Cancelled, "Import cancelled.");
             }
@@ -159,7 +162,7 @@ public sealed class ImportCoordinator
                     + "Yes: save them, then import.\n"
                     + "No: discard your changes and import.\n"
                     + "Cancel: stop; nothing is imported.",
-                    MessageBoxButton.YesNoCancel, MessageBoxImage.Question, MessageBoxResult.Cancel);
+                    MessageBoxButton.YesNoCancel, MessageBoxImage.Question, MessageBoxResult.Cancel, headline, userJustActed);
                 if (answer != MessageBoxResult.Yes && answer != MessageBoxResult.No)
                     return new ImportAttempt(ImportOutcome.Cancelled, "Import cancelled.");
                 if (answer == MessageBoxResult.Yes && !await host.SaveChangesAsync(ignoreHostedUrl))
@@ -168,7 +171,7 @@ public sealed class ImportCoordinator
 
             // 3. Which mode? (Asked after the save above, because saving may have just created the list file.)
             var hasExisting = File.Exists(_services.Paths.SocialListFile);
-            var mode = ImportChoiceDialog.Ask(owner, read.Config, hasExisting, headline, showDeclineNote: false, _services.Notify);
+            var mode = ImportChoiceDialog.Ask(owner, read.Config, hasExisting, headline, showDeclineNote: false, _services.Notify, userJustActed);
             if (mode is null)
                 return new ImportAttempt(ImportOutcome.Cancelled, "Import cancelled.");
 
@@ -176,7 +179,7 @@ public sealed class ImportCoordinator
             var result = _services.ApplyImport(read.Config, mode.Value);
             if (!result.Success)
             {
-                Tell(owner, "The config was not imported. Nothing was changed.\n\n" + result.Error, MessageBoxImage.Error);
+                Tell(owner, "The config was not imported. Nothing was changed.\n\n" + result.Error, MessageBoxImage.Error, headline, userJustActed);
                 return new ImportAttempt(ImportOutcome.WriteFailed, "Import failed: " + result.Error);
             }
 
@@ -203,16 +206,34 @@ public sealed class ImportCoordinator
         return text.ToString().TrimEnd();
     }
 
-    private static void Tell(Window? owner, string text, MessageBoxImage icon) =>
-        Ask(owner, text, MessageBoxButton.OK, icon, MessageBoxResult.OK);
+    private void Tell(Window? owner, string text, MessageBoxImage icon, string balloonText, bool userJustActed) =>
+        Ask(owner, text, MessageBoxButton.OK, icon, MessageBoxResult.OK, balloonText, userJustActed);
 
     /// <summary>
     /// Asks with the config window as owner when there is one (brought to the front first, so a minimized window does not hide
-    /// the question); without a window the question is an ordinary message box.
+    /// the question): an ordinary message box. Without a window, an OK message and a Yes/No question use IRIS's own
+    /// <see cref="PromptDialog"/>, which follows the pop-up policy (<see cref="DialogHelper.PrepareBackgroundDialog"/>: never forced over
+    /// the game unless <paramref name="userJustActed"/>). Only the ownerless Yes/No/Cancel question is a plain message box.
     /// </summary>
-    private static MessageBoxResult Ask(
-        Window? owner, string text, MessageBoxButton buttons, MessageBoxImage icon, MessageBoxResult defaultResult) =>
-        owner is not null && DialogHelper.PrepareOwner(owner)
-            ? MessageBox.Show(owner, text, "IRIS", buttons, icon, defaultResult)
-            : MessageBox.Show(text, "IRIS", buttons, icon, defaultResult);
+    private MessageBoxResult Ask(
+        Window? owner, string text, MessageBoxButton buttons, MessageBoxImage icon, MessageBoxResult defaultResult,
+        string balloonText, bool userJustActed)
+    {
+        if (owner is not null && DialogHelper.PrepareOwner(owner))
+            return MessageBox.Show(owner, text, "IRIS", buttons, icon, defaultResult);
+
+        switch (buttons)
+        {
+            case MessageBoxButton.OK:
+                PromptDialog.Tell(text, balloonText, _services.Notify, owner: null, userJustActed: userJustActed);
+                return MessageBoxResult.OK;
+            case MessageBoxButton.YesNo:
+                return PromptDialog.Ask(
+                    text, balloonText, _services.Notify, owner: null, defaultYes: defaultResult == MessageBoxResult.Yes, userJustActed: userJustActed)
+                    ? MessageBoxResult.Yes
+                    : MessageBoxResult.No;
+            default:
+                return MessageBox.Show(text, "IRIS", buttons, icon, defaultResult);
+        }
+    }
 }

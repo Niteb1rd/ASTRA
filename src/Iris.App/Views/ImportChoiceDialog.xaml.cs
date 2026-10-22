@@ -26,8 +26,11 @@ public partial class ImportChoiceDialog : Window
     /// <param name="headline">Heading text, e.g. "Your hosted config has changed".</param>
     /// <param name="showDeclineNote">True for the hosted config: tells the user that Cancel is remembered.</param>
     /// <param name="notify">Shows a tray balloon (used with the headline when the dialog has to wait behind another program); may be null.</param>
+    /// <param name="userJustActed">True when the dialog follows something the user just did (a click, a Yes): it is then shown normally even if
+    /// IRIS is not in front at that moment, and no balloon is shown.</param>
     public static ImportMode? Ask(
-        Window? owner, SocialConfig imported, bool hasExistingFile, string headline, bool showDeclineNote, Action<string>? notify = null)
+        Window? owner, SocialConfig imported, bool hasExistingFile, string headline, bool showDeclineNote, Action<string>? notify = null,
+        bool userJustActed = false)
     {
         var dialog = new ImportChoiceDialog();
         dialog.HeadlineText.Text = headline;
@@ -46,7 +49,7 @@ public partial class ImportChoiceDialog : Window
         {
             // No window to belong to (or it is gone): the dialog stands on its own, with a taskbar button. It is never forced on top of
             // another program: if IRIS is not in front it is shown without taking the focus, and the balloon says that it is waiting.
-            DialogHelper.PrepareBackgroundDialog(dialog, null, headline, notify);
+            DialogHelper.PrepareBackgroundDialog(dialog, null, headline, notify, userJustActed);
         }
 
         dialog.ShowDialog();

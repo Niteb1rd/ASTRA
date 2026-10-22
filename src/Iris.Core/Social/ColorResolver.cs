@@ -19,11 +19,12 @@ public enum MatchKind
     PlayerList,     // { }
     OrgList,        // [ ]
     OrgAttribute,   // < >
+    NoMatch,        // < > (nothing else matched: no deciding org, no attribute)
 }
 
 /// <summary>The color decision for one player.</summary>
-/// <param name="DecidingOrgSid">Org that caused an OrgList or OrgAttribute match (null for redacted / no-org rules).</param>
-/// <param name="DecidingAttribute">For attribute matches: the attribute text shown in the panel, e.g. "PMC", "REDACTED", "No Org".</param>
+/// <param name="DecidingOrgSid">Org that caused an OrgList or OrgAttribute match (null for redacted / no-org rules and for NoMatch).</param>
+/// <param name="DecidingAttribute">For attribute matches: the attribute text shown in the panel, e.g. "PMC", "REDACTED", "No Org" (null for NoMatch).</param>
 public sealed record ColorMatch(MatchKind Kind, OverlayColor Color, string? DecidingOrgSid, string? DecidingAttribute)
 {
     public string OpenBracket => Kind switch { MatchKind.PlayerList => "{", MatchKind.OrgList => "[", _ => "<" };
@@ -35,7 +36,7 @@ public sealed record ColorMatch(MatchKind Kind, OverlayColor Color, string? Deci
 /// 1. player list (no tiebreak needed);
 /// 2. org list: lowest priority number wins, ties go to the org listed first;
 /// 3. org-attribute rules: lowest priority number wins, ties go to the rule listed first;
-/// 4. nothing matches: the permanent No Match rule (<see cref="NoMatchRule"/>) gives the player its color, with the attribute bracket &lt; &gt;
+/// 4. nothing matches: the permanent No Match rule (<see cref="NoMatchRule"/>) gives the player its color (<see cref="MatchKind.NoMatch"/>), with the bracket &lt; &gt;
 ///    (a config without that rule uses the default, Blue). So every detected player gets a bracket.
 /// All of the player's orgs count, main and affiliates.
 /// </summary>
@@ -78,7 +79,7 @@ public static class ColorResolver
 
         // 4. No Match: no deciding org and no attribute text, so the panel shows the orgs line as usual with nothing marked
         var noMatch = NoMatchRule.Find(config);
-        return new ColorMatch(MatchKind.OrgAttribute, noMatch?.Color ?? NoMatchRule.DefaultColor, null, null);
+        return new ColorMatch(MatchKind.NoMatch, noMatch?.Color ?? NoMatchRule.DefaultColor, null, null);
     }
 
     private static (bool hit, string? sid, string? text) RuleHits(OrgAttributeRule rule, IReadOnlyList<OrgMembership> orgs)

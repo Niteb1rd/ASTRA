@@ -39,6 +39,12 @@ public sealed class HostedConfigAutoChecker : IDisposable
     // (settings.toml unwritable), the address is still not fetched every ten minutes.
     private DateTimeOffset? _lastAttempt;
 
+    // An update that was found while IRIS was busy: asked again at the next free wake without fetching the file again.
+    // Dropped when the stored address no longer matches (or when the file turns out to be imported already).
+    private PendingUpdate? _pending;
+
+    private sealed record PendingUpdate(string Url, string Text, string Hash);
+
     public HostedConfigAutoChecker(AppServices services, ImportCoordinator imports)
     {
         _services = services;
@@ -119,40 +125,63 @@ public sealed class HostedConfigAutoChecker : IDisposable
 
     private async Task CheckAsync(string url)
     {
-        Log("Hosted config auto-check: looking for an update.");
-        var fetched = await _services.FetchHostedConfigAsync(url); // logs the request itself; throws OperationCanceledException when IRIS quits
-
-        if (!CanRun())
-            return;
-
-        // The user may have changed the address or switched the check off while the file was coming in: this answer no longer counts.
+        string text;
+        string hash;
         var current = _services.Settings;
-        if (!current.HostedConfigAutoCheck || !string.Equals(current.HostedConfigUrl, url, StringComparison.Ordinal))
+
+        if (_pending is { } pending && string.Equals(pending.Url, url, StringComparison.Ordinal))
         {
-            Log("Hosted config auto-check: the setting changed meanwhile; the answer was dropped.");
-            return;
+            // Found earlier, but IRIS was busy then: ask again about the same file, without downloading it again.
+            Log("Hosted config auto-check: asking again about the update found earlier (not fetched again).");
+            text = pending.Text;
+            hash = pending.Hash;
+        }
+        else
+        {
+            _pending = null; // none, or for another address
+            Log("Hosted config auto-check: looking for an update.");
+            var fetched = await _services.FetchHostedConfigAsync(url); // logs the request itself; throws OperationCanceledException when IRIS quits
+
+            if (!CanRun())
+                return;
+
+            // The user may have changed the address or switched the check off while the file was coming in: this answer no longer counts.
+            current = _services.Settings;
+            if (!current.HostedConfigAutoCheck || !string.Equals(current.HostedConfigUrl, url, StringComparison.Ordinal))
+            {
+                Log("Hosted config auto-check: the setting changed meanwhile; the answer was dropped.");
+                return;
+            }
+
+            if (!fetched.Success || fetched.Text is null || fetched.Hash is null)
+            {
+                Log("Hosted config auto-check failed: " + fetched.Error);
+                RememberAttempt();
+                return;
+            }
+
+            text = fetched.Text;
+            hash = fetched.Hash;
         }
 
-        if (!fetched.Success || fetched.Text is null || fetched.Hash is null)
+        if (!HostedConfigSchedule.IsUpdate(current, hash))
         {
-            Log("Hosted config auto-check failed: " + fetched.Error);
-            RememberAttempt();
-            return;
-        }
-
-        if (!HostedConfigSchedule.IsUpdate(current, fetched.Hash))
-        {
+            _pending = null;
             Log("Hosted config auto-check: no change since the last import.");
             RememberAttempt();
             return;
         }
 
-        // An update. Asking needs a free moment; if there is none the round is skipped (nothing stored, so the next wake tries again).
+        // An update. Asking needs a free moment; if there is none the round is skipped (nothing stored, so the next wake tries again,
+        // and asks about this same file without fetching it again).
         if (!IsFree() || !_imports.TryBeginQuestion())
         {
-            Log("Hosted config auto-check: an update is available, but IRIS is busy with another question; will try again later.");
+            _pending = new PendingUpdate(url, text, hash);
+            Log("Hosted config auto-check: an update is available, but IRIS is busy with another question; will ask again later.");
             return;
         }
+
+        _pending = null;
 
         bool yes;
         try
@@ -172,7 +201,7 @@ public sealed class HostedConfigAutoChecker : IDisposable
             return;
         }
 
-        await ImportAsync(url, fetched.Text, fetched.Hash);
+        await ImportAsync(url, text, hash);
     }
 
     /// <summary>The same import as the "Import from URL" button: checks, Backup/Merge/Replace question, fill-missing refresh, hash stored on success.</summary>
@@ -181,7 +210,9 @@ public sealed class HostedConfigAutoChecker : IDisposable
         if (!CanRun())
             return;
 
-        var attempt = await _imports.ImportTextAsync(text, "Import from " + HostOf(url), ignoreHostedUrl: true);
+        // The user just said Yes, so the dialogs that follow are shown normally (userJustActed). An address typed in the Settings window but not
+        // saved is an ordinary unsaved change here (ignoreHostedUrl: false): the user gets the save/discard/cancel question, nothing is silently dropped.
+        var attempt = await _imports.ImportTextAsync(text, "Import from " + HostOf(url), ignoreHostedUrl: false, userJustActed: true);
         if (attempt.Outcome != ImportOutcome.Imported)
         {
             Log("Hosted config auto-check: not imported (" + attempt.Outcome + "): " + attempt.Message);

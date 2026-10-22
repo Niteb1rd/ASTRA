@@ -194,6 +194,9 @@ public static class AppSettingsToml
                 case string checkText when TryParseTimestamp(checkText, out var parsed):
                     lastCheck = parsed;
                     break;
+                case TomlDateTime tomlTime: // an unquoted TOML date-time, e.g. typed by hand: hosted_config_last_check = 2026-10-22T09:30:15Z
+                    lastCheck = TruncateToSeconds(tomlTime.DateTime.ToUniversalTime());
+                    break;
                 case DateTimeOffset offsetValue:
                     lastCheck = TruncateToSeconds(offsetValue.ToUniversalTime());
                     break;

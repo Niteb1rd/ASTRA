@@ -486,6 +486,17 @@ public class ImportValidationTests
     }
 
     [Fact]
+    public void RuleNumbers_DoNotCountTheNoMatchRule()
+    {
+        // No Match listed first: the bad archetype rule is still the file's first ordinary rule ("Org rule 1")
+        var noMatch = "\n[[org_rules]]\nkind = \"no_match\"\ncolor = \"Blue\"\n";
+        var read = ConfigImporter.ParseForImport(Toml(noMatch + RuleText("archetype", "Pirates")));
+
+        var error = Assert.Single(read.Errors);
+        Assert.Contains("Org rule 1", error);
+    }
+
+    [Fact]
     public void UnknownActivity_IsAnError_AndRulesWithoutAValueAreNotChecked()
     {
         var text = Toml(RuleText("activity", "Fishing") + "\n[[org_rules]]\nkind = \"redacted\"\npriority = 1\ncolor = \"Blue\"\n");

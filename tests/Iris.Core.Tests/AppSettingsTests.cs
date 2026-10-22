@@ -276,6 +276,17 @@ public class AppSettingsTests : IDisposable
     }
 
     [Theory]
+    [InlineData("2026-10-22T09:30:15Z")]
+    [InlineData("2026-10-22T11:30:15+02:00")]
+    public void LastCheck_ReadsAnUnquotedTomlDateTime(string value)
+    {
+        var result = AppSettingsToml.Read($"hosted_config_last_check = {value}\n");
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(CheckTime, result.Settings.HostedConfigLastCheck);
+    }
+
+    [Theory]
     [InlineData("hosted_config_last_check = \"yesterday\"")]
     [InlineData("hosted_config_last_check = 5")]
     public void LastCheck_Garbage_IsAWarning_AndMeansNeverChecked(string line)

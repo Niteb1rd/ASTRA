@@ -384,22 +384,23 @@
                                  ToolTip="Optional. An https:// address of a config file you host yourself. It is looked at when you press &quot;Import from URL&quot;, and once a day if you tick the check below." />
                         <TextBlock x:Name="HostedUrlError" Foreground="#C62828" TextWrapping="Wrap" Margin="0,2,0,0"
                                    Visibility="Collapsed" />
-                        <!-- Row 0: the three buttons. Row 1: the 24-hour check, starting under the "Import from URL" button. -->
+                        <!-- Row 0: "Import from file" in column 0; column 1 holds "Import from URL" and "Export". Row 1: the 24-hour check, directly under "Import from URL". -->
                         <Grid Margin="0,8,0,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
                             <Button x:Name="ImportFileButton" Grid.Row="0" Grid.Column="0" Content="Import from file&#8230;" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromFile" />
-                            <Button x:Name="ImportUrlButton" Grid.Row="0" Grid.Column="1" Content="Import from URL" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromUrl"
-                                    ToolTip="Fetches the hosted config. If it is the same version you imported last time, nothing is imported." />
-                            <Button x:Name="ExportButton" Grid.Row="0" Grid.Column="2" Content="Export&#8230;" Padding="12,4" Click="OnExport" />
-                            <CheckBox x:Name="HostedAutoCheck" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,8,0,0"
+                            <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal">
+                                <Button x:Name="ImportUrlButton" Content="Import from URL" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromUrl"
+                                        ToolTip="Fetches the hosted config. If it is the same version you imported last time, nothing is imported." />
+                                <Button x:Name="ExportButton" Content="Export&#8230;" Padding="12,4" Click="OnExport" />
+                            </StackPanel>
+                            <CheckBox x:Name="HostedAutoCheck" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"
                                       Content="Check hosted config URL for updates every 24 hrs" IsEnabled="False"
                                       Checked="OnSettingChanged" Unchecked="OnSettingChanged"
                                       ToolTip="Needs a valid https:// address above. While IRIS runs it checks the address once a day (also at startup, if a day has passed) and asks before importing anything. It is off until you tick it." />

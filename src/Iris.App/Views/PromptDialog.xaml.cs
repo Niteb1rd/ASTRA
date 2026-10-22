@@ -37,19 +37,22 @@ public partial class PromptDialog : Window
     /// <param name="balloonText">Tray balloon shown when the question has to wait in the background (another program is in front).</param>
     /// <param name="notify">Shows a tray balloon; may be null.</param>
     /// <param name="owner">The config window if it is open (used only when IRIS is the foreground program), else null.</param>
-    public static bool Ask(string message, string balloonText, Action<string>? notify, Window? owner, bool defaultYes = true)
+    /// <param name="defaultYes">True when Yes is the default button.</param>
+    /// <param name="userJustActed">True when the question follows something the user just did in IRIS: it is then shown normally, with no balloon.</param>
+    public static bool Ask(
+        string message, string balloonText, Action<string>? notify, Window? owner, bool defaultYes = true, bool userJustActed = false)
     {
         var dialog = new PromptDialog(message, yesNo: true, defaultYes);
-        DialogHelper.PrepareBackgroundDialog(dialog, owner, balloonText, notify);
+        DialogHelper.PrepareBackgroundDialog(dialog, owner, balloonText, notify, userJustActed);
         dialog.ShowDialog();
         return dialog._yes;
     }
 
     /// <summary>Shows a message with an OK button.</summary>
-    public static void Tell(string message, string balloonText, Action<string>? notify, Window? owner)
+    public static void Tell(string message, string balloonText, Action<string>? notify, Window? owner, bool userJustActed = false)
     {
         var dialog = new PromptDialog(message, yesNo: false, defaultYes: true);
-        DialogHelper.PrepareBackgroundDialog(dialog, owner, balloonText, notify);
+        DialogHelper.PrepareBackgroundDialog(dialog, owner, balloonText, notify, userJustActed);
         dialog.ShowDialog();
     }
 

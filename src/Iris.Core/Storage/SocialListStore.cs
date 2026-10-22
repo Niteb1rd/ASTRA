@@ -19,7 +19,7 @@ public sealed class SocialListLoadResult
     public bool IsNew { get; }
 
     /// <summary>The config to work with. Never null: an unreadable file gives an empty config (check <see cref="IsValid"/>).</summary>
-    public SocialConfig Config => Result.Config ?? new SocialConfig();
+    public SocialConfig Config => Result.Config ?? SocialListStore.NewConfig();
 
     public IReadOnlyList<string> Errors => Result.Errors;
 
