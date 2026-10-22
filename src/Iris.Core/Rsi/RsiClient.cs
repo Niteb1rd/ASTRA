@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.Globalization;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
@@ -7,9 +10,10 @@ namespace Iris.Core.Rsi;
 /// Talks to robertsspaceindustries.com. Responsibilities, and nothing else:
 /// - check names before building any URL (rejects with Failed("invalid name"));
 /// - only ever contact robertsspaceindustries.com over https (redirects elsewhere are refused);
-/// - wait for the shared <see cref="RsiRateLimiter"/> before every request (one request per 3 seconds, app-wide);
+/// - wait for the shared <see cref="RsiRateLimiter"/> before every request (one request per second, app-wide) and tell it how RSI
+///   answered, so it can slow down (HTTP 429, 5xx, timeout, network error) and speed up again (good answers);
 /// - give up after 15 seconds;
-/// - log every request: full URL, time and outcome;
+/// - log every request: full URL, time, outcome and how long it took (send until the whole answer was read);
 /// - turn the HTTP answer into Found / NotFound / Failed and hand page text to the pure parsers.
 ///
 /// HTTP 404 is the only NotFound. Timeouts, 5xx, network errors and pages we cannot understand are Failed.
@@ -59,7 +63,8 @@ public sealed class RsiClient : IRsiClient
         var url = RsiUrls.PlayerOrgs(handle);
         var response = await SendAsync(HttpMethod.Get, url, null, ct).ConfigureAwait(false);
         var result = Interpret(response, body => PlayerOrgsParser.Parse(body, handle));
-        LogOutcome(HttpMethod.Get, response.Url, result.Status, result.Reason, null);
+        LogOutcome(HttpMethod.Get, response.Url, result.Status, result.Reason, null, response.Elapsed);
+        NoteAnswer(response);
         return result;
     }
 
@@ -71,7 +76,8 @@ public sealed class RsiClient : IRsiClient
         var url = RsiUrls.OrgPage(sid);
         var response = await SendAsync(HttpMethod.Get, url, null, ct).ConfigureAwait(false);
         var result = Interpret(response, body => OrgPageParser.Parse(body, sid));
-        LogOutcome(HttpMethod.Get, response.Url, result.Status, result.Reason, null);
+        LogOutcome(HttpMethod.Get, response.Url, result.Status, result.Reason, null, response.Elapsed);
+        NoteAnswer(response);
         return result;
     }
 
@@ -95,7 +101,8 @@ public sealed class RsiClient : IRsiClient
                 result = RsiResult<OrgMembersPage>.Failed("members API returned HTTP 404");
             else
                 result = Interpret<OrgMembersPage>(response, OrgMembersParser.ParseResponse);
-            LogOutcome(HttpMethod.Post, response.Url, result.Status, result.Reason, $"{sid} page {page}");
+            LogOutcome(HttpMethod.Post, response.Url, result.Status, result.Reason, $"{sid} page {page}", response.Elapsed);
+            NoteAnswer(response);
 
             if (result.Status != RsiStatus.Found)
                 return RsiResult<OrgMembers>.Failed(result.Reason ?? "members request failed");
@@ -132,7 +139,12 @@ public sealed class RsiClient : IRsiClient
     /// <param name="StatusCode">HTTP status, or null if no answer arrived.</param>
     /// <param name="Body">Response text (null if no answer arrived).</param>
     /// <param name="Error">Plain-words reason when no usable answer arrived (timeout, network error, blocked redirect).</param>
-    private sealed record Response(string Url, int? StatusCode, string? Body, string? Error);
+    /// <param name="Elapsed">How long the request took, from sending it until the whole answer was read (or it failed).</param>
+    /// <param name="RetryAfter">The Retry-After RSI sent with an HTTP 429 or 503, if any.</param>
+    /// <param name="NetworkProblem">True for a timeout or network error: RSI did not answer.</param>
+    private sealed record Response(
+        string Url, int? StatusCode, string? Body, string? Error,
+        TimeSpan Elapsed = default, TimeSpan? RetryAfter = null, bool NetworkProblem = false);
 
     private async Task<Response> SendAsync(HttpMethod method, string url, string? jsonBody, CancellationToken ct)
     {
@@ -146,6 +158,7 @@ public sealed class RsiClient : IRsiClient
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(RequestTimeout);
+            var stopwatch = Stopwatch.StartNew();
             try
             {
                 using var request = new HttpRequestMessage(method, uri);
@@ -175,8 +188,9 @@ public sealed class RsiClient : IRsiClient
                     continue;
                 }
 
+                var retryAfter = code is 429 or 503 ? ReadRetryAfter(httpResponse.Headers.RetryAfter) : null;
                 var text = await httpResponse.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
-                return new Response(uri.AbsoluteUri, code, text, null);
+                return new Response(uri.AbsoluteUri, code, text, null, stopwatch.Elapsed, retryAfter);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -185,19 +199,19 @@ public sealed class RsiClient : IRsiClient
             }
             catch (OperationCanceledException)
             {
-                return new Response(uri.AbsoluteUri, null, null, $"timeout after {RequestTimeout.TotalSeconds:0} s");
+                return new Response(uri.AbsoluteUri, null, null, $"timeout after {RequestTimeout.TotalSeconds:0} s", stopwatch.Elapsed, null, NetworkProblem: true);
             }
             catch (HttpRequestException ex)
             {
-                return new Response(uri.AbsoluteUri, null, null, $"network error: {ex.Message}");
+                return new Response(uri.AbsoluteUri, null, null, $"network error: {ex.Message}", stopwatch.Elapsed, null, NetworkProblem: true);
             }
             catch (IOException ex)
             {
-                return new Response(uri.AbsoluteUri, null, null, $"network error: {ex.Message}");
+                return new Response(uri.AbsoluteUri, null, null, $"network error: {ex.Message}", stopwatch.Elapsed, null, NetworkProblem: true);
             }
             catch (Exception ex)
             {
-                return new Response(uri.AbsoluteUri, null, null, $"error: {ex.GetType().Name}: {ex.Message}");
+                return new Response(uri.AbsoluteUri, null, null, $"error: {ex.GetType().Name}: {ex.Message}", stopwatch.Elapsed);
             }
         }
 
@@ -232,7 +246,7 @@ public sealed class RsiClient : IRsiClient
         return RsiResult<T>.Failed("invalid name");
     }
 
-    private void LogOutcome(HttpMethod method, string url, RsiStatus status, string? reason, string? note)
+    private void LogOutcome(HttpMethod method, string url, RsiStatus status, string? reason, string? note, TimeSpan elapsed)
     {
         var outcome = status switch
         {
@@ -240,7 +254,64 @@ public sealed class RsiClient : IRsiClient
             RsiStatus.NotFound => "not found (HTTP 404)",
             _ => $"error: {reason}",
         };
-        Log($"{method} {url} -> {outcome}" + (note is null ? "" : $" [{note}]"));
+        Log($"{method} {url} -> {outcome}" + (note is null ? "" : $" [{note}]") + $" ({FormatDuration(elapsed)})");
+    }
+
+    /// <summary>"0.42 s". Invariant culture, so the log reads the same on every PC.</summary>
+    internal static string FormatDuration(TimeSpan elapsed) =>
+        elapsed.TotalSeconds.ToString("0.00", CultureInfo.InvariantCulture) + " s";
+
+    /// <summary>
+    /// Tells the rate limiter how RSI answered, and logs it when the gap between requests changes.
+    /// Good answers are a page (HTTP 2xx) or a definite 404. Bad answers are HTTP 429, any 5xx, a timeout and a network error.
+    /// Everything else (other 4xx, a refused address, an unexpected error) says nothing about how busy RSI is and changes nothing.
+    /// </summary>
+    private void NoteAnswer(Response response)
+    {
+        BackoffChange change;
+        if (response.StatusCode is { } code)
+        {
+            if (code == 429 || code >= 500)
+                change = _limiter.ReportThrottled(response.RetryAfter);
+            else if ((code >= 200 && code <= 299) || code == 404)
+                change = _limiter.ReportSuccess();
+            else
+                return;
+        }
+        else if (response.NetworkProblem)
+        {
+            change = _limiter.ReportThrottled();
+        }
+        else
+        {
+            return;
+        }
+
+        var gap = FormatSeconds(change.After);
+        if (change.NextDelay > change.After)
+            Log($"RSI is slowing us down: asked us to wait {FormatSeconds(change.NextDelay)} before the next request, then {gap} between requests");
+        else if (change.After > change.Before)
+            Log($"RSI is slowing us down: waiting {gap} between requests");
+        else if (change.After < change.Before)
+            Log($"RSI is answering normally again: waiting {gap} between requests");
+    }
+
+    private static string FormatSeconds(TimeSpan span) =>
+        span.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture) + " s";
+
+    /// <summary>Retry-After as a wait from now: "120" (seconds) or a date. Null when absent, unreadable or already past.</summary>
+    private TimeSpan? ReadRetryAfter(RetryConditionHeaderValue? header)
+    {
+        if (header is null)
+            return null;
+        TimeSpan wait;
+        if (header.Delta is { } delta)
+            wait = delta;
+        else if (header.Date is { } date)
+            wait = date - _clock.UtcNow;
+        else
+            return null;
+        return wait > TimeSpan.Zero ? wait : null;
     }
 
     private void Log(string message) => _log.Write(_clock.UtcNow, message);

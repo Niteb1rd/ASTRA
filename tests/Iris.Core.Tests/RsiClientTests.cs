@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Iris.Core.Rsi;
@@ -44,16 +45,17 @@ public class RsiClientTests
         public ListLog Log { get; } = new();
         public List<TimeSpan> Waits { get; } = new();
         public RsiClient Client { get; }
+        public RsiRateLimiter Limiter { get; }
 
         public Setup()
         {
-            var limiter = new RsiRateLimiter(Clock, (wait, ct) =>
+            Limiter = new RsiRateLimiter(Clock, (wait, ct) =>
             {
                 Waits.Add(wait);
                 Clock.Advance(wait);
                 return Task.CompletedTask;
             });
-            Client = new RsiClient(new HttpClient(Handler), limiter, Clock, Log);
+            Client = new RsiClient(new HttpClient(Handler), Limiter, Clock, Log);
         }
     }
 
@@ -107,7 +109,7 @@ public class RsiClientTests
 
         Assert.Equal(RsiStatus.Failed, result.Status);
         Assert.Contains("500", result.Reason);
-        Assert.Contains("error", Assert.Single(s.Log.Entries).Message);
+        Assert.Contains("error", s.Log.Entries[0].Message);   // the second line says RSI is slowing us down
     }
 
     [Fact]
@@ -176,7 +178,7 @@ public class RsiClientTests
     }
 
     [Fact]
-    public async Task RequestsAreSpacedThreeSecondsApart_AndEveryRequestIsLogged()
+    public async Task RequestsAreSpacedOneSecondApart_AndEveryRequestIsLogged()
     {
         var s = new Setup();
         var times = new List<DateTimeOffset>();
@@ -191,8 +193,8 @@ public class RsiClientTests
         await s.Client.GetPlayerOrgsAsync("Three");
 
         Assert.Equal(3, times.Count);
-        Assert.True(times[1] - times[0] >= TimeSpan.FromSeconds(3));
-        Assert.True(times[2] - times[1] >= TimeSpan.FromSeconds(3));
+        Assert.True(times[1] - times[0] >= TimeSpan.FromSeconds(1));
+        Assert.True(times[2] - times[1] >= TimeSpan.FromSeconds(1));
         Assert.Equal(3, s.Log.Entries.Count);
     }
 
@@ -237,7 +239,7 @@ public class RsiClientTests
         Assert.True(player.IsFound, player.ToString());
         Assert.Equal(2, s.Handler.Requests.Count);
         Assert.Equal("https://robertsspaceindustries.com/en/citizens/Nitebird/organizations?x=1", s.Handler.Requests[1].Uri.AbsoluteUri);
-        Assert.Equal(TimeSpan.FromSeconds(3), Assert.Single(s.Waits));   // the second hop waited its turn
+        Assert.Equal(TimeSpan.FromSeconds(1), Assert.Single(s.Waits));   // the second hop waited its turn
     }
 
     [Fact]
@@ -312,5 +314,197 @@ public class RsiClientTests
 
         Assert.Equal(RsiStatus.Failed, result.Status);
         Assert.Contains("503", result.Reason);
+    }
+
+    // ------------------------------------------------------------------ request duration
+
+    [Fact]
+    public async Task EveryRequestLine_EndsWithHowLongItTook()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (r, b) => Ok(PlayerPage);
+
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+
+        var line = Assert.Single(s.Log.Entries).Message;
+        Assert.Matches(@"-> found \(\d+\.\d\d s\)$", line);
+    }
+
+    [Fact]
+    public async Task MemberPageLines_KeepTheirNote_BeforeTheDuration()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (r, b) => Ok(MembersJson("<ul></ul>", 0), "application/json");
+
+        await s.Client.GetOrgMembersAsync("AVOCADO");
+
+        var line = Assert.Single(s.Log.Entries).Message;
+        Assert.Matches(@"-> found \[AVOCADO page 1\] \(\d+\.\d\d s\)$", line);
+    }
+
+    [Fact]
+    public async Task FailedRequests_LogTheirDurationToo()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (r, b) => new HttpResponseMessage(HttpStatusCode.NotFound);
+
+        await s.Client.GetOrgInfoAsync("NOPE");
+
+        Assert.Matches(@"not found \(HTTP 404\) \(\d+\.\d\d s\)$", Assert.Single(s.Log.Entries).Message);
+    }
+
+    [Theory]
+    [InlineData(0, "0.00 s")]
+    [InlineData(420, "0.42 s")]
+    [InlineData(15000, "15.00 s")]
+    public void Duration_IsShownAsSecondsWithTwoDecimals(int milliseconds, string expected) =>
+        Assert.Equal(expected, RsiClient.FormatDuration(TimeSpan.FromMilliseconds(milliseconds)));
+
+    // ------------------------------------------------------------------ backoff
+
+    private static HttpResponseMessage Status(HttpStatusCode code, Action<HttpResponseMessage>? configure = null)
+    {
+        var response = new HttpResponseMessage(code);
+        configure?.Invoke(response);
+        return response;
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.BadGateway)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task Http429And5xx_SlowTheNextRequestDown_AndAreLogged(HttpStatusCode code)
+    {
+        var s = new Setup();
+        s.Handler.Respond = (r, b) => Status(code);
+
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+
+        Assert.Equal(TimeSpan.FromSeconds(2), s.Limiter.CurrentGap);
+        Assert.Contains(s.Log.Entries, e => e.Message == "RSI is slowing us down: waiting 2 s between requests");
+
+        s.Handler.Respond = (r, b) => Ok(PlayerPage);
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+
+        Assert.Equal(TimeSpan.FromSeconds(2), Assert.Single(s.Waits));   // the request after the bad answer waited the doubled gap
+    }
+
+    [Fact]
+    public async Task RepeatedBadAnswers_KeepDoubling_AndGoodAnswersShrinkItAgain()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (r, b) => Status(HttpStatusCode.TooManyRequests);
+
+        for (int i = 0; i < 3; i++)
+            await s.Client.GetPlayerOrgsAsync("Nitebird");
+        Assert.Equal(TimeSpan.FromSeconds(8), s.Limiter.CurrentGap);
+        Assert.Contains(s.Log.Entries, e => e.Message == "RSI is slowing us down: waiting 4 s between requests");
+
+        s.Handler.Respond = (r, b) => Ok(PlayerPage);
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+
+        Assert.Equal(TimeSpan.FromSeconds(1), s.Limiter.CurrentGap);
+        Assert.Contains(s.Log.Entries, e => e.Message == "RSI is answering normally again: waiting 1 s between requests");
+    }
+
+    [Fact]
+    public async Task ATimeoutAndANetworkError_AlsoSlowDown()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (r, b) => throw new TaskCanceledException("simulated timeout");
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+        Assert.Equal(TimeSpan.FromSeconds(2), s.Limiter.CurrentGap);
+
+        s.Handler.Respond = (r, b) => throw new HttpRequestException("connection refused");
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+        Assert.Equal(TimeSpan.FromSeconds(4), s.Limiter.CurrentGap);
+    }
+
+    [Fact]
+    public async Task ADefiniteNotFound_CountsAsAGoodAnswer()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (r, b) => Status(HttpStatusCode.InternalServerError);
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+        Assert.Equal(TimeSpan.FromSeconds(2), s.Limiter.CurrentGap);
+
+        s.Handler.Respond = (r, b) => Status(HttpStatusCode.NotFound);
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+
+        Assert.Equal(TimeSpan.FromSeconds(1), s.Limiter.CurrentGap);
+    }
+
+    [Fact]
+    public async Task OtherClientErrors_LeaveThePaceAlone()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (r, b) => Status(HttpStatusCode.Forbidden);
+
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+
+        Assert.Equal(TimeSpan.FromSeconds(1), s.Limiter.CurrentGap);
+        Assert.DoesNotContain(s.Log.Entries, e => e.Message.Contains("slowing us down") || e.Message.Contains("normally again"));
+    }
+
+    [Fact]
+    public async Task RetryAfterInSeconds_OnA429_MakesTheNextRequestWaitThatLong()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (r, b) => Status(HttpStatusCode.TooManyRequests,
+            response => response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(30)));
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+
+        s.Handler.Respond = (r, b) => Ok(PlayerPage);
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+
+        Assert.Equal(TimeSpan.FromSeconds(30), Assert.Single(s.Waits));
+        Assert.Contains(s.Log.Entries, e => e.Message.StartsWith("RSI is slowing us down: asked us to wait 30 s"));
+    }
+
+    [Fact]
+    public async Task RetryAfterAsADate_On503_IsCountedFromNow_AndCappedAt120Seconds()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (r, b) => Status(HttpStatusCode.ServiceUnavailable,
+            response => response.Headers.RetryAfter = new RetryConditionHeaderValue(s.Clock.UtcNow.AddMinutes(10)));
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+
+        s.Handler.Respond = (r, b) => Ok(PlayerPage);
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+
+        Assert.Equal(TimeSpan.FromSeconds(120), Assert.Single(s.Waits));
+    }
+
+    [Fact]
+    public async Task RetryAfter_OnAnotherStatus_IsIgnored()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (r, b) => Status(HttpStatusCode.InternalServerError,
+            response => response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(60)));
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+
+        s.Handler.Respond = (r, b) => Ok(PlayerPage);
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+
+        Assert.Equal(TimeSpan.FromSeconds(2), Assert.Single(s.Waits));   // plain backoff, not the 60 s
+    }
+
+    [Fact]
+    public async Task ARequestRefusedByTheHostRule_SaysNothingAboutRsi()
+    {
+        var s = new Setup();
+        s.Handler.Respond = (r, b) =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Found);
+            response.Headers.Location = new Uri("https://evil.example.com/steal");
+            return response;
+        };
+
+        await s.Client.GetPlayerOrgsAsync("Nitebird");
+
+        Assert.Equal(TimeSpan.FromSeconds(1), s.Limiter.CurrentGap);
     }
 }
