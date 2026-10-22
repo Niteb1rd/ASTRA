@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The Windows app: tray icon and config window (overlay and OCR come in later increments).
+       ImplicitUsings is switched OFF on purpose: this project uses both WPF and WinForms (only for the tray icon),
+       and their implicit usings clash (Application, MessageBox, Color, Brush, UserControl, KeyEventArgs...).
+       Every file therefore lists its usings, and WinForms types are always written as Forms.X (using Forms = System.Windows.Forms). -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>IRIS</AssemblyName>
+    <RootNamespace>Iris.App</RootNamespace>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Iris.Core\Iris.Core.csproj" />
+  </ItemGroup>
+
+</Project>
