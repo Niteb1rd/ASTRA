@@ -106,7 +106,16 @@ public partial class App : Application
 
         if (problems.Count > 0)
         {
-            _tray?.ShowBalloon(string.Join(" ", problems));
+            // A pop-up, not a balloon: Windows can hide balloons (focus assist, full-screen game), and the user must know
+            // that IRIS is not running on the file they edited.
+            var answer = MessageBox.Show(
+                "Errors were detected in your config files:\n\n- " + string.Join(".\n- ", problems) + ".\n\n"
+                + "Your files were not changed. Open Settings to see the errors and fix them now?",
+                "IRIS", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.Yes);
+            if (_shuttingDown)
+                return;
+            if (answer == MessageBoxResult.Yes && load.IsValid)
+                OpenSettings();
         }
         else if (load.IsValid && load.Warnings.Count > 0)
         {
