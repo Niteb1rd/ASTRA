@@ -62,6 +62,28 @@
             <TextBox IsEnabled="False" IsReadOnly="True"
                      Text="{Binding InfoText, Mode=OneWay}" />
         </DataTemplate>
+
+        <!-- Type and Priority cells of an Org-Attribute row: a drop-down, or (for the permanent No Match row) fixed disabled text.
+             The No Match row never gets the drop-downs, so their lists never need to contain it (Type offers no "No Match"; Priority 1-9 has no 10). -->
+        <DataTemplate x:Key="RuleTypePickTemplate">
+            <ComboBox ItemsSource="{x:Static vm:Choices.Kinds}"
+                      DisplayMemberPath="Name"
+                      SelectedValuePath="Kind"
+                      SelectedValue="{Binding Kind}"
+                      SelectionChanged="OnRuleKindChanged" />
+        </DataTemplate>
+        <DataTemplate x:Key="RuleTypeFixedTemplate">
+            <TextBox IsEnabled="False" IsReadOnly="True"
+                     Text="{Binding KindName, Mode=OneWay}" />
+        </DataTemplate>
+        <DataTemplate x:Key="RulePriorityPickTemplate">
+            <ComboBox ItemsSource="{x:Static vm:Choices.Priorities}"
+                      SelectedItem="{Binding Priority}" />
+        </DataTemplate>
+        <DataTemplate x:Key="RulePriorityFixedTemplate">
+            <TextBox IsEnabled="False" IsReadOnly="True"
+                     Text="{Binding Priority, Mode=OneWay}" />
+        </DataTemplate>
     </Window.Resources>
 
     <Grid>
@@ -231,7 +253,7 @@
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="#616161"
-                               Text="If name is not in previous two lists, use these general rules." />
+                               Text="If name is not in previous two lists, use these general rules. The last row, No Match, colors every other detected player." />
 
                     <Grid Grid.Row="1" Margin="0,0,0,4">
                         <Grid.ColumnDefinitions>
@@ -259,15 +281,26 @@
                                             <ColumnDefinition Width="140" />
                                             <ColumnDefinition Width="34" />
                                         </Grid.ColumnDefinitions>
-                                        <ComboBox Grid.Column="0" Margin="0,0,8,0" VerticalAlignment="Top"
-                                                  ItemsSource="{x:Static vm:Choices.Kinds}"
-                                                  DisplayMemberPath="Name"
-                                                  SelectedValuePath="Kind"
-                                                  SelectedValue="{Binding Kind}"
-                                                  SelectionChanged="OnRuleKindChanged" />
-                                        <!-- Value: a pick-only list for Org-Archetype / Org-Activity, a disabled explanation for the other types. -->
+                                        <!-- Type: a pick-only list, or the fixed text "No Match" for the permanent last row. -->
+                                        <ContentControl Grid.Column="0" Margin="0,0,8,0" VerticalAlignment="Top"
+                                                        HorizontalContentAlignment="Stretch" Focusable="False"
+                                                        Content="{Binding}">
+                                            <ContentControl.Style>
+                                                <Style TargetType="ContentControl">
+                                                    <Setter Property="ContentTemplate" Value="{StaticResource RuleTypePickTemplate}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsNoMatch}" Value="True">
+                                                            <Setter Property="ContentTemplate" Value="{StaticResource RuleTypeFixedTemplate}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </ContentControl.Style>
+                                        </ContentControl>
+                                        <!-- Value: a pick-only list for Org-Archetype / Org-Activity, a disabled explanation for the other types.
+                                             The Tag lets the code find this cell (see OnRuleKindChanged). -->
                                         <ContentControl Grid.Column="1" Margin="0,0,8,0" VerticalAlignment="Top"
                                                         HorizontalContentAlignment="Stretch" Focusable="False"
+                                                        Tag="RuleValueCell"
                                                         Content="{Binding}">
                                             <ContentControl.Style>
                                                 <Style TargetType="ContentControl">
@@ -280,16 +313,39 @@
                                                 </Style>
                                             </ContentControl.Style>
                                         </ContentControl>
-                                        <ComboBox Grid.Column="2" Margin="0,0,8,0" VerticalAlignment="Top"
-                                                  ItemsSource="{x:Static vm:Choices.Priorities}"
-                                                  SelectedItem="{Binding Priority}" />
+                                        <!-- Priority: 1-9, or the fixed "10" of the No Match row. -->
+                                        <ContentControl Grid.Column="2" Margin="0,0,8,0" VerticalAlignment="Top"
+                                                        HorizontalContentAlignment="Stretch" Focusable="False"
+                                                        Content="{Binding}">
+                                            <ContentControl.Style>
+                                                <Style TargetType="ContentControl">
+                                                    <Setter Property="ContentTemplate" Value="{StaticResource RulePriorityPickTemplate}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsNoMatch}" Value="True">
+                                                            <Setter Property="ContentTemplate" Value="{StaticResource RulePriorityFixedTemplate}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </ContentControl.Style>
+                                        </ContentControl>
                                         <ComboBox Grid.Column="3" Margin="0,0,8,0" VerticalAlignment="Top"
                                                   ItemsSource="{x:Static vm:Choices.Colors}"
                                                   SelectedItem="{Binding Color}"
                                                   ItemTemplate="{StaticResource ColorItemTemplate}" />
+                                        <!-- Remove: not available for the No Match row (hidden, the column keeps its width). -->
                                         <Button Grid.Column="4" Content="&#10005;" ToolTip="Remove this row"
                                                 Width="26" Height="24" VerticalAlignment="Top"
-                                                Click="OnRemoveRow" />
+                                                Click="OnRemoveRow">
+                                            <Button.Style>
+                                                <Style TargetType="Button">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsNoMatch}" Value="True">
+                                                            <Setter Property="Visibility" Value="Hidden" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                        </Button>
                                     </Grid>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>

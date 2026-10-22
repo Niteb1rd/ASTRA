@@ -122,11 +122,15 @@ public static class ConfigImporter
     /// </summary>
     public static ImportResult Import(string listFilePath, SocialConfig imported, ImportMode mode, IClock clock, WatchedFile? watched = null)
     {
+        // Whatever the mode, the list ends up with exactly one No Match rule: the imported one, or the default if it has none.
+        // (Merge keeps the current list's rule instead, see SocialConfigMerger.)
+        imported = NoMatchRule.Normalized(imported);
+
         if (!File.Exists(listFilePath))
         {
             var created = SocialListStore.Save(listFilePath, imported, watched);
             return created.Success
-                ? ImportResult.Done(mode, hadExisting: false, imported, imported.Players.Count, imported.Orgs.Count, imported.OrgRules.Count, 0, null)
+                ? ImportResult.Done(mode, hadExisting: false, imported, imported.Players.Count, imported.Orgs.Count, imported.UserRuleCount, 0, null)
                 : ImportResult.Fail(mode, created.Error ?? "The imported config could not be saved.");
         }
 
@@ -136,7 +140,7 @@ public static class ConfigImporter
             {
                 var saved = SocialListStore.Save(listFilePath, imported, watched);
                 return saved.Success
-                    ? ImportResult.Done(mode, true, imported, imported.Players.Count, imported.Orgs.Count, imported.OrgRules.Count, 0, null)
+                    ? ImportResult.Done(mode, true, imported, imported.Players.Count, imported.Orgs.Count, imported.UserRuleCount, 0, null)
                     : ImportResult.Fail(mode, saved.Error ?? "The imported config could not be saved.");
             }
 
@@ -196,7 +200,7 @@ public static class ConfigImporter
             return ImportResult.Fail(mode, error);
         }
 
-        return ImportResult.Done(mode, true, imported, imported.Players.Count, imported.Orgs.Count, imported.OrgRules.Count, 0, backupPath);
+        return ImportResult.Done(mode, true, imported, imported.Players.Count, imported.Orgs.Count, imported.UserRuleCount, 0, backupPath);
     }
 
     /// <summary>"social-overlay.backup-20261021-234015.toml" in the same folder; "-2", "-3"... is added if that name is taken.</summary>

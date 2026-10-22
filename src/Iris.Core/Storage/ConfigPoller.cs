@@ -190,7 +190,7 @@ public static class ConfigPoller
 public static class ConfigMessages
 {
     public static string NewConfigLoaded(SocialConfig config) =>
-        $"New config loaded: {Count(config.Players.Count, "player")}, {Count(config.Orgs.Count, "org")}, {Count(config.OrgRules.Count, "rule")}";
+        $"New config loaded: {Count(config.Players.Count, "player")}, {Count(config.Orgs.Count, "org")}, {Count(config.UserRuleCount, "rule")}";
 
     public const string NewSettingsLoaded = "New settings loaded";
 

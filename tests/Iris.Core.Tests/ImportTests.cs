@@ -40,7 +40,7 @@ public class SocialConfigMergerTests
         Assert.Equal(new[] { "Nitebird", "Alpha_One", "Zed_Zed" }, merged.Config.Players.Select(p => p.Handle));
         Assert.Equal(new[] { "J0K3R5", "HEKATE" }, merged.Config.Orgs.Select(o => o.Sid));
         Assert.Equal(
-            new[] { AttributeKind.Archetype, AttributeKind.Redacted, AttributeKind.Activity, AttributeKind.NoOrg },
+            new[] { AttributeKind.Archetype, AttributeKind.Redacted, AttributeKind.Activity, AttributeKind.NoOrg, AttributeKind.NoMatch },
             merged.Config.OrgRules.Select(r => r.Kind));
     }
 
@@ -87,7 +87,8 @@ public class SocialConfigMergerTests
 
         Assert.Equal(2, merged.Config.Players.Count);
         Assert.Equal(2, merged.Config.Orgs.Count);
-        Assert.Equal(4, merged.Config.OrgRules.Count);
+        Assert.Equal(5, merged.Config.OrgRules.Count); // the 4 imported rules plus the default No Match rule
+        Assert.Equal(NoMatchRule.CreateDefault(), merged.Config.OrgRules[^1]);
         Assert.Equal(0, merged.SkippedDuplicates);
         Assert.Null(merged.Config.Name);
     }
@@ -113,9 +114,50 @@ public class SocialConfigMergerTests
 
         var merged = SocialConfigMerger.Merge(new SocialConfig(), imported);
 
-        Assert.Single(merged.Config.OrgRules);
+        Assert.Equal(2, merged.Config.OrgRules.Count); // Piracy, then the default No Match rule
         Assert.Equal(1, merged.SkippedRules);
         Assert.Equal(OverlayColor.Red, merged.Config.OrgRules[0].Color);
+        Assert.Equal(AttributeKind.NoMatch, merged.Config.OrgRules[1].Kind);
+    }
+
+    private static int NoMatchCount(SocialConfig c) => c.OrgRules.Count(r => r.Kind == AttributeKind.NoMatch);
+
+    [Fact]
+    public void Merge_ExactlyOneNoMatch_TheOriginalsRowWins_AndItIsNotCounted()
+    {
+        var original = Original();
+        original.OrgRules.Add(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Green));
+        var imported = Imported();
+        imported.OrgRules.Insert(0, new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Red));
+
+        var merged = SocialConfigMerger.Merge(original, imported);
+
+        Assert.Equal(1, NoMatchCount(merged.Config));
+        Assert.Equal(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Green), merged.Config.OrgRules[^1]);
+        Assert.Equal(2, merged.AddedRules);      // same counts as without the No Match rows
+        Assert.Equal(2, merged.SkippedRules);
+        Assert.Equal(4, merged.SkippedDuplicates);
+    }
+
+    [Fact]
+    public void Merge_OriginalWithoutNoMatch_TakesTheImportedOne()
+    {
+        var imported = Imported();
+        imported.OrgRules.Add(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Red));
+
+        var merged = SocialConfigMerger.Merge(Original(), imported);
+
+        Assert.Equal(1, NoMatchCount(merged.Config));
+        Assert.Equal(OverlayColor.Red, merged.Config.OrgRules[^1].Color);
+    }
+
+    [Fact]
+    public void Merge_NeitherHasNoMatch_ResultGetsTheDefault()
+    {
+        var merged = SocialConfigMerger.Merge(Original(), Imported());
+
+        Assert.Equal(NoMatchRule.CreateDefault(), merged.Config.OrgRules[^1]);
+        Assert.Equal(1, NoMatchCount(merged.Config));
     }
 }
 
@@ -242,13 +284,70 @@ public class ConfigImporterTests : IDisposable
         Assert.Equal(new[] { "Nitebird", "Zed_Zed" }, now.Config.Players.Select(p => p.Handle));
         Assert.Equal(OverlayColor.Cyan, now.Config.Players[0].Color);
         Assert.Single(now.Config.Orgs);
-        Assert.Single(now.Config.OrgRules);
+        Assert.Equal(new[] { AttributeKind.NoOrg, AttributeKind.NoMatch }, now.Config.OrgRules.Select(r => r.Kind));
         Assert.Equal(1, result.PlayersAdded);
         Assert.Equal(1, result.RulesAdded);
         Assert.Equal(1, result.DuplicatesSkipped);
         Assert.Equal(oldText, File.ReadAllText(ListPath + ".bak"));
         Assert.Null(result.BackupPath);
         Assert.Equal(2, result.Config!.Players.Count);
+    }
+
+    private static OrgAttributeRule OnlyNoMatch(SocialConfig c) =>
+        Assert.Single(c.OrgRules, r => r.Kind == AttributeKind.NoMatch);
+
+    [Fact]
+    public void MergeMode_KeepsTheCurrentNoMatchColor()
+    {
+        var mine = Mine();
+        mine.OrgRules.Add(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Green));
+        SocialListStore.Save(ListPath, mine);
+        var theirs = Theirs();
+        theirs.OrgRules.Add(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Red));
+
+        var result = ConfigImporter.Import(ListPath, theirs, ImportMode.Merge, _clock);
+
+        Assert.True(result.Success, result.Error);
+        Assert.Equal(OverlayColor.Green, OnlyNoMatch(SocialListStore.Load(ListPath).Config).Color);
+        Assert.Equal(OverlayColor.Green, OnlyNoMatch(result.Config!).Color);
+        Assert.Equal(1, result.RulesAdded); // the NoOrg rule; No Match is not counted
+    }
+
+    [Theory]
+    [InlineData(ImportMode.Replace)]
+    [InlineData(ImportMode.BackupExisting)]
+    public void ReplaceAndBackupModes_TakeTheImportedNoMatch(ImportMode mode)
+    {
+        var mine = Mine();
+        mine.OrgRules.Add(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Green));
+        SocialListStore.Save(ListPath, mine);
+        var theirs = Theirs();
+        theirs.OrgRules.Add(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Red));
+
+        var result = ConfigImporter.Import(ListPath, theirs, mode, _clock);
+
+        Assert.True(result.Success, result.Error);
+        Assert.Equal(OverlayColor.Red, OnlyNoMatch(SocialListStore.Load(ListPath).Config).Color);
+        Assert.Equal(OverlayColor.Red, OnlyNoMatch(result.Config!).Color);
+        Assert.Equal(1, result.RulesAdded); // the NoOrg rule; No Match is not counted
+    }
+
+    [Theory]
+    [InlineData(ImportMode.Replace)]
+    [InlineData(ImportMode.BackupExisting)]
+    public void ReplaceAndBackupModes_ImportWithoutNoMatch_GetsTheDefault(ImportMode mode)
+    {
+        var mine = Mine();
+        mine.OrgRules.Add(new OrgAttributeRule(AttributeKind.NoMatch, null, 10, OverlayColor.Green));
+        SocialListStore.Save(ListPath, mine);
+        var theirs = Theirs(); // no No Match rule
+
+        var result = ConfigImporter.Import(ListPath, theirs, mode, _clock);
+
+        Assert.True(result.Success, result.Error);
+        Assert.Equal(OverlayColor.Blue, OnlyNoMatch(SocialListStore.Load(ListPath).Config).Color);
+        Assert.Equal(OverlayColor.Blue, OnlyNoMatch(result.Config!).Color);
+        Assert.Empty(theirs.OrgRules.Where(r => r.Kind == AttributeKind.NoMatch)); // the caller's config was not changed
     }
 
     [Fact]
@@ -370,7 +469,8 @@ public class ImportValidationTests
         var read = ConfigImporter.ParseForImport(Toml(RuleText("archetype", "pmc") + RuleText("activity", "Bounty Hunting")));
 
         Assert.True(read.IsValid, string.Join("; ", read.Errors));
-        Assert.Equal(2, read.Config!.OrgRules.Count);
+        Assert.Equal(2, read.Config!.UserRuleCount);
+        Assert.Equal(3, read.Config.OrgRules.Count); // plus the No Match rule that every config has
     }
 
     [Fact]

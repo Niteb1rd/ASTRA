@@ -3,7 +3,7 @@ namespace Iris.Core.Social;
 /// <summary>
 /// Builds the right-panel "Orgs:" line from the requirements:
 /// - SIDs (short names), comma separated;
-/// - the org that caused the match goes first; an attribute match adds "(attribute)";
+/// - the org that caused the match goes first; an attribute match adds "(attribute)"; a No Match result marks no org;
 /// - otherwise RSI page order (main org first);
 /// - the main org ends with "*"; hidden orgs show as REDACTED (REDACTED* for a hidden main org);
 /// - no orgs: "Orgs: none found";

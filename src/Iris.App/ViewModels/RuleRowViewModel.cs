@@ -5,7 +5,11 @@ using Iris.Core.Config;
 
 namespace Iris.App.ViewModels;
 
-/// <summary>A row of the Org-Attribute tab. Rules are not checked against RSI.</summary>
+/// <summary>
+/// A row of the Org-Attribute tab. Rules are not checked against RSI.
+/// The permanent No Match row (<see cref="IsNoMatch"/>) is always the last one: its type, value and priority (10) are fixed and shown disabled,
+/// only its color can be changed, and it cannot be removed.
+/// </summary>
 public sealed class RuleRowViewModel : ObservableObject
 {
     private AttributeKind _kind;
@@ -47,6 +51,8 @@ public sealed class RuleRowViewModel : ObservableObject
             if (!NeedsValue || !vocabulary.Contains(_value))
                 _value = string.Empty;
             Suggestions = BuildSuggestions(vocabulary, _value);
+            Raise(nameof(IsNoMatch));
+            Raise(nameof(KindName));
             Raise(nameof(NeedsValue));
             Raise(nameof(InfoText));
             Raise(nameof(Suggestions));
@@ -81,10 +87,16 @@ public sealed class RuleRowViewModel : ObservableObject
         set => Set(ref _color, value);
     }
 
-    /// <summary>False for Redacted and No Org: the Value cell only shows <see cref="InfoText"/>.</summary>
+    /// <summary>True for the permanent No Match row.</summary>
+    public bool IsNoMatch => _kind == AttributeKind.NoMatch;
+
+    /// <summary>The type as shown to the user ("Org-Archetype", "No Match"...). Display only.</summary>
+    public string KindName => Choices.DisplayName(_kind);
+
+    /// <summary>False for Redacted, No Org and No Match: the Value cell only shows <see cref="InfoText"/>.</summary>
     public bool NeedsValue { get; private set; }
 
-    /// <summary>Explanation for the disabled Value cell of Redacted and No Org rows. Display only.</summary>
+    /// <summary>Explanation for the disabled Value cell of Redacted, No Org and No Match rows. Display only.</summary>
     public string InfoText { get; private set; } = string.Empty;
 
     /// <summary>The values the drop-down offers: the vocabulary of the type, plus a loaded unknown value so it stays visible.</summary>

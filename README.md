@@ -50,6 +50,31 @@ from the shipped list, `src/Iris.Core/Detection/exclusions.default.txt`. In the 
   IRIS only ever appends to the file; it never rewrites your own lines.
 - The frame counts are kept in the lookup cache database (cache schema version 2; an older cache file is upgraded automatically).
 
+## Colors, brackets and the No Match rule
+
+A detected player gets a color in this order: the **player list** (brackets `{ }`), then the **org list** (`[ ]`, lowest priority number wins),
+then the **org-attribute rules** (`< >`, lowest priority number wins; ties go to the rule listed first).
+
+The last org-attribute rule is permanent: **No Match**. A detected player who matches nothing above gets its color, also with the `< >` brackets,
+so every detected nameplate is bracketed and you can see which players the overlay found. The right panel then shows the orgs line as usual with no org
+marked as the reason. Rules of this kind in the config file:
+
+```
+[[org_rules]]
+kind = "no_match"
+priority = 10
+color = "Blue"
+```
+
+- Every list has exactly one. A file without it gets the default (Blue) when it is loaded, silently; a file with more than one keeps the
+  first and gives a note. It is always the last rule, and its priority is always 10 (the other rules use 1 to 9, so it can never win against a
+  real match); another priority in the file is replaced by 10 with a note. It has no value.
+- In the **Org-Attribute** tab it is the last row: it cannot be removed, its Type ("No Match"), Value ("Player does not meet any other rule") and
+  Priority (10) are greyed out, and only its Color can be changed (it is part of Save like any other change). "+ Add rule" adds new rows above it,
+  and the Type drop-down of the other rows does not offer "No Match".
+- Import: **Merge** keeps your No Match color; **Replace** and **Backup** take the imported one (or the default if the imported file has none).
+  The row counts in the import summary and in "New config loaded" do not count the No Match rule.
+
 ## Build and test (Windows)
 
 One-time setup: install the .NET 8 SDK.
@@ -160,6 +185,7 @@ You then pick what happens to your current lists, every time:
 - **Merge config files**: your rows stay first, in their order; imported rows you do not have yet are added after them.
   Duplicates are players with the same handle, orgs with the same SID, and rules with the same kind and value (case does not matter;
   Redacted and No-org rules count by kind alone). On a duplicate your row wins, with its color and priority. Your list name is kept.
+  The No Match rule is not merged: the result keeps yours.
   The usual `.bak` of the previous version is kept. A current file with errors cannot be merged (choose Backup or Replace).
 - **Replace existing config**: the imported config overwrites the list file (the usual `.bak` keeps the previous version).
 

@@ -35,12 +35,13 @@ public sealed record ColorMatch(MatchKind Kind, OverlayColor Color, string? Deci
 /// 1. player list (no tiebreak needed);
 /// 2. org list: lowest priority number wins, ties go to the org listed first;
 /// 3. org-attribute rules: lowest priority number wins, ties go to the rule listed first;
-/// 4. nothing matches: no bracket (null).
+/// 4. nothing matches: the permanent No Match rule (<see cref="NoMatchRule"/>) gives the player its color, with the attribute bracket &lt; &gt;
+///    (a config without that rule uses the default, Blue). So every detected player gets a bracket.
 /// All of the player's orgs count, main and affiliates.
 /// </summary>
 public static class ColorResolver
 {
-    public static ColorMatch? Resolve(string handle, IReadOnlyList<OrgMembership> orgs, SocialConfig config)
+    public static ColorMatch Resolve(string handle, IReadOnlyList<OrgMembership> orgs, SocialConfig config)
     {
         // 1. player list
         var player = config.Players.FirstOrDefault(p => string.Equals(p.Handle, handle, StringComparison.OrdinalIgnoreCase));
@@ -75,7 +76,9 @@ public static class ColorResolver
         if (bestRule is not null)
             return new ColorMatch(MatchKind.OrgAttribute, bestRule.Color, ruleOrg, ruleText);
 
-        return null;
+        // 4. No Match: no deciding org and no attribute text, so the panel shows the orgs line as usual with nothing marked
+        var noMatch = NoMatchRule.Find(config);
+        return new ColorMatch(MatchKind.OrgAttribute, noMatch?.Color ?? NoMatchRule.DefaultColor, null, null);
     }
 
     private static (bool hit, string? sid, string? text) RuleHits(OrgAttributeRule rule, IReadOnlyList<OrgMembership> orgs)
@@ -86,6 +89,8 @@ public static class ColorResolver
                 return (orgs.Count == 0, null, "No Org");
             case AttributeKind.Redacted:
                 return (orgs.Any(o => o.IsRedacted), null, "REDACTED");
+            case AttributeKind.NoMatch:
+                return (false, null, null); // never a "hit": it is the fallback below, applied when no other rule matches
             case AttributeKind.Archetype:
                 // main org first, then affiliates in listed order
                 foreach (var o in OrderMainFirst(orgs))

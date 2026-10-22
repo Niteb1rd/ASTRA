@@ -56,7 +56,7 @@ public partial class ImportChoiceDialog : Window
         return $"List name: {name}\n"
             + $"{Plural(config.Players.Count, "player", "players")}, "
             + $"{Plural(config.Orgs.Count, "org", "orgs")}, "
-            + $"{Plural(config.OrgRules.Count, "org-attribute rule", "org-attribute rules")}";
+            + $"{Plural(config.UserRuleCount, "org-attribute rule", "org-attribute rules")}";
     }
 
     private static string Plural(int count, string one, string many) => count == 1 ? $"1 {one}" : $"{count} {many}";

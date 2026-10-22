@@ -42,7 +42,14 @@ public sealed class ConfigLoadResult
 /// value = "PMC"
 /// priority = 2
 /// color = "Orange"
+///
+/// [[org_rules]]
+/// kind = "no_match"
+/// priority = 10
+/// color = "Blue"
 /// </code>
+/// Every file has exactly one <c>no_match</c> rule, last, priority 10 (see <see cref="NoMatchRule"/>). Reading a file without one
+/// adds it (Blue) silently; writing always writes it.
 /// </summary>
 public static class SocialConfigToml
 {
@@ -82,14 +89,17 @@ public static class SocialConfigToml
             sb.AppendLine($"color = {Quote(o.Color.ToString())}");
         }
 
-        foreach (var r in config.OrgRules)
+        // The No Match rule is written last, exactly once, with priority 10 (the default is written when the config has none).
+        foreach (var r in config.OrgRules.Where(r => r.Kind != AttributeKind.NoMatch)
+                     .Append(NoMatchRule.Find(config) ?? NoMatchRule.CreateDefault()))
         {
             sb.AppendLine();
             sb.AppendLine("[[org_rules]]");
             sb.AppendLine($"kind = {Quote(KindToText(r.Kind))}");
-            if (r.Value is not null)
+            if (r.Value is not null && r.Kind != AttributeKind.NoMatch)
                 sb.AppendLine($"value = {Quote(r.Value)}");
-            sb.AppendLine($"priority = {r.Priority.ToString(CultureInfo.InvariantCulture)}");
+            var priority = r.Kind == AttributeKind.NoMatch ? NoMatchRule.Priority : r.Priority;
+            sb.AppendLine($"priority = {priority.ToString(CultureInfo.InvariantCulture)}");
             sb.AppendLine($"color = {Quote(r.Color.ToString())}");
         }
 
@@ -200,19 +210,36 @@ public static class SocialConfigToml
         }
 
         // org-attribute rules
+        OrgAttributeRule? noMatch = null;
         foreach (var (t, path) in Tables(root, "org_rules", errors))
         {
             var kindText = GetString(t, "kind", path, errors);
-            var prio = GetPriority(t, path, errors);
+            var kind = kindText is null ? null : TextToKind(kindText);
+
+            // The No Match rule's priority is fixed (10), so it is not read as an ordinary 1-9 priority.
+            var prio = kind == AttributeKind.NoMatch ? null : GetPriority(t, path, errors);
             var color = GetColor(t, path, errors);
             WarnUnknown(t, path, warnings, "kind", "value", "priority", "color");
-            if (kindText is null || prio is null || color is null) continue;
-            var kind = TextToKind(kindText);
+            if (kindText is null || color is null || (kind != AttributeKind.NoMatch && prio is null)) continue;
             if (kind is null)
             {
-                errors.Add($"{path}.kind: \"{kindText}\" must be one of archetype, activity, redacted, no_org.");
+                errors.Add($"{path}.kind: \"{kindText}\" must be one of archetype, activity, redacted, no_org, no_match.");
                 continue;
             }
+
+            if (kind == AttributeKind.NoMatch)
+            {
+                if (t.ContainsKey("value"))
+                    warnings.Add($"{path}.value: ignored for kind \"{kindText}\".");
+                if (t.TryGetValue("priority", out var rawPriority) && !(rawPriority is long p && p == NoMatchRule.Priority))
+                    warnings.Add($"{path}.priority: the No Match rule always has priority {NoMatchRule.Priority}; using {NoMatchRule.Priority}.");
+                if (noMatch is not null)
+                    warnings.Add($"{path}: only one \"no_match\" rule is allowed; this one is ignored (the first is kept).");
+                else
+                    noMatch = new OrgAttributeRule(AttributeKind.NoMatch, null, NoMatchRule.Priority, color.Value);
+                continue;
+            }
+
             string? value = null;
             if (t.TryGetValue("value", out var raw))
             {
@@ -231,8 +258,11 @@ public static class SocialConfigToml
             }
             if (!needsValue && value is not null)
                 warnings.Add($"{path}.value: ignored for kind \"{kindText}\".");
-            config.OrgRules.Add(new OrgAttributeRule(kind.Value, needsValue ? value : null, prio.Value, color.Value));
+            config.OrgRules.Add(new OrgAttributeRule(kind.Value, needsValue ? value : null, prio!.Value, color.Value));
         }
+
+        // Exactly one No Match rule, last. A file without one gets the default (Blue) silently.
+        config.OrgRules.Add(noMatch ?? NoMatchRule.CreateDefault());
 
         return result;
     }
@@ -308,6 +338,7 @@ public static class SocialConfigToml
         AttributeKind.Activity => "activity",
         AttributeKind.Redacted => "redacted",
         AttributeKind.NoOrg => "no_org",
+        AttributeKind.NoMatch => "no_match",
         _ => throw new ArgumentOutOfRangeException(nameof(k)),
     };
 
@@ -317,6 +348,7 @@ public static class SocialConfigToml
         "activity" => AttributeKind.Activity,
         "redacted" => AttributeKind.Redacted,
         "no_org" => AttributeKind.NoOrg,
+        "no_match" => AttributeKind.NoMatch,
         _ => null,
     };
 }
