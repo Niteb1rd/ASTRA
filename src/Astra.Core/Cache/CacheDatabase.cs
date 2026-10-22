@@ -89,8 +89,11 @@ public sealed class CacheDatabase : IDisposable
 
     public void Dispose()
     {
-        if (_ownsConnection)
-            _connection.Dispose();
+        lock (_gate)
+        {
+            if (_ownsConnection)
+                _connection.Dispose();
+        }
     }
 
     /// <summary>The schema version stored in the file.</summary>
@@ -260,6 +263,24 @@ public sealed class CacheDatabase : IDisposable
             }
 
             Execute("DELETE FROM not_found WHERE kind = 'org' AND name = $sid", ("$sid", sid));
+        });
+    }
+
+    /// <summary>
+    /// The org is now on the user's org list: raise the source of its cached row to 'org_list' (never lowers it).
+    /// Nothing else changes, in particular not the refresh times. Does nothing if there is no such row.
+    /// </summary>
+    public void PromoteOrgSource(string sid, CacheSource source)
+    {
+        InTransaction(() =>
+        {
+            var existing = ScalarText("SELECT source FROM orgs WHERE sid = $sid", ("$sid", sid));
+            if (existing is null)
+                return;
+            var current = CacheSources.FromDb(existing);
+            if (CacheSources.Stronger(current, source) == current)
+                return;
+            Execute("UPDATE orgs SET source = $source WHERE sid = $sid", ("$source", CacheSources.ToDb(source)), ("$sid", sid));
         });
     }
 

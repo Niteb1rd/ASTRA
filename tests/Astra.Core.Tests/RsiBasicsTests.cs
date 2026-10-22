@@ -143,6 +143,52 @@ public class RsiRateLimiterTests
         Assert.Equal(new[] { TimeSpan.FromSeconds(1) }, waits);
     }
 
+    private static RsiRateLimiter CancellableLimiter(FakeClock clock, List<TimeSpan> waits) =>
+        new(clock, (wait, ct) =>
+        {
+            waits.Add(wait);
+            return ct.IsCancellationRequested ? Task.FromCanceled(ct) : Task.CompletedTask;
+        });
+
+    [Fact]
+    public async Task CancelledWait_GivesItsSlotBack_WhenNobodyReservedAfterIt()
+    {
+        var clock = new FakeClock();
+        var waits = new List<TimeSpan>();
+        var limiter = CancellableLimiter(clock, waits);
+
+        await limiter.WaitForTurnAsync();                         // takes the slot at "now"; no wait
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => limiter.WaitForTurnAsync(cts.Token)); // reserved +3 s, then cancelled
+        await limiter.WaitForTurnAsync();                         // must get the cancelled caller's slot: +3 s, not +6 s
+
+        Assert.Equal(new[] { Three, Three }, waits);
+    }
+
+    [Fact]
+    public async Task CancelledWait_KeepsItsSlot_WhenALaterCallerReservedAfterIt()
+    {
+        var clock = new FakeClock();
+        var waits = new List<TimeSpan>();
+        var firstWaiter = new TaskCompletionSource();
+        var limiter = new RsiRateLimiter(clock, (wait, ct) =>
+        {
+            waits.Add(wait);
+            return waits.Count == 1 ? firstWaiter.Task : Task.CompletedTask; // only the first waiter stays pending
+        });
+
+        await limiter.WaitForTurnAsync();                         // no wait
+        var cancelled = limiter.WaitForTurnAsync();               // +3 s, still waiting
+        await limiter.WaitForTurnAsync();                         // +6 s, behind it
+        firstWaiter.SetCanceled();                                // the +3 s waiter is cancelled
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
+
+        // Its slot was NOT given back (a later caller sits behind it): the next caller is at +9 s.
+        await limiter.WaitForTurnAsync();
+        Assert.Equal(new[] { Three, TimeSpan.FromSeconds(6), TimeSpan.FromSeconds(9) }, waits);
+    }
+
     [Fact]
     public void DefaultInterval_IsThreeSeconds() => Assert.Equal(Three, RsiRateLimiter.DefaultInterval);
 }

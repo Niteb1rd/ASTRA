@@ -32,15 +32,31 @@ public sealed class RsiRateLimiter
     public async Task WaitForTurnAsync(CancellationToken ct = default)
     {
         TimeSpan wait;
+        DateTimeOffset slot;
         lock (_gate)
         {
             var now = _clock.UtcNow;
-            var slot = _nextFreeSlot > now ? _nextFreeSlot : now;
+            slot = _nextFreeSlot > now ? _nextFreeSlot : now;
             _nextFreeSlot = slot + _interval;
             wait = slot - now;
         }
 
-        if (wait > TimeSpan.Zero)
+        if (wait <= TimeSpan.Zero)
+            return;
+
+        try
+        {
             await _delay(wait, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Give the slot back, but only if nobody reserved after us (otherwise their slot would move up too far).
+            lock (_gate)
+            {
+                if (_nextFreeSlot == slot + _interval)
+                    _nextFreeSlot = slot;
+            }
+            throw;
+        }
     }
 }

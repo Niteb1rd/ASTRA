@@ -9,6 +9,34 @@ namespace Astra.Core.Tests;
 public class CacheDatabaseTests
 {
     [Fact]
+    public void PromoteOrgSource_RaisesTheSource_AndKeepsTimesAndData()
+    {
+        using var env = new CacheEnv();
+        env.Db.SaveOrgAttributes(CacheEnv.Org("J0K3R5", "PMC", "Piracy"), CacheSource.Hotkey, env.Start);
+
+        env.Db.PromoteOrgSource("j0k3r5", CacheSource.OrgList);
+
+        var org = env.Db.GetOrg("J0K3R5")!;
+        Assert.Equal(CacheSource.OrgList, org.Source);
+        Assert.Equal(env.Start, org.LastRefreshed);
+        Assert.Equal(env.Start, org.AttributesRefreshed);
+        Assert.Equal("PMC", org.Archetype);
+    }
+
+    [Fact]
+    public void PromoteOrgSource_NeverLowers_AndIgnoresUnknownOrgs()
+    {
+        using var env = new CacheEnv();
+        env.Db.SaveOrgListEntry("J0K3R5", "Jokers", new[] { "A_player" }, env.Start);
+
+        env.Db.PromoteOrgSource("J0K3R5", CacheSource.Hotkey);
+        env.Db.PromoteOrgSource("NOSUCH", CacheSource.OrgList);
+
+        Assert.Equal(CacheSource.OrgList, env.Db.GetOrg("J0K3R5")!.Source);
+        Assert.Null(env.Db.GetOrg("NOSUCH"));
+    }
+
+    [Fact]
     public void NewDatabase_HasTheSixTables_AndSchemaVersion2()
     {
         using var env = new CacheEnv();
