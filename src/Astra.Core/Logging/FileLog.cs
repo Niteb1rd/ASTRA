@@ -21,6 +21,7 @@ public sealed class FileLog : ILog
     private readonly object _gate = new();
     private readonly IClock _clock;
     private string? _lastError;
+    private volatile bool _enabled = true;
 
     public FileLog(string folder, IClock clock)
     {
@@ -28,6 +29,16 @@ public sealed class FileLog : ILog
             throw new ArgumentException("The log folder must not be empty.", nameof(folder));
         Folder = folder;
         _clock = clock;
+    }
+
+    /// <summary>
+    /// When false, <see cref="Write"/> does nothing (the "write a log file" setting). Can be switched at any time, from any thread.
+    /// Existing files are left alone; <see cref="DeleteOlderThan"/> works regardless.
+    /// </summary>
+    public bool Enabled
+    {
+        get => _enabled;
+        set => _enabled = value;
     }
 
     /// <summary>The folder the daily files live in.</summary>
@@ -48,6 +59,9 @@ public sealed class FileLog : ILog
 
     public void Write(DateTimeOffset utcTime, string message)
     {
+        if (!_enabled)
+            return;
+
         try
         {
             var local = utcTime.ToLocalTime();

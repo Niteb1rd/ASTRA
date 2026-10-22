@@ -15,6 +15,7 @@ public class DataPathsTests
 
         Assert.Equal(Path.Combine(dir.Path, "Data"), paths.DataFolder);
         Assert.Equal(Path.Combine(dir.Path, "Data", "social-overlay.toml"), paths.SocialListFile);
+        Assert.Equal(Path.Combine(dir.Path, "Data", "settings.toml"), paths.SettingsFile);
         Assert.Equal(Path.Combine(dir.Path, "Data", "cache.db"), paths.CacheFile);
         Assert.Equal(Path.Combine(dir.Path, "Data", "exclusions.txt"), paths.ExclusionsFile);
         Assert.Equal(Path.Combine(dir.Path, "Data", "logs"), paths.LogsFolder);

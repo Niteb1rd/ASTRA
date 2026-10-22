@@ -49,15 +49,12 @@ public sealed class SaveResult
 }
 
 /// <summary>
-/// Loads and saves the social list file. Saving is crash-safe: the new text goes to "name.tmp" first and then
-/// replaces the real file in one step, so a crash never leaves a half-written list. The previous version is kept
-/// as "name.bak" (one backup, overwritten on every save).
+/// Loads and saves the social list file. Saving is crash-safe (see <see cref="AtomicFile"/>): a crash never leaves a half-written list.
+/// The previous version is kept as "name.bak" (one backup, overwritten on every save).
 /// Loading never changes the file: an invalid file stays exactly as it is until the user saves.
 /// </summary>
 public static class SocialListStore
 {
-    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
-
     /// <summary>Reads the list. A missing file gives an empty config marked as new.</summary>
     public static SocialListLoadResult Load(string path)
     {
@@ -89,59 +86,14 @@ public static class SocialListStore
         if (!check.IsValid)
             return SaveResult.Failed("The list is not valid and was not saved: " + string.Join(" ", check.Errors));
 
-        var temp = path + ".tmp";
-        var backup = path + ".bak";
         try
         {
-            var directory = Path.GetDirectoryName(Path.GetFullPath(path));
-            if (!string.IsNullOrEmpty(directory))
-                Directory.CreateDirectory(directory);
-
-            // Write and flush to the disk before the swap, so a power cut cannot leave an empty "new" file.
-            using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
-            {
-                var bytes = Utf8NoBom.GetBytes(text);
-                stream.Write(bytes, 0, bytes.Length);
-                stream.Flush(flushToDisk: true);
-            }
-
-            // File.Replace needs an existing target; the very first save has none, so it is a plain move.
-            if (File.Exists(path))
-                File.Replace(temp, path, backup);
-            else
-                File.Move(temp, path);
-
+            AtomicFile.WriteText(path, text, keepBackup: true);
             return SaveResult.Ok();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // A failed swap can leave the real file missing while the backup exists: put the backup back.
-            TryRestoreFromBackup(path, backup);
-            TryDelete(temp);
             return SaveResult.Failed("The list could not be saved: " + ex.Message);
-        }
-    }
-
-    private static void TryRestoreFromBackup(string path, string backup)
-    {
-        try
-        {
-            if (!File.Exists(path) && File.Exists(backup))
-                File.Copy(backup, path);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-        }
-    }
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
         }
     }
 }
