@@ -4,7 +4,7 @@ format_version = 1
 
 [[players]]
 handle = "nitebird"
-color = "Pink"
+color = "Red"
 
 [[players]]
 handle = "jettt"
@@ -58,6 +58,11 @@ color = "Green"
 [[orgs]]
 sid = "AVOCADO"
 priority = 5
+color = "Red"
+
+[[orgs]]
+sid = "AVSQN"
+priority = 1
 color = "Red"
 
 [[org_rules]]
