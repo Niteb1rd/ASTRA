@@ -924,9 +924,9 @@ public partial class ConfigWindow : Window, IImportHost
         UpdateSaveButton();
     }
 
-    private void OnClearOverlayHotkey(object sender, RoutedEventArgs e) => OverlayHotkeyBox.Clear();
+    private void OnClearOverlayHotkey(object sender, RoutedEventArgs e) => OverlayHotkeyBox.ClearHotkey();
 
-    private void OnClearPanelHotkey(object sender, RoutedEventArgs e) => PanelHotkeyBox.Clear();
+    private void OnClearPanelHotkey(object sender, RoutedEventArgs e) => PanelHotkeyBox.ClearHotkey();
 
     private void OnHotkeyStatusChanged(object? sender, EventArgs e) => UpdateHotkeyErrors();
 

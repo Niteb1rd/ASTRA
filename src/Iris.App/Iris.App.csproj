@@ -14,6 +14,9 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <!-- PerMonitorV2 DPI awareness, so the overlay lines up with the game window in real pixels on every monitor. -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- WFAC010 is a Windows Forms analyzer. IRIS is a WPF app, and WPF takes its PerMonitorV2 DPI awareness from app.manifest,
+         so the manifest setting is the right one here. -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

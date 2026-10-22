@@ -50,7 +50,7 @@ public sealed class HotkeyBox : TextBox
     }
 
     /// <summary>Removes the hotkey (the Clear button).</summary>
-    public void Clear()
+    public void ClearHotkey()
     {
         if (_value.Length == 0)
             return;
