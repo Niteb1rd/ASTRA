@@ -157,6 +157,12 @@ public sealed class AppServices : IDisposable
 
     public bool ListFileHasErrors => ListFileErrors.Count > 0;
 
+    /// <summary>
+    /// True after a check found that social-overlay.toml was deleted while IRIS runs (not at a first start without a file). IRIS keeps using
+    /// the list in memory; a save, an import, or the file coming back ends this.
+    /// </summary>
+    public bool ListFileMissing { get; private set; }
+
     /// <summary>What is wrong with settings.toml right now. Empty when the file is fine.</summary>
     public IReadOnlyList<string> SettingsFileErrors { get; private set; } = Array.Empty<string>();
 
@@ -279,6 +285,12 @@ public sealed class AppServices : IDisposable
     /// </summary>
     public ConfigChanges ApplyPoll(ConfigPoll poll)
     {
+        // The result may be older than something IRIS did meanwhile (a save or an import while the result was parked): leave such parts out.
+        var current = ConfigPoller.DropOutdated(poll, ListFile, SettingsFile);
+        if (!ReferenceEquals(current, poll))
+            Log.Write(Clock.UtcNow, "A check of the config files was overtaken by a save or import; the outdated part was not applied.");
+        poll = current;
+
         var messages = new List<string>();
         var listChanged = false;
         var settingsChanged = false;
@@ -291,6 +303,7 @@ public sealed class AppServices : IDisposable
                 CurrentConfig = list.Config!;
                 ListLoad = new SocialListLoadResult(list.Load!, isNew: false);
                 errorsChanged |= ClearListErrors();
+                errorsChanged |= ClearListMissing();
                 listChanged = true;
                 messages.Add(ConfigMessages.NewConfigLoaded(CurrentConfig));
                 Log.Write(Clock.UtcNow, $"{DataPaths.SocialListFileName} was changed from outside and has been loaded.");
@@ -301,10 +314,12 @@ public sealed class AppServices : IDisposable
             case PollKind.Applied: // IRIS's own save that raced the check: nothing new
             case PollKind.Restored:
                 errorsChanged |= ClearListErrors();
+                errorsChanged |= ClearListMissing();
                 break;
 
             case PollKind.Rejected:
                 SetListErrors(list.Errors, list.Hash, "IRIS is still using the previous version.");
+                ClearListMissing();
                 errorsChanged = true;
                 messages.Add(ConfigMessages.StillUsingPrevious(DataPaths.SocialListFileName));
                 Log.Write(Clock.UtcNow, $"{DataPaths.SocialListFileName} was changed from outside but has {list.Errors.Count} error(s); still using the previous version.");
@@ -313,6 +328,9 @@ public sealed class AppServices : IDisposable
                 break;
 
             case PollKind.Missing:
+                ListFileMissing = true;
+                errorsChanged = true; // the window shows the notice
+                messages.Add(ConfigMessages.ListFileMissing(DataPaths.SocialListFileName));
                 Log.Write(Clock.UtcNow, $"{DataPaths.SocialListFileName} is missing; the list in memory stays in use (saving writes the file again).");
                 break;
         }
@@ -380,6 +398,13 @@ public sealed class AppServices : IDisposable
         return had;
     }
 
+    private bool ClearListMissing()
+    {
+        var had = ListFileMissing;
+        ListFileMissing = false;
+        return had;
+    }
+
     private void SetSettingsErrors(IReadOnlyList<string> errors, string? hash, string note)
     {
         SettingsFileErrors = errors;
@@ -407,6 +432,7 @@ public sealed class AppServices : IDisposable
     {
         CurrentConfig = config;
         ClearListErrors();
+        ClearListMissing();
     }
 
     /// <summary>

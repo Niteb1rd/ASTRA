@@ -170,9 +170,8 @@ public partial class App : Application
             return;
         }
 
-        // The config files may have been edited while the window was closed: look now, so the window opens with what is on disk.
-        _services.ApplyPoll(_services.PollConfigFiles());
-
+        // The config files may have been edited while the window was closed. The window looks at them itself as soon as it is shown
+        // (its first check runs at once, on a background thread, not after 2 seconds), so nothing is read on the UI thread here.
         var window = new ConfigWindow(_services, _imports!, _updater!);
         window.Closed += (_, _) => _configWindow = null;
         _configWindow = window;
@@ -280,6 +279,7 @@ public partial class App : Application
         if (_imports is not null)
             _imports.IsQuitting = true; // no new import question from here on
         _services?.RequestShutdown(); // a running cache refresh (no question open) stops cleanly: its RSI requests are cancelled
+        _updater?.StopFillMissing(TimeSpan.FromMilliseconds(500)); // give the background fill a moment to stop before the database is disposed
         Shutdown();
     }
 

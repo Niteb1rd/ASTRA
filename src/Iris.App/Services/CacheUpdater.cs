@@ -23,6 +23,10 @@ public sealed class CacheUpdater
     // The running fill-missing job, if any. Only touched on the UI thread.
     private CancellationTokenSource? _fillCts;
 
+    // The background work of the latest fill-missing run (the part that runs off the UI thread). Kept so that quitting can wait a moment
+    // for it to notice the cancellation before the services (the database) are disposed. Only touched on the UI thread.
+    private Task? _fillTask;
+
     // A config was applied while the full refresh was running: fill again when it is done (the full refresh uses the list it started with).
     private bool _fillPending;
 
@@ -98,6 +102,35 @@ public sealed class CacheUpdater
         _ = RunFillMissingAsync(cts);
     }
 
+    /// <summary>
+    /// Used when IRIS quits: cancels a running fill-missing run and waits up to <paramref name="timeout"/> for its background work to stop,
+    /// so it does not touch the database after it was disposed. Blocks the calling (UI) thread for that time at most; the background
+    /// work never needs the UI thread to finish. Does nothing when no run is going.
+    /// </summary>
+    public void StopFillMissing(TimeSpan timeout)
+    {
+        var cts = _fillCts;
+        var work = _fillTask;
+        try
+        {
+            cts?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
+        if (work is null || work.IsCompleted)
+            return;
+        try
+        {
+            work.Wait(timeout);
+        }
+        catch (AggregateException)
+        {
+            // it ended by being cancelled (or failed): either way it is no longer running
+        }
+    }
+
     private async Task RunFillMissingAsync(CancellationTokenSource cts)
     {
         try
@@ -106,7 +139,9 @@ public sealed class CacheUpdater
             if (config.Players.Count == 0 && config.Orgs.Count == 0)
                 return;
 
-            var summary = await _services.FillMissingAsync(config, cts.Token).ConfigureAwait(true);
+            var work = _services.FillMissingAsync(config, cts.Token);
+            _fillTask = work;
+            var summary = await work.ConfigureAwait(true);
             if (summary.Attempted > 0 && !cts.IsCancellationRequested)
             {
                 var message = AppServices.Describe("Cache filled:", summary);

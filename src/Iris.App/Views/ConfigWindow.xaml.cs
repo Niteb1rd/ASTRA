@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -29,7 +30,8 @@ namespace Iris.App.Views;
 /// nothing is written until Save. Names are checked against RSI (cache first) when the user leaves the cell.
 /// The Settings tab holds this PC's app settings, the shared-config buttons (import, export) and "Refresh Cache (long time)".
 /// One Save button saves the lists (if they changed) and the settings (if they changed); it is greyed out while nothing differs from the
-/// saved version, and saving does not close the window (the Close button does).
+/// saved version, and saving does not close the window (the Close button does). While a watched file on disk has errors, Save stays
+/// enabled on purpose, so the user can replace the broken file with what the window shows (a copy of the broken file is kept first).
 /// While the window is open it looks at the config files every 2 seconds: an edited file is loaded (unsaved edits in the window are discarded),
 /// a file with errors is reported in a red banner at the top and the previous version stays in use.
 /// Later increments add the overlay controls to this window.
@@ -83,6 +85,11 @@ public partial class ConfigWindow : Window, IImportHost
     private string? _listName;
     private string _baseline = string.Empty;
 
+    private static readonly string MissingListNotice = ConfigMessages.ListFileMissing(DataPaths.SocialListFileName);
+
+    // The bad version of the settings file that was already copied to ".invalid-<time>" (see _copiedInvalidKey).
+    private string? _copiedInvalidSettingsKey;
+
     public ConfigWindow(AppServices services, ImportCoordinator imports, CacheUpdater updater)
     {
         _services = services;
@@ -108,7 +115,11 @@ public partial class ConfigWindow : Window, IImportHost
         RefreshCacheButton.IsEnabled = !updater.IsRefreshing;
 
         _watchTimer.Tick += OnWatchTick;
-        Loaded += (_, _) => _watchTimer.Start();
+        Loaded += (_, _) =>
+        {
+            _watchTimer.Start();
+            OnWatchTick(this, EventArgs.Empty); // look at the files right away (on a background thread): they may have been edited while the window was closed
+        };
 
         Closed += (_, _) =>
         {
@@ -120,10 +131,27 @@ public partial class ConfigWindow : Window, IImportHost
                 _imports.Host = null;
             _closing.Cancel();
             _closing.Dispose();
+
+            // A check result that was parked (a save or import was going on) was already recorded by the change detector as the version
+            // IRIS knows: nobody would report it again, so apply it now. The window is gone; the tray balloon tells the user.
+            if (_pendingPoll is { } parked)
+            {
+                _pendingPoll = null;
+                try
+                {
+                    _services.ApplyPoll(parked);
+                }
+                catch (Exception ex)
+                {
+                    _services.Log.Write(DateTimeOffset.UtcNow, "Applying the last config check failed: " + ex);
+                }
+            }
         };
 
         _ready = true;
         RefreshStateUi();
+        if (_services.ListFileMissing)
+            SetFooter(MissingListNotice);
     }
 
     /// <summary>
@@ -134,11 +162,16 @@ public partial class ConfigWindow : Window, IImportHost
     {
         _listName = config.Name; // the shared list's name is kept as loaded
         _checks.Clear();
+
+        // Clear() reports no removed items, so the rows must be let go of here, or their events would keep reaching this window.
+        // (The exclusion list is not reloaded here: the next file check does that and reports it, see ShowConfigChanges.)
+        foreach (var row in _players.Cast<INotifyPropertyChanged>()
+                     .Concat<INotifyPropertyChanged>(_orgs).Concat<INotifyPropertyChanged>(_rules).ToList())
+            row.PropertyChanged -= OnRowPropertyChanged;
         _players.Clear();
         _orgs.Clear();
         _rules.Clear();
 
-        _services.Exclusions.ReloadIfChanged();
         foreach (var p in config.Players)
             _players.Add(new PlayerRowViewModel(p.Handle, p.Color, IsExcluded));
         foreach (var o in config.Orgs)
@@ -472,11 +505,18 @@ public partial class ConfigWindow : Window, IImportHost
         }
 
         var listsSaved = false;
-        if (Snapshot() != _baseline || _services.ListFileHasErrors)
+        var settingsSaved = false;
+        var keptBroken = new List<string>(); // broken files the user chose not to replace (nothing the user edited was lost by that)
+
+        var listsEdited = Snapshot() != _baseline;
+        if (listsEdited || _services.ListFileHasErrors)
         {
-            if (!SaveListsCore())
-                return false;
-            listsSaved = true;
+            if (SaveListsCore())
+                listsSaved = true;
+            else if (listsEdited)
+                return false; // real list edits did not get saved
+            else
+                keptBroken.Add(DataPaths.SocialListFileName); // only the broken file was to be replaced, and the user said no (or it failed)
         }
 
         if (scope != SaveScope.ListsOnly)
@@ -485,22 +525,42 @@ public partial class ConfigWindow : Window, IImportHost
             if (scope == SaveScope.ListsAndSettingsKeepHostedUrl)
                 settings = settings with { HostedConfigUrl = _services.Settings.HostedConfigUrl };
 
-            // An unreadable settings.toml is rewritten by the first save even when no setting was edited.
-            if (settings != _services.Settings || _services.SettingsFileNeedsSave)
+            // Settings are written only when they differ from the stored ones, or to replace a settings.toml that has errors
+            // (then the user is asked first and a copy of the broken file is kept).
+            var settingsEdited = settings != _services.Settings;
+            if (settingsEdited || _services.SettingsFileNeedsSave)
             {
-                var savedSettings = _services.SaveSettings(settings);
-                if (!savedSettings.Success)
+                if (KeepCopyOfInvalidSettingsFile() != CopyOutcome.Proceed)
                 {
-                    MessageBox.Show(this, (savedSettings.Error ?? "The settings could not be saved.")
-                        + (listsSaved ? "\n\nYour lists were saved, the settings were not." : "\n\nThe settings were not saved."),
-                        "IRIS", MessageBoxButton.OK, MessageBoxImage.Error);
-                    FooterStatus.Text = "Settings not saved.";
-                    return false;
+                    if (settingsEdited)
+                    {
+                        FooterStatus.Text = "Settings not saved.";
+                        return false;
+                    }
+                    keptBroken.Add(DataPaths.SettingsFileName);
+                }
+                else
+                {
+                    var savedSettings = _services.SaveSettings(settings);
+                    if (!savedSettings.Success)
+                    {
+                        MessageBox.Show(this, (savedSettings.Error ?? "The settings could not be saved.")
+                            + (listsSaved ? "\n\nYour lists were saved, the settings were not." : "\n\nThe settings were not saved."),
+                            "IRIS", MessageBoxButton.OK, MessageBoxImage.Error);
+                        FooterStatus.Text = "Settings not saved.";
+                        return false;
+                    }
+                    settingsSaved = true;
                 }
             }
         }
 
-        SetFooter("Saved at " + DateTime.Now.ToString("HH:mm:ss"));
+        var stamp = "Saved at " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+        if (keptBroken.Count == 0)
+            SetFooter(stamp);
+        else
+            SetFooter((listsSaved || settingsSaved ? stamp + ". " : "Nothing saved. ")
+                      + "Not replaced (still has errors): " + string.Join(", ", keptBroken) + ".");
         RefreshStateUi();
         return true;
     }
@@ -557,11 +617,11 @@ public partial class ConfigWindow : Window, IImportHost
                 return false;
         }
 
-        if (!KeepCopyOfInvalidFile())
+        if (KeepCopyOfInvalidListFile() != CopyOutcome.Proceed)
             return false;
 
         var config = BuildConfig();
-        var saved = SocialListStore.Save(_services.Paths.SocialListFile, config);
+        var saved = SocialListStore.Save(_services.Paths.SocialListFile, config, _services.ListFile); // the watched file: this save is not an outside edit
         if (!saved.Success)
         {
             MessageBox.Show(this, saved.Error ?? "The list could not be saved.", "IRIS", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -575,51 +635,81 @@ public partial class ConfigWindow : Window, IImportHost
         return true;
     }
 
+    /// <summary>What <see cref="KeepCopyOfInvalidFile"/> came to.</summary>
+    private enum CopyOutcome
+    {
+        /// <summary>The file is fine, a copy of it is already kept, or a copy was just made: go ahead and write.</summary>
+        Proceed,
+
+        /// <summary>The user said no to replacing the broken file.</summary>
+        Declined,
+
+        /// <summary>The copy could not be made (the user was told); nothing may be written.</summary>
+        Failed,
+    }
+
     /// <summary>
     /// The list file on disk has errors (at startup, or after an outside edit), and the first save replaces it with what is on screen.
     /// Asks first, then keeps a copy of the broken file beside it ("name.toml.invalid-yyyyMMdd-HHmmss"). Asked once per bad version of the file.
-    /// Returns false when the user said no or the copy failed.
     /// </summary>
-    private bool KeepCopyOfInvalidFile()
+    private CopyOutcome KeepCopyOfInvalidListFile()
     {
         if (!_services.ListFileHasErrors)
-            return true;
+            return CopyOutcome.Proceed;
 
-        var key = _services.ListFileErrorHash ?? "unreadable";
-        if (_copiedInvalidKey == key)
-            return true;
+        return KeepCopyOfInvalidFile(
+            _services.Paths.SocialListFile, _services.ListFileErrorHash ?? "unreadable", ref _copiedInvalidKey,
+            copyName =>
+                $"Your list file ({DataPaths.SocialListFileName}) has {Plural(_services.ListFileErrors.Count, "problem", "problems")}.\n\n"
+                + "Saving replaces the file with what you see in this window. Entries in the file that could not be read will be dropped.\n\n"
+                + "A copy of the broken file is kept as:\n" + copyName + "\n\nSave now?");
+    }
 
-        var listFile = _services.Paths.SocialListFile;
-        if (!File.Exists(listFile))
+    /// <summary>Same for settings.toml, which has errors (at startup, or after an outside edit) and is about to be replaced.</summary>
+    private CopyOutcome KeepCopyOfInvalidSettingsFile()
+    {
+        if (!_services.SettingsFileHasErrors)
+            return CopyOutcome.Proceed;
+
+        return KeepCopyOfInvalidFile(
+            _services.Paths.SettingsFile, _services.SettingsFileErrorHash ?? "unreadable", ref _copiedInvalidSettingsKey,
+            copyName =>
+                $"{DataPaths.SettingsFileName} has errors. Replace it with the settings shown here? A copy of the broken file is kept.\n\n"
+                + "The copy: " + copyName);
+    }
+
+    private CopyOutcome KeepCopyOfInvalidFile(string file, string key, ref string? copiedKey, Func<string, string> question)
+    {
+        if (copiedKey == key)
+            return CopyOutcome.Proceed;
+
+        if (!File.Exists(file))
         {
-            _copiedInvalidKey = key;
-            return true;
+            copiedKey = key;
+            return CopyOutcome.Proceed;
         }
 
-        var copy = listFile + ".invalid-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        var copy = file + ".invalid-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
         var answer = MessageBox.Show(
-            this,
-            $"Your list file ({Path.GetFileName(listFile)}) has {Plural(_services.ListFileErrors.Count, "problem", "problems")}.\n\n"
-            + "Saving replaces the file with what you see in this window. Entries in the file that could not be read will be dropped.\n\n"
-            + "A copy of the broken file is kept as:\n" + Path.GetFileName(copy) + "\n\nSave now?",
+            this, question(Path.GetFileName(copy)),
             "IRIS", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
         if (answer != MessageBoxResult.Yes)
-            return false;
+            return CopyOutcome.Declined;
 
         try
         {
-            File.Copy(listFile, copy, overwrite: true);
+            File.Copy(file, copy, overwrite: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             MessageBox.Show(this, "A copy of the original file could not be made, so nothing was saved:\n\n" + ex.Message,
                 "IRIS", MessageBoxButton.OK, MessageBoxImage.Error);
             FooterStatus.Text = "Not saved.";
-            return false;
+            return CopyOutcome.Failed;
         }
 
-        _copiedInvalidKey = key;
-        return true;
+        copiedKey = key;
+        return CopyOutcome.Proceed;
     }
 
     private void OnClose(object sender, RoutedEventArgs e)
@@ -820,14 +910,17 @@ public partial class ConfigWindow : Window, IImportHost
     private void OnSettingChanged(object sender, RoutedEventArgs e) => UpdateSaveButton();
 
     /// <summary>
-    /// Save is on while anything differs from what is saved (rows, their order, any value, any setting). It is also on while a file on disk
-    /// has errors, because saving is how the user replaces the broken file with what the window shows.
+    /// Save is on while anything differs from what is saved (rows, their order, any value, any setting), and never while an import,
+    /// export or save is running. It is ALSO on while a watched file on disk has errors, even when nothing was edited. This is intentional:
+    /// saving is how the user repairs a broken file (the window shows the version IRIS is using; Save asks, keeps a copy of the broken
+    /// file as ".invalid-<time>" and replaces it).
     /// </summary>
     private void UpdateSaveButton()
     {
         if (!_ready || _isClosed)
             return;
-        SaveButton.IsEnabled = HasUnsavedChanges(ignoreHostedUrl: false) || _services.ListFileHasErrors || _services.SettingsFileNeedsSave;
+        SaveButton.IsEnabled = _busyCount == 0
+            && (HasUnsavedChanges(ignoreHostedUrl: false) || _services.ListFileHasErrors || _services.SettingsFileNeedsSave);
     }
 
     private void RefreshStateUi()
@@ -968,6 +1061,8 @@ public partial class ConfigWindow : Window, IImportHost
         }
 
         RefreshStateUi();
+        if (!_services.ListFileMissing && FooterStatus.Text == MissingListNotice)
+            SetFooter(string.Empty); // the list file is back (or was saved again): the notice no longer applies
         if (changes.Message is { } message)
             SetFooter(message);
     }
@@ -981,27 +1076,28 @@ public partial class ConfigWindow : Window, IImportHost
         if (_busyCount > 0)
             return;
 
-        var dialog = new OpenFileDialog
-        {
-            Title = "Import IRIS config",
-            Filter = ConfigFileFilter,
-            CheckFileExists = true,
-            Multiselect = false,
-        };
-        if (dialog.ShowDialog(this) != true)
-            return;
-
-        var read = ConfigImporter.ReadFile(dialog.FileName);
-        if (!read.Success || read.Text is null)
-        {
-            FooterStatus.Text = "Import failed.";
-            MessageBox.Show(this, "The file could not be imported:\n\n" + read.Error, "IRIS", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
+        // Busy from before the file dialog opens: while it is open the window cannot be closed, saved over, or reloaded by a file check.
         BeginBusy();
         try
         {
+            var dialog = new OpenFileDialog
+            {
+                Title = "Import IRIS config",
+                Filter = ConfigFileFilter,
+                CheckFileExists = true,
+                Multiselect = false,
+            };
+            if (dialog.ShowDialog(this) != true)
+                return;
+
+            var read = ConfigImporter.ReadFile(dialog.FileName);
+            if (!read.Success || read.Text is null)
+            {
+                FooterStatus.Text = "Import failed.";
+                MessageBox.Show(this, "The file could not be imported:\n\n" + read.Error, "IRIS", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
             var attempt = await _imports.ImportTextAsync(read.Text, "Import " + Path.GetFileName(dialog.FileName), ignoreHostedUrl: false);
             if (!_isClosed && attempt.Outcome != ImportOutcome.Imported)
                 FooterStatus.Text = attempt.Message; // on success the reload has already shown the summary
@@ -1054,12 +1150,11 @@ public partial class ConfigWindow : Window, IImportHost
             if (string.Equals(hash, _services.Settings.HostedConfigLastHash, StringComparison.OrdinalIgnoreCase))
             {
                 // The same version as the one imported last time: nothing to do.
-                const string unchanged = "Your hosted config has not changed.";
+                const string unchanged = ConfigMessages.HostedConfigUnchanged;
                 _services.Log.Write(_services.Clock.UtcNow, "Hosted config unchanged since the last import.");
-                if (_isClosed)
-                    _services.Notify?.Invoke(unchanged); // the window was closed while fetching: a balloon is the only way to say it
-                else
-                    SetFooter(unchanged);
+                _services.Notify?.Invoke(unchanged); // always a notification (tray balloon) ...
+                if (!_isClosed)
+                    SetFooter(unchanged); // ... and the status bar while the window is open
                 return;
             }
 
@@ -1125,6 +1220,20 @@ public partial class ConfigWindow : Window, IImportHost
             };
             if (dialog.ShowDialog(this) != true)
                 return;
+
+            // Writing the export onto IRIS's own files would replace them behind the app's back (and be taken for an outside edit).
+            if (_services.Paths.IsOwnConfigFile(dialog.FileName))
+            {
+                FooterStatus.Text = "Export cancelled.";
+                MessageBox.Show(
+                    this,
+                    "That is one of IRIS's own files (" + Path.GetFileName(dialog.FileName) + "), and exporting onto it would overwrite your "
+                    + "current " + (string.Equals(Path.GetFileName(dialog.FileName), DataPaths.SettingsFileName, StringComparison.OrdinalIgnoreCase)
+                        ? "settings" : "lists")
+                    + ".\n\nNothing was exported. Choose another file name or folder.",
+                    "IRIS", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
 
             var result = ConfigImporter.Export(dialog.FileName, _services.CurrentConfig);
             if (result.Success)
@@ -1223,6 +1332,7 @@ public partial class ConfigWindow : Window, IImportHost
         ImportFileButton.IsEnabled = idle;
         ImportUrlButton.IsEnabled = idle;
         ExportButton.IsEnabled = idle;
+        UpdateSaveButton();
     }
 
     /// <summary>The app's lists were replaced by an import: show them, check every name, show the settings as saved, and start clean.</summary>

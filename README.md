@@ -78,7 +78,8 @@ dotnet run --project src\Iris.App
 IRIS starts in the system tray (bottom right, maybe under the `^` arrow). Double-click the icon, or right-click it and choose
 "Settings...", to edit your lists. Only one copy can run at a time. Closing the window keeps IRIS running; use "Quit" in the tray menu.
 The tray menu also has "Open log" (today's log file in your text viewer) and "Open config location" (opens the `Data` folder in Explorer).
-The window's **Save** button is grey while nothing differs from what is saved; saving does not close the window ("Saved at HH:mm:ss" appears in the status bar). **Close** (or Escape) closes it and asks first if there are unsaved changes.
+The window's **Save** button is grey while nothing differs from what is saved; saving does not close the window ("Saved at HH:mm:ss" appears in the status bar). Save is also off while an import, export or save is running.
+It stays **on** while `social-overlay.toml` or `settings.toml` has errors, even if you changed nothing: that is how you repair a broken file (Save asks first and keeps a copy of the broken file as `.invalid-<timestamp>`). **Close** (or Escape) closes it and asks first if there are unsaved changes.
 
 Everything IRIS stores lives in a `Data` folder next to `IRIS.exe` (when run from the build output:
 `src\Iris.App\bin\Debug\net8.0-windows\Data`): `social-overlay.toml` (your lists, plus `.bak` of the previous save),
@@ -117,7 +118,7 @@ the tray menu any more. Loading a config (an import, or a changed file, see belo
 IRIS sends at most one request per second to robertsspaceindustries.com, from one shared limiter. When RSI answers 429, any 5xx error,
 or does not answer (timeout, network error), the wait before the next request doubles: 1, 2, 4, 8, 16, 30 seconds (30 is the cap). If RSI sends
 a Retry-After (seconds or a date) with a 429 or 503, the longer of the two is used (at most 120 seconds). Every good answer halves the wait
-again, back to 1 second. Changes are logged ("RSI is slowing us down: waiting 4 s between requests"), and each request line in the log
+again, back to 1 second (a good answer to a request that was sent before the latest bad answer is ignored: it says nothing about how RSI is doing now). Changes are logged ("RSI is slowing us down: waiting 4 s between requests"), and each request line in the log
 shows how long it took, e.g. `-> found [AVOCADO page 12] (0.42 s)`.
 
 ### Watching the config files
@@ -137,6 +138,12 @@ while the window is open (never while it is closed). It first only checks the fi
   `social-overlay.lastgood.toml` / `settings.lastgood.toml` in the `Data` folder. If the main file is broken when IRIS starts and a
   last-good copy exists, IRIS uses the copy, says so ("using the last good version (from <date>)") and does not overwrite the main file.
   `exclusions.txt` has no last-good copy.
+- If `social-overlay.toml` is deleted while IRIS runs, the tray message and the window's status bar say so; IRIS keeps using the list it has, and
+  the next Save (or import) writes the file again.
+- The first check when the config window opens runs in the background, so the window appears at once and then shows any edit made while it was closed.
+- A broken `settings.toml` is only replaced when you agree (Save asks "Replace it with the settings shown here? A copy of the broken file is kept.");
+  settings are written only when they differ from the saved ones or to replace such a broken file. If you decline replacing a broken file
+  that you did not edit, edits to the other file (lists or settings) are still saved.
 
 ### Import
 
@@ -167,14 +174,14 @@ redirects are followed by hand only within the same site, same port (up to 3), a
 every request URL, refused ones too, is logged without any user name or password; a failed fetch is never remembered.
 
 The hosted address is contacted ONLY when you press **Import from URL**. If the fetched file is the same version (SHA-256) as the one you last
-imported from there, nothing is imported and the status bar says "Your hosted config has not changed." (a tray message if the window was closed
-meanwhile). Otherwise the usual import choices appear, and after a successful import the address and version are remembered. A failed fetch is never remembered.
+imported from there, nothing is imported and IRIS says "Your hosted config has not changed." (always as a tray message, and in the status bar while the window is open). Otherwise the usual import choices appear, and after a successful import the address and version are remembered. A failed fetch is never remembered.
 
 ### Export
 
 **Export...** writes the lists as last saved to a file (default name `iris-config.toml`). If the window has unsaved list changes you
 are asked whether to save the lists first (Yes; settings edits stay unsaved), export the saved version (No) or stop (Cancel). A file that
 cannot be written (for example a read-only USB stick) is reported in the status bar and a message. The file contains only the lists, never settings.
+Exporting onto IRIS's own `social-overlay.toml` or `settings.toml` is refused with a message.
 
 ## Capture real RSI pages (needed for the parser tests)
 
