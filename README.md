@@ -7,7 +7,7 @@ and summarizes their orgs in a side panel. See the requirements doc for the full
 
 ## Status
 
-Phase 1, increment 5: the Settings tab. IRIS runs as a tray app with a Social Overlay config window (no overlay or OCR yet). The window now has app settings, import and export of your lists, and an optional hosted config URL.
+Phase 2: the overlay shell. IRIS runs as a tray app with a Social Overlay config window, and now has the overlay window itself (brackets and the right-hand panel), driven by test data only: there is no screen capture or OCR yet, so the real overlay stays empty until Phase 3 feeds it detections. The Settings tab has an Overlay section and a "Show test overlay (15 s)" button to try it. See "Phase 2: the overlay" below.
 
 - `src/Iris.Core`: config file (TOML) read, write and validate; color and bracket rules; right-panel org line (increment 1).
 - `src/Iris.Core/Rsi`: reads robertsspaceindustries.com. Pure parsers for the player organizations page, the org page and the
@@ -23,7 +23,10 @@ Phase 1, increment 5: the Settings tab. IRIS runs as a tray app with a Social Ov
   config window: format, duplicates, cache first, then one RSI request (increment 4).
 - `src/Iris.Core/Settings`: `AppSettings` and `AppSettingsToml` (`Data\settings.toml`). `src/Iris.Core/Config` also holds
   `SocialConfigMerger`, `ConfigImporter` (the three import modes, export) and `HostedConfigClient` (increment 5).
-- `src/Iris.App`: the Windows app (WPF): tray icon, and the config window with the Players, Orgs, Org-Attribute and Settings tabs.
+- `src/Iris.Core/Overlay`: the overlay model and its math, without any windowing code: `OverlayModel` (brackets and panel entries), `OverlayModelBuilder`
+  (detections + cached orgs to model), `PanelLayout` (panel rectangles), `GameWindowRules` (the borderless decision), `OverlayPalette`, `TestOverlayBuilder` (Phase 2).
+- `src/Iris.App`: the Windows app (WPF): tray icon, the config window with the Players, Orgs, Org-Attribute and Settings tabs, the overlay window
+  (`Views/OverlayWindow`, `Views/OverlayCanvas`), the game window tracker and the overlay controller (`Services`).
   It has no automated tests yet; everything testable lives in `Iris.Core`.
 - `tests/Iris.Core.Tests`: automated tests for all of the above. Tests that need real RSI pages are skipped until you capture them.
 - `tools/Iris.CaptureFixtures`: saves a few real RSI pages for those tests.
@@ -74,6 +77,51 @@ color = "Blue"
   and the Type drop-down of the other rows does not offer "No Match".
 - Import: **Merge** keeps your No Match color; **Replace** and **Backup** take the imported one (or the default if the imported file has none).
   The row counts in the import summary and in "New config loaded" do not count the No Match rule.
+
+## Phase 2: the overlay
+
+IRIS now has the overlay window. It is driven by **test data only**; Phase 3 will feed the same model with real detections from screen capture and OCR.
+
+**What it draws** (over the game window, nothing else is covered, mouse clicks go straight through it to the game, and it never takes the keyboard focus):
+
+- **Brackets** around each nameplate, in the player's color, with a thin dark outline so they show on dark and bright scenes:
+  `{ }` player list, `[ ]` org list, `< >` org-attribute match and No Match.
+- **The right-hand panel**: one rounded box per bracketed player, filled with the bracket color at 50% opacity. Line 1 is the handle, line 2 the orgs
+  line (the same text rules as before: deciding org first, main org with `*`, at most 40 characters). **Every** bracketed player is listed, No Match
+  players too. Orgs come from the cache; a player the cache knows nothing about shows `Orgs: not looked up`.
+  Order: player list, org list, org attribute, No Match; players of the same kind stay in the order they were first seen.
+- If the entries do not fit, the panel stops before the bottom 10% of the screen and its last line says `+N more`.
+
+**When it shows.** Star Citizen must be the window in front and must run in **borderless windowed mode**: IRIS only overlays a window that has no
+title bar or frame and exactly covers its monitor, because only then do window and screen coordinates line up. In the game, set
+*Graphics > Windowed mode* to **Borderless**. If the game is in front but not borderless, the overlay stays off and a tray message says
+"Star Citizen is not in borderless windowed mode, so the overlay is turned off. Switch to Borderless in the game's graphics settings." (once per game session).
+The tray's **Pause overlay** hides it. The overlay window is created the first time it is needed and afterwards only hidden. While the game is not in front, the only work IRIS does is
+a check of the foreground window every 250 ms. State changes (game in front, borderless or not) are written to the log.
+
+**Test overlay.** Settings tab > Overlay > **Show test overlay (15 s)** shows a sample for 15 seconds: up to 3 players from your player list, 2 org-list
+examples (an org SID from your list with a made-up handle), 1 org-attribute example (if you have a rule) and 2 No Match examples (`TestPilot01`, `TestPilot02`, "Orgs: not looked up").
+It appears over the Star Citizen window if the game is running (even when it is not in front or not borderless), otherwise over the screen the settings window is on. It ignores the
+borderless/foreground rules. The button turns into a countdown ("Stop test overlay (12 s)"); press it again to stop. The panel uses the values currently shown in the
+Settings tab, saved or not, and follows them while you move the sliders, so you can tune and preview before pressing Save.
+
+**Overlay settings** (Settings tab, in `settings.toml` as the `panel_*` keys above):
+
+| Setting | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| Show right panel | on | on/off | The brackets are always shown |
+| Panel width | 16 % | 8 to 40 | Of the game window width |
+| Text size | 18 px | 10 to 40 | Pixels at 1440p; scales linearly with the window height (27 px at 2160p) |
+| Right gap | 10 % | 0 to 40 | Panel right edge = width minus this share of the width |
+| Top gap | 15 % | 0 to 60 | Top of the panel, of the height |
+
+IRIS is per-monitor DPI aware (`app.manifest`, PerMonitorV2), so the overlay lines up with the game window in real pixels on every monitor and at any Windows scaling.
+
+### Credits
+
+The overlay text uses the font **Quantico** (Bold), licensed under the SIL Open Font License 1.1. The font file is not in the repository yet: download Quantico from
+Google Fonts and put `Quantico-Bold.ttf` and its license text `OFL.txt` into `src\Iris.App\Assets\Fonts\`, then rebuild. The project file picks up
+`Assets\Fonts\*.ttf` by wildcard, so the build works with or without the file; without it the overlay uses Segoe UI Bold. `OFL.txt` is copied next to `IRIS.exe`.
 
 ## Build and test (Windows)
 
@@ -129,8 +177,14 @@ hosted_config_url = ""         # https:// address of a config file you host your
 hosted_config_last_hash = ""   # SHA-256 (64 hex characters) of the last hosted file you applied or declined (IRIS fills this in)
 hosted_config_auto_check = false              # true: check the hosted address every 24 hours (see "Hosted config URL")
 hosted_config_last_check = "2026-10-22T09:30:00Z"   # optional; when the last automatic check was made (UTC text; IRIS fills this in)
+panel_enabled = true           # show the right-hand panel (the brackets are always shown)
+panel_width_percent = 16       # panel width, % of the game window width; 8 to 40
+panel_text_size = 18           # panel text size in pixels at 1440p (scales with the window height); 10 to 40
+panel_right_gap_percent = 10   # space right of the panel, % of the width; 0 to 40
+panel_top_gap_percent = 15     # space above the panel, % of the height; 0 to 60
 ```
 
+A `panel_*` value that is out of its range (or not a whole number) is noted in the log and replaced by its default.
 `hosted_config_auto_check` is off by default. Switching it on without a valid `hosted_config_url` switches it off again, with a note; a
 `hosted_config_last_check` that is not a date and time is noted and counts as "never checked". Unknown keys are noted in the log and ignored. A file that is not valid TOML is not changed until you save; until then the defaults
 apply and IRIS tells you; a background change (such as the remembered hosted version) is then kept in memory only, and the file is
