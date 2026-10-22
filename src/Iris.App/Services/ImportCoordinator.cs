@@ -26,6 +26,15 @@ public interface IImportHost
     /// </summary>
     Task<bool> SaveChangesAsync(bool ignoreHostedUrl);
 
+    /// <summary>True while an import, export or save is running in the window (it cannot be closed then).</summary>
+    bool IsBusy { get; }
+
+    /// <summary>
+    /// True when nothing is going on in the window that a new question would disturb: no save, import or export, no question of its own open
+    /// (for example "discard your changes?" when closing).
+    /// </summary>
+    bool IsIdleForPrompt { get; }
+
     /// <summary>Marks the window busy (it cannot be closed, import buttons are off). Calls must be paired with <see cref="EndBusy"/>.</summary>
     void BeginBusy();
 
@@ -56,6 +65,9 @@ public sealed class ImportCoordinator
     // True from the start of an import until it ends, dialogs included. Only touched on the UI thread.
     private bool _active;
 
+    // Questions IRIS asks on its own (the 24-hour hosted config update question), see TryBeginQuestion. Only touched on the UI thread.
+    private int _questions;
+
     public ImportCoordinator(AppServices services)
     {
         _services = services;
@@ -65,10 +77,31 @@ public sealed class ImportCoordinator
     public IImportHost? Host { get; set; }
 
     /// <summary>
-    /// True while an import is running, including any question it has open. While it is true no second import starts, the Settings
+    /// True while an import is running, including any question it has open, or while a question IRIS asked on its own is open
+    /// (<see cref="TryBeginQuestion"/>). While it is true no second import starts, the Settings
     /// window is not opened and IRIS is not quit (the services must not go away under an open dialog).
     /// </summary>
-    public bool IsBusy => _active;
+    public bool IsBusy => _active || _questions > 0;
+
+    /// <summary>
+    /// Claims the right to ask the user something on IRIS's own initiative (the automatic hosted config check). False, and nothing claimed, when
+    /// an import or another question is open or IRIS is quitting: the caller skips this round. Pair a true result with <see cref="EndQuestion"/>.
+    /// UI thread only.
+    /// </summary>
+    public bool TryBeginQuestion()
+    {
+        if (IsQuitting || IsBusy)
+            return false;
+        _questions++;
+        return true;
+    }
+
+    /// <summary>Ends a question claimed with <see cref="TryBeginQuestion"/>.</summary>
+    public void EndQuestion()
+    {
+        if (_questions > 0)
+            _questions--;
+    }
 
     /// <summary>Set by the app when it starts quitting: no new import (or question) starts after that.</summary>
     public bool IsQuitting { get; set; }
@@ -91,7 +124,7 @@ public sealed class ImportCoordinator
 
         if (IsQuitting)
             return new ImportAttempt(ImportOutcome.Cancelled, "Import cancelled: IRIS is quitting.");
-        if (_active)
+        if (_active || _questions > 0)
             return new ImportAttempt(ImportOutcome.Busy, "Another import is already running.");
 
         _active = true;
@@ -135,7 +168,7 @@ public sealed class ImportCoordinator
 
             // 3. Which mode? (Asked after the save above, because saving may have just created the list file.)
             var hasExisting = File.Exists(_services.Paths.SocialListFile);
-            var mode = ImportChoiceDialog.Ask(owner, read.Config, hasExisting, headline, showDeclineNote: false);
+            var mode = ImportChoiceDialog.Ask(owner, read.Config, hasExisting, headline, showDeclineNote: false, _services.Notify);
             if (mode is null)
                 return new ImportAttempt(ImportOutcome.Cancelled, "Import cancelled.");
 

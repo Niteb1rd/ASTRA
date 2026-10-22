@@ -44,7 +44,7 @@ public partial class ConfigWindow : Window, IImportHost
         /// <summary>The lists (if changed) and the settings (if changed), including the hosted address box. The Save button.</summary>
         ListsAndSettings,
 
-        /// <summary>Like <see cref="ListsAndSettings"/>, but the hosted address and version stay as stored (import from a URL).</summary>
+        /// <summary>Like <see cref="ListsAndSettings"/>, but the hosted address, its 24-hour check and its version stay as stored (import from a URL).</summary>
         ListsAndSettingsKeepHostedUrl,
 
         /// <summary>The lists only (export).</summary>
@@ -550,7 +550,11 @@ public partial class ConfigWindow : Window, IImportHost
         {
             var settings = BuildSettings();
             if (scope == SaveScope.ListsAndSettingsKeepHostedUrl)
-                settings = settings with { HostedConfigUrl = _services.Settings.HostedConfigUrl };
+                settings = settings with
+                {
+                    HostedConfigUrl = _services.Settings.HostedConfigUrl,
+                    HostedConfigAutoCheck = _services.Settings.HostedConfigAutoCheck,
+                };
 
             // Settings are written only when they differ from the stored ones, or to replace a settings.toml that has errors
             // (then the user is asked first and a copy of the broken file is kept).
@@ -840,6 +844,8 @@ public partial class ConfigWindow : Window, IImportHost
         HostedUrlBox.Text = settings.HostedConfigUrl;
         HostedUrlError.Text = string.Empty;
         HostedUrlError.Visibility = Visibility.Collapsed;
+        HostedAutoCheck.IsChecked = settings.HostedConfigAutoCheck && IsHostedUrlUsable();
+        UpdateAutoCheckState();
         UpdateSaveButton();
     }
 
@@ -853,6 +859,7 @@ public partial class ConfigWindow : Window, IImportHost
         SessionLogEnabled = LogEnabledCheck.IsChecked == true,
         CheckForUpdates = CheckUpdatesCheck.IsChecked == true,
         HostedConfigUrl = HostedUrlBox.Text.Trim(),
+        HostedConfigAutoCheck = HostedAutoCheck.IsChecked == true && IsHostedUrlUsable(),
     };
 
     /// <summary>Checks the hosted address box (empty is fine) and shows or hides the red message under it. True when it is acceptable.</summary>
@@ -866,6 +873,29 @@ public partial class ConfigWindow : Window, IImportHost
     }
 
     private void OnHostedUrlLostFocus(object sender, KeyboardFocusChangedEventArgs e) => ValidateHostedUrl();
+
+    /// <summary>True when the hosted address box holds a valid https address (the 24-hour check needs one).</summary>
+    private bool IsHostedUrlUsable() => HostedConfigUrl.Check(HostedUrlBox.Text) is null;
+
+    /// <summary>
+    /// The 24-hour check can be ticked only while the address box holds a valid address. When the address is cleared or not valid the
+    /// box is unticked and greyed out; when a valid address appears it is enabled again but stays unticked until the user ticks it.
+    /// </summary>
+    private void UpdateAutoCheckState()
+    {
+        var usable = IsHostedUrlUsable();
+        if (!usable && HostedAutoCheck.IsChecked == true)
+            HostedAutoCheck.IsChecked = false;
+        HostedAutoCheck.IsEnabled = usable;
+    }
+
+    private void OnHostedUrlTextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!_ready)
+            return; // the controls are still being filled (LoadSettingsControls updates the check box itself)
+        UpdateAutoCheckState();
+        UpdateSaveButton();
+    }
 
     private void OnOpenLogFolder(object sender, RoutedEventArgs e)
     {
@@ -1197,7 +1227,11 @@ public partial class ConfigWindow : Window, IImportHost
             }
 
             // Remember the address and this version, so the next "Import from URL" can tell whether the hosted file has changed.
-            var remembered = _services.UpdateSettings(s => s with { HostedConfigUrl = url, HostedConfigLastHash = hash });
+            // The 24-hour check goes with the address (it was left out of the save above, like the address): if the box still shows the
+            // address that was imported, its tick is kept too, so reloading the controls below does not throw it away.
+            var autoCheck = HostedAutoCheck.IsChecked == true && string.Equals(HostedUrlBox.Text.Trim(), url, StringComparison.Ordinal);
+            var remembered = _services.UpdateSettings(
+                s => s with { HostedConfigUrl = url, HostedConfigLastHash = hash, HostedConfigAutoCheck = autoCheck });
             LoadSettingsControls();
             FooterStatus.Text = remembered.Success
                 ? attempt.Message
@@ -1299,6 +1333,9 @@ public partial class ConfigWindow : Window, IImportHost
     /// <summary>True while an import, export or save-for-import is running: the window cannot be closed then.</summary>
     public bool IsBusy => _busyCount > 0;
 
+    /// <summary>No save, import, export or question of the window is open (see <see cref="IImportHost.IsIdleForPrompt"/>).</summary>
+    public bool IsIdleForPrompt => IsIdle();
+
     /// <summary>Lists differ from the last save, or the settings controls differ from the saved settings.</summary>
     public bool HasUnsavedChanges(bool ignoreHostedUrl)
     {
@@ -1308,7 +1345,7 @@ public partial class ConfigWindow : Window, IImportHost
         var shown = BuildSettings();
         var saved = _services.Settings;
         if (ignoreHostedUrl)
-            shown = shown with { HostedConfigUrl = saved.HostedConfigUrl };
+            shown = shown with { HostedConfigUrl = saved.HostedConfigUrl, HostedConfigAutoCheck = saved.HostedConfigAutoCheck };
         return shown != saved;
     }
 

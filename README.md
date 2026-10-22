@@ -127,9 +127,12 @@ session_log_enabled = true     # write Data\logs\iris-yyyy-MM-dd.log
 check_for_updates = true       # a setting only for now: the GitHub version check arrives in a later version
 hosted_config_url = ""         # https:// address of a config file you host yourself
 hosted_config_last_hash = ""   # SHA-256 (64 hex characters) of the last hosted file you applied or declined (IRIS fills this in)
+hosted_config_auto_check = false              # true: check the hosted address every 24 hours (see "Hosted config URL")
+hosted_config_last_check = "2026-10-22T09:30:00Z"   # optional; when the last automatic check was made (UTC text; IRIS fills this in)
 ```
 
-Unknown keys are noted in the log and ignored. A file that is not valid TOML is not changed until you save; until then the defaults
+`hosted_config_auto_check` is off by default. Switching it on without a valid `hosted_config_url` switches it off again, with a note; a
+`hosted_config_last_check` that is not a date and time is noted and counts as "never checked". Unknown keys are noted in the log and ignored. A file that is not valid TOML is not changed until you save; until then the defaults
 apply and IRIS tells you; a background change (such as the remembered hosted version) is then kept in memory only, and the file is
 written when you press Save. A hash that is not 64 hex characters is cleared with a note. Turning the log file off stops writing lines to it; the in-memory log keeps working, and files older than
 30 days are still deleted at startup.
@@ -199,8 +202,34 @@ Rules IRIS follows when it fetches it: `https://` only, no user name or password
 redirects are followed by hand only within the same site, same port (up to 3), a redirect to another site is refused with a message;
 every request URL, refused ones too, is logged without any user name or password; a failed fetch is never remembered.
 
-The hosted address is contacted ONLY when you press **Import from URL**. If the fetched file is the same version (SHA-256) as the one you last
+The hosted address is contacted when you press **Import from URL**, and, only if you tick the check described below, once a day. If the fetched file is the same version (SHA-256) as the one you last
 imported from there, nothing is imported and IRIS says "Your hosted config has not changed." (always as a tray message, and in the status bar while the window is open). Otherwise the usual import choices appear, and after a successful import the address and version are remembered. A failed fetch is never remembered.
+
+#### Checking the hosted config every 24 hours (opt-in)
+
+Below the **Import from URL** button the Settings tab has the check box **Check hosted config URL for updates every 24 hrs**. It is greyed out
+while the address box is empty or not a valid `https://` address (clearing the address unticks it); when a valid address is there it is enabled,
+and stays unticked until you tick it. It is saved with the Save button like every other setting.
+
+While IRIS runs (the config window does not have to be open) and the box is ticked, IRIS checks at startup if it has never checked or the last check is 24 hours
+or more ago (`hosted_config_last_check`), and then wakes every 10 minutes to see whether 24 hours have passed again. A check downloads the file exactly like
+**Import from URL** does (only your address, every request logged) and stores the time afterwards, whether it worked or not; a failure is only written to the log.
+
+- Same version (SHA-256) as the last file you imported: nothing happens.
+- Otherwise IRIS asks: "An update to your hosted config is available. Do you want to update now?". **Yes** runs the same import as **Import from URL**
+  (error check, notes, unsaved-changes question, Backup/Merge/Replace question, background fill-missing refresh; the version is remembered when it worked).
+  **No** does nothing more until the next 24-hour check, which asks again if the file still differs.
+- It never runs while an import or another IRIS question is open, nor while IRIS is quitting: that round is skipped (the time is not stored for a skipped
+  question) and the next wake tries again. A newly ticked check starts at the next wake (within 10 minutes) or at the next start.
+
+### Pop-ups that appear on their own
+
+A pop-up that IRIS opens without you having just acted in it (the startup "errors were detected" and "problems in your list file" messages,
+the 24-hour update question, the import question when no config window is open, an unexpected-error message) is never forced over the program you
+are using. If an IRIS window is the active window it is an ordinary dialog. Otherwise (for example the game is in front) it is not on top and does not
+take the focus: it waits behind, with its own button in the taskbar, and a tray message with its headline tells you that it is waiting. While the
+24-hour update question is open the Settings window cannot be opened and Quit asks you to answer it first. Pop-ups that answer a click in the IRIS window
+(save, import, export...) behave as before.
 
 ### Export
 
