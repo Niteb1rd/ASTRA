@@ -3,13 +3,15 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using Iris.App.Services;
 using Iris.Core.Settings;
 
 namespace Iris.App.Views;
 
 /// <summary>
-/// A box that records a hotkey: click it, then press the combination (at least one of Ctrl, Alt, Shift or Win plus a key).
-/// Esc cancels. The recorded combination is the text <see cref="HotkeyValue"/> ("Ctrl+Shift+O", empty for none); <see cref="HotkeyChanged"/>
+/// A box that records a hotkey: click it, then press the combination (at least one of Ctrl, Alt, Shift or Win plus a key; with a letter or
+/// digit, Ctrl, Alt or Win is needed, Shift alone is not enough). Esc cancels. While it has the keyboard focus the global hotkeys do not fire
+/// (<see cref="HotkeyManager.CaptureInProgress"/>). The recorded combination is the text <see cref="HotkeyValue"/> ("Ctrl+Shift+O", empty for none); <see cref="HotkeyChanged"/>
 /// is raised when the user records or clears one. The text is only shown, never typed.
 /// </summary>
 public sealed class HotkeyBox : TextBox
@@ -29,6 +31,7 @@ public sealed class HotkeyBox : TextBox
         Cursor = Cursors.Hand;
         ContextMenu = null;
         ShowText();
+        Unloaded += (_, _) => EndCapture(); // a box that goes away while it has the focus must not leave the hotkeys switched off
     }
 
     /// <summary>Raised after the user recorded or cleared a hotkey (not when it is set from code).</summary>
@@ -61,6 +64,7 @@ public sealed class HotkeyBox : TextBox
     {
         base.OnGotKeyboardFocus(e);
         _capturing = true;
+        HotkeyManager.CaptureInProgress = true; // the global hotkeys stay quiet while a combination is recorded
         _problem = null;
         ShowText();
     }
@@ -68,6 +72,13 @@ public sealed class HotkeyBox : TextBox
     protected override void OnLostKeyboardFocus(KeyboardFocusChangedEventArgs e)
     {
         base.OnLostKeyboardFocus(e);
+        EndCapture();
+    }
+
+    private void EndCapture()
+    {
+        if (_capturing)
+            HotkeyManager.CaptureInProgress = false;
         _capturing = false;
         _problem = null;
         ShowText();
@@ -123,9 +134,9 @@ public sealed class HotkeyBox : TextBox
         }
 
         var virtualKey = KeyInterop.VirtualKeyFromKey(key);
-        if (!HotkeyText.TryCreate(modifiers, virtualKey, out var hotkey))
+        if (!HotkeyText.TryCreate(modifiers, virtualKey, out var hotkey, out var reason))
         {
-            _problem = "That key cannot be used";
+            _problem = reason;
             ShowText();
             return;
         }

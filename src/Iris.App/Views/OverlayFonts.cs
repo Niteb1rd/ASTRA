@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Media;
@@ -8,7 +7,7 @@ namespace Iris.App.Views;
 
 /// <summary>
 /// The font of the overlay text: Quantico Bold from the app's resources (Assets\Fonts\Quantico-Bold.ttf, see README "Credits"),
-/// or Segoe UI Bold when that file is not part of the build. A missing font is never an error.
+/// or Segoe UI Bold when that file is not part of the build or cannot be read. A missing or damaged font is never an error.
 /// </summary>
 internal static class OverlayFonts
 {
@@ -35,9 +34,10 @@ internal static class OverlayFonts
                 return quantico;
             }
         }
-        catch (Exception ex) when (ex is IOException or ArgumentException or UriFormatException or InvalidOperationException or NotSupportedException)
+        catch (Exception)
         {
-            // fall through to the fallback font
+            // Any failure (a missing or damaged resource: IOException, FormatException / FileFormatException, UriFormatException, ...) means the
+            // same: use the fallback font. The overlay must never fail because of its font.
         }
 
         UsingQuantico = false;

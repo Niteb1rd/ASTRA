@@ -24,7 +24,7 @@ public sealed record PanelLayoutResult(
     public bool IsEmpty => Slots.Count == 0 && MoreText is null;
 }
 
-/// <summary>Where the short on-screen confirmation box ("Overlay off") goes: the top of the panel area, one line high.</summary>
+/// <summary>Where the short on-screen confirmation box ("Overlay off") goes: just above the panel's top, one line high.</summary>
 public sealed record ToastLayout(PixelRect Rect, double FontSize, double LineHeight, double PaddingX, double PaddingY, double CornerRadius);
 
 /// <summary>
@@ -110,7 +110,9 @@ public static class PanelLayout
     private static double CornerFor(double fontSize) => fontSize * 0.5;
 
     /// <summary>
-    /// The box for the on-screen confirmation text: same left edge, width and top as the panel, one text line high, same text size.
+    /// The box for the on-screen confirmation text: same left edge and width as the panel, one text line high, same text size, sitting just ABOVE the
+    /// panel's top (one entry gap between the two) so it never covers the first entry. When the panel starts too close to the top of the window
+    /// the box is moved down to the window's top edge (and never below the window's bottom edge), so it always stays on screen.
     /// It does not depend on <c>panel_enabled</c> (the confirmation also shows while the panel is off). Null for an unusable window size.
     /// </summary>
     public static ToastLayout? ComputeToast(double windowWidth, double windowHeight, AppSettings settings)
@@ -124,9 +126,12 @@ public static class PanelLayout
         var panelWidth = windowWidth * settings.PanelWidthPercent / 100.0;
         var right = windowWidth - windowWidth * settings.PanelRightGapPercent / 100.0;
         var left = Math.Max(0, right - panelWidth);
-        var top = windowHeight * settings.PanelTopGapPercent / 100.0;
+        var panelTop = windowHeight * settings.PanelTopGapPercent / 100.0;
+        var height = lineHeight + 2 * paddingY;
+        var top = panelTop - height - fontSize * 0.4; // fontSize * 0.4 is the gap between panel entries
+        top = Math.Min(Math.Max(0, top), Math.Max(0, windowHeight - height));
         return new ToastLayout(
-            new PixelRect(left, top, panelWidth, lineHeight + 2 * paddingY),
+            new PixelRect(left, top, panelWidth, height),
             fontSize, lineHeight, PaddingXFor(fontSize), paddingY, CornerFor(fontSize));
     }
 }

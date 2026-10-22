@@ -17,8 +17,9 @@ namespace Iris.App.Services;
 /// - the live model (<see cref="SetLiveModel"/>; Phase 3 will put real detections here), shown only while Star Citizen is in front and
 ///   borderless (<see cref="GameWindowTracker"/>), the overlay is not disabled, and there is something to draw;
 /// - the test overlay (<see cref="StartTest"/>), shown for 15 seconds whatever is in front.
-/// "Disable Overlay" (<see cref="IsOverlayDisabled"/>) and "Disable Info Panel" (the <c>panel_enabled</c> setting) are toggled from the tray
-/// (<see cref="ToggleFromTray"/>) and from the global hotkeys (<see cref="Hotkeys"/>); the hotkeys also show a short on-screen confirmation.
+/// "Disable Overlay" (<see cref="IsOverlayDisabled"/>) and "Disable Info Panel" (the <c>panel_enabled</c> setting) are toggled from the tray and the
+/// Settings tab (<see cref="ToggleFromTray"/>) and from the global hotkeys (<see cref="Hotkeys"/>); the hotkeys also show a short on-screen
+/// confirmation (just above the panel) while the game is in front and borderless, even when the overlay is disabled (then only that text is drawn).
 /// The window is created the first time it is needed and afterwards only hidden. While the game is not in front the only work is the
 /// tracker's 250 ms foreground check.
 /// </summary>
@@ -109,27 +110,33 @@ public sealed class OverlayController : IDisposable
     // Disable Overlay / Disable Info Panel
     // ---------------------------------------------------------------------------------------
 
-    /// <summary>A tray item was clicked: flips the setting (no on-screen text).</summary>
+    /// <summary>A tray item or the Settings tab's "Disable Overlay" checkbox was used: flips the setting (no on-screen text).</summary>
     public void ToggleFromTray(HotkeyAction action) => Toggle(action, announce: false);
 
     private void OnHotkeyPressed(object? sender, HotkeyAction action) => Toggle(action, announce: true);
 
     /// <summary>
     /// Flips "Disable Overlay" or "Disable Info Panel" and saves that one setting. With <paramref name="announce"/> the result is also shown:
-    /// on screen for ~2 s when Star Citizen is in front and borderless (so the overlay can be drawn), otherwise as a tray balloon.
+    /// on screen for ~2 s when Star Citizen is in front and borderless (so the overlay can be drawn; also while the overlay is disabled, then only
+    /// the text is drawn), otherwise as a tray balloon. While the test overlay runs it covers the screen instead of the live overlay, so the
+    /// result goes to the tray balloon then. A confirmation from an earlier toggle is replaced.
     /// </summary>
     private void Toggle(HotkeyAction action, bool announce)
     {
+        // an earlier confirmation ends here; its timer must not cut the new one short (the redraw follows at the end of this method)
+        _toastText = null;
+        _toastTimer.Stop();
+
         var settings = _services.Settings;
         string text;
-        bool onScreen = _tracker.Current.State == GameWindowState.Ready;
+        var onScreen = announce && _testModel is null && _tracker.Current.State == GameWindowState.Ready;
 
         // The text is set before the setting changes, so the single redraw that the change causes already contains it.
         if (action == HotkeyAction.ToggleOverlay)
         {
             var disable = !settings.OverlayDisabled;
             text = disable ? "Overlay off" : "Overlay on";
-            if (announce && onScreen)
+            if (onScreen)
                 ShowToast(text);
             var saved = _services.SetOverlayDisabled(disable);
             if (!saved.Success)
@@ -143,10 +150,8 @@ public sealed class OverlayController : IDisposable
         {
             var enable = !settings.PanelEnabled;
             text = enable ? "Info panel on" : "Info panel off";
-            // with the whole overlay disabled nothing is drawn, so there is no place for the text
-            var showOnScreen = announce && onScreen && !settings.OverlayDisabled;
-            if (showOnScreen)
-                ShowToast(text);
+            if (onScreen)
+                ShowToast(text); // also while the overlay is disabled: Evaluate then draws just this text
             var saved = _services.SetPanelEnabled(enable);
             if (!saved.Success)
             {
@@ -263,7 +268,8 @@ public sealed class OverlayController : IDisposable
 
     private void OnGameWindowChanged(object? sender, GameWindowSnapshot snapshot)
     {
-        if (snapshot.State == GameWindowState.NotBorderless && _notice.ShouldNotify(snapshot.ProcessId))
+        // no notice while the overlay is disabled (the user switched it off on purpose); it is not used up then, so it can still come later
+        if (snapshot.State == GameWindowState.NotBorderless && !_services.IsOverlayDisabled && _notice.ShouldNotify(snapshot.ProcessId))
         {
             _services.Log.Write(_services.Clock.UtcNow, "Told the user that Star Citizen is not in borderless windowed mode");
             _services.Notify?.Invoke(BorderlessNoticeTracker.Text);

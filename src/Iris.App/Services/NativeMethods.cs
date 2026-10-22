@@ -86,15 +86,20 @@ internal static class NativeMethods
 
     public delegate IntPtr LowLevelKeyboardProc(int code, IntPtr wParam, IntPtr lParam);
 
-    /// <summary>What a low-level keyboard hook receives for each key event (KBDLLHOOKSTRUCT).</summary>
+    public const uint WmQuit = 0x0012;
+    public const uint PmNoRemove = 0x0000;
+
+    /// <summary>A message from a thread's queue (MSG). The point is two plain ints.</summary>
     [StructLayout(LayoutKind.Sequential)]
-    public struct KeyboardHookData
+    public struct NativeMessage
     {
-        public uint VirtualKey;
-        public uint ScanCode;
-        public uint Flags;
+        public IntPtr Hwnd;
+        public uint Message;
+        public UIntPtr WParam;
+        public IntPtr LParam;
         public uint Time;
-        public UIntPtr ExtraInfo;
+        public int PointX;
+        public int PointY;
     }
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -106,6 +111,22 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+
+    /// <summary>Waits for the next message of the calling thread's queue. Returns 0 for WM_QUIT, -1 for an error, otherwise a positive number.</summary>
+    [DllImport("user32.dll", EntryPoint = "GetMessageW", SetLastError = true)]
+    public static extern int GetMessage(out NativeMessage message, IntPtr hWnd, uint filterMin, uint filterMax);
+
+    /// <summary>Looks at the calling thread's queue without waiting. Calling it once also makes sure the thread has a queue.</summary>
+    [DllImport("user32.dll", EntryPoint = "PeekMessageW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PeekMessage(out NativeMessage message, IntPtr hWnd, uint filterMin, uint filterMax, uint remove);
+
+    [DllImport("user32.dll", EntryPoint = "PostThreadMessageW", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostThreadMessage(uint threadId, uint message, UIntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
 
     [DllImport("user32.dll")]
     public static extern short GetAsyncKeyState(int virtualKey);

@@ -95,7 +95,7 @@ IRIS now has the overlay window. It is driven by **test data only**; Phase 3 wil
 **When it shows.** Star Citizen must be the window in front and must run in **borderless windowed mode**: IRIS only overlays a window that has no
 title bar or frame and exactly covers its monitor, because only then do window and screen coordinates line up. In the game, set
 *Graphics > Windowed mode* to **Borderless**. If the game is in front but not borderless, the overlay stays off and a tray message says
-"Star Citizen is not in borderless windowed mode, so the overlay is turned off. Switch to Borderless in the game's graphics settings." (once per game session).
+"Star Citizen is not in borderless windowed mode, so the overlay is turned off. Switch to Borderless in the game's graphics settings." (once per game session, and not while Disable Overlay is on).
 **Disable Overlay** (tray) hides it, see "Disable Overlay, Disable Info Panel and hotkeys" below. The overlay window is created the first time it is needed and afterwards only hidden. While the game is not in front, the only work IRIS does is
 a check of the foreground window every 250 ms. State changes (game in front, borderless or not) are written to the log.
 
@@ -119,36 +119,40 @@ IRIS is per-monitor DPI aware (`app.manifest`, PerMonitorV2), so the overlay lin
 
 ### Disable Overlay, Disable Info Panel and hotkeys
 
-The tray menu has two check-mark items, and the same two switches exist as hotkeys and (for the panel) in the Settings tab. They always agree: all of them
+The tray menu has two check-mark items, and the same two switches exist as hotkeys and as check boxes in the Settings tab (Overlay section). They always agree: all of them
 change the same saved setting.
 
 - **Disable Overlay** (`overlay_disabled`): hides everything **and stops all screen reading (OCR)**. Only the 250 ms "is Star Citizen in front?" check keeps running.
   The future capture loop must check `AppServices.IsOverlayDisabled` before each capture (event: `OverlayDisabledChanged`). Kept across restarts.
-  The test overlay ignores this switch.
+  The test overlay ignores this switch. The Settings tab has the check box with the same name (above *Disable Info Panel*); like the tray item it acts at once and is not part of
+  the unsaved changes that **Save** writes.
 - **Disable Info Panel** (`panel_enabled = false`): hides only the right panel; the brackets stay. The Settings tab's Overlay section has the checkbox with the
   same name. The test overlay follows the checkbox as it is shown on screen.
-- A tray click or a hotkey saves just that one setting at once. If the settings window is open with other unsaved edits, they are kept; only the panel checkbox
-  follows the change.
+- A tray click, a hotkey or the *Disable Overlay* check box saves just that one setting at once. If the settings window is open with other unsaved edits, they are kept; only the
+  check boxes of these two switches follow the change.
 
 **Hotkeys** (Settings tab, top section, `hotkey_toggle_overlay` / `hotkey_toggle_panel`, empty by default): *Toggle Overlay* and *Toggle Info Panel*. Click a box,
-press a combination (at least one of Ctrl, Alt, Shift or Win, plus a key; Esc cancels), **Clear** removes it. Written as text such as `Ctrl+Shift+O`; keys: A-Z, 0-9, F1-F24,
+press a combination (at least one of Ctrl, Alt, Shift or Win, plus a key; Esc cancels), **Clear** removes it. With a letter or digit as the key (A-Z, 0-9, Num0-Num9) the
+combination must include Ctrl, Alt or Win: Shift alone is not enough, because Shift+letter is typed in chat and the hotkey would fire while typing. While a box is recording, hotkeys do not fire. Written as text such as `Ctrl+Shift+O`; keys: A-Z, 0-9, F1-F24,
 Num0-Num9, Space, Tab, Enter, Backspace, Insert, Delete, Home, End, PageUp, PageDown, arrows.
 
 Hotkeys are global and work while the game is in front. IRIS reads them with a low-level keyboard hook rather than by claiming the combination, so **the key press
 always reaches Star Citizen (or whatever program is in front) as well as IRIS**: IRIS never swallows a key, and it does not check whether another program uses the same
 combination. A hotkey fires once when its key goes down with exactly its modifiers held (holding the key does not repeat it) and is active again after the key is released.
-Key presses sent by other programs count too. The hook is only installed while at least one hotkey is set, and removed when IRIS quits. The only thing IRIS checks is that
+Key presses sent by other programs count too. The hook runs on its own background thread (so a busy settings window can never delay keystrokes or get the hook removed by Windows),
+is only installed while at least one hotkey is set, and is removed when IRIS quits. If Windows refuses the hook, the log says so and the next time settings are applied (for example when you press Save) IRIS tries again. The only thing IRIS checks is that
 the two hotkeys are not the same combination: the boxes then show a red message, the log has a line and neither is active.
 
 When a hotkey is pressed and Star Citizen is in front and borderless, the overlay shows a short confirmation ("Overlay off", "Overlay on", "Info panel off", "Info panel on")
-for about 2 seconds at the top of the panel area, white text with a dark edge on a dark translucent box. After "Overlay off" nothing else is drawn. In any other case the
-result is a tray balloon instead. Clicking the tray items shows no on-screen text.
+for about 2 seconds just above the top of the panel, white text with a dark edge on a dark translucent box. This also works while the overlay is disabled (only that text is drawn).
+A new press replaces a confirmation that is still showing. In any other case, including while the test overlay is running, the result is a tray balloon instead.
+Clicking the tray items or the check boxes shows no on-screen text.
 
 ### Credits
 
-The overlay text uses the font **Quantico** (Bold), licensed under the SIL Open Font License 1.1. The font file is not in the repository yet: download Quantico from
-Google Fonts and put `Quantico-Bold.ttf` and its license text `OFL.txt` into `src\Iris.App\Assets\Fonts\`, then rebuild. The project file picks up
-`Assets\Fonts\*.ttf` by wildcard, so the build works with or without the file; without it the overlay uses Segoe UI Bold. `OFL.txt` is copied next to `IRIS.exe`.
+The overlay text uses the font **Quantico** (Bold), licensed under the SIL Open Font License 1.1. The font file (`Quantico-Bold.ttf`) and its license text
+(`OFL.txt`) are in the repository, in `src\Iris.App\Assets\Fonts\`; the font is built into `IRIS.exe` and `OFL.txt` is copied next to it. The project file picks up
+`Assets\Fonts\*.ttf` by wildcard, so the build still works if the file is removed; then the overlay uses Segoe UI Bold (as it also does if the font cannot be read).
 
 ## Build and test (Windows)
 
@@ -214,7 +218,7 @@ panel_right_gap_percent = 10   # space right of the panel, % of the width; 0 to 
 panel_top_gap_percent = 15     # space above the panel, % of the height; 0 to 60
 ```
 
-A hotkey that is not valid (no modifier, unknown key, wrong type) is noted in the log and becomes empty. A `panel_*` value that is out of its range (or not a whole number) is noted in the log and replaced by its default.
+A hotkey that is not valid (no modifier, Shift as the only modifier of a letter or digit, unknown key, wrong type) is noted in the log and becomes empty. A `panel_*` value that is out of its range (or not a whole number) is noted in the log and replaced by its default.
 `hosted_config_auto_check` is off by default. Switching it on without a valid `hosted_config_url` switches it off again, with a note; a
 `hosted_config_last_check` that is not a date and time is noted and counts as "never checked". Unknown keys are noted in the log and ignored. A file that is not valid TOML is not changed until you save; until then the defaults
 apply and IRIS tells you; a background change (such as the remembered hosted version) is then kept in memory only, and the file is

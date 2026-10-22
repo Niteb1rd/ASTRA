@@ -57,13 +57,15 @@ public sealed class OverlayCanvas : FrameworkElement
             return;
 
         var dpi = VisualTreeHelper.GetDpi(this);
-        dc.PushTransform(new ScaleTransform(1.0 / dpi.DpiScaleX, 1.0 / dpi.DpiScaleY));
+        var undoDpi = new ScaleTransform(1.0 / dpi.DpiScaleX, 1.0 / dpi.DpiScaleY);
+        undoDpi.Freeze();
+        dc.PushTransform(undoDpi);
         try
         {
             foreach (var item in _model.Brackets)
                 DrawBrackets(dc, item);
-            DrawPanel(dc, dpi.PixelsPerDip);
-            DrawToast(dc, dpi.PixelsPerDip);
+            DrawPanel(dc);
+            DrawToast(dc);
         }
         finally
         {
@@ -99,12 +101,17 @@ public sealed class OverlayCanvas : FrameworkElement
         dc.DrawGeometry(null, colorPen, right);
     }
 
-    private static Pen RoundPen(Brush brush, double thickness) => new(brush, thickness)
+    private static Pen RoundPen(Brush brush, double thickness)
     {
-        StartLineCap = PenLineCap.Round,
-        EndLineCap = PenLineCap.Round,
-        LineJoin = PenLineJoin.Round,
-    };
+        var pen = new Pen(brush, thickness)
+        {
+            StartLineCap = PenLineCap.Round,
+            EndLineCap = PenLineCap.Round,
+            LineJoin = PenLineJoin.Round,
+        };
+        pen.Freeze(); // frozen drawing resources are cheaper for WPF to keep and render (their brush is frozen too)
+        return pen;
+    }
 
     /// <summary>
     /// One bracket as an open line. The shape is described in a 0..1 box (u across, v down; u = 0 is the outer side, u = 1 faces the nameplate)
@@ -152,7 +159,7 @@ public sealed class OverlayCanvas : FrameworkElement
     // Panel
     // ---------------------------------------------------------------------------------------
 
-    private void DrawPanel(DrawingContext dc, double pixelsPerDip)
+    private void DrawPanel(DrawingContext dc)
     {
         var panel = _panel;
         if (panel.IsEmpty)
@@ -168,29 +175,28 @@ public sealed class OverlayCanvas : FrameworkElement
 
             var textX = r.X + panel.PaddingX;
             var textWidth = Math.Max(1.0, r.Width - 2 * panel.PaddingX);
-            DrawOutlinedText(dc, slot.Entry.Handle, textX, r.Y + panel.PaddingY, textWidth, panel, edgePen, pixelsPerDip);
-            DrawOutlinedText(dc, slot.Entry.OrgsLine, textX, r.Y + panel.PaddingY + panel.LineHeight, textWidth, panel, edgePen, pixelsPerDip);
+            DrawOutlinedText(dc, slot.Entry.Handle, textX, r.Y + panel.PaddingY, textWidth, panel, edgePen);
+            DrawOutlinedText(dc, slot.Entry.OrgsLine, textX, r.Y + panel.PaddingY + panel.LineHeight, textWidth, panel, edgePen);
         }
 
         if (panel.MoreText is { } more)
         {
             var r = panel.MoreRect;
-            DrawOutlinedText(dc, more, r.X + panel.PaddingX, r.Y, Math.Max(1.0, r.Width - 2 * panel.PaddingX), panel, edgePen, pixelsPerDip);
+            DrawOutlinedText(dc, more, r.X + panel.PaddingX, r.Y, Math.Max(1.0, r.Width - 2 * panel.PaddingX), panel, edgePen);
         }
     }
 
     /// <summary>White text with a dark edge: the letters become a shape; the dark outline is drawn first, the white fill on top of it.</summary>
     private static void DrawOutlinedText(
-        DrawingContext dc, string text, double x, double lineTop, double maxWidth, PanelLayoutResult panel, Pen edgePen, double pixelsPerDip,
-        bool center = false)
+        DrawingContext dc, string text, double x, double lineTop, double maxWidth, PanelLayoutResult panel, Pen edgePen, bool center = false)
     {
         var size = panel.FontSize;
-        var formatted = Format(text, size, pixelsPerDip);
+        var formatted = Format(text, size);
         if (formatted.Width > maxWidth && formatted.Width > 0)
         {
             // too wide for the box: shrink the text a little (down to 70%); anything still too wide is cut with "..." below
             size *= Math.Max(0.7, maxWidth / formatted.Width);
-            formatted = Format(text, size, pixelsPerDip);
+            formatted = Format(text, size);
         }
         formatted.MaxTextWidth = maxWidth;
         formatted.MaxLineCount = 1;
@@ -207,7 +213,7 @@ public sealed class OverlayCanvas : FrameworkElement
     }
 
     /// <summary>The short confirmation ("Overlay off"): white outlined text, centered, on a dark translucent rounded box.</summary>
-    private void DrawToast(DrawingContext dc, double pixelsPerDip)
+    private void DrawToast(DrawingContext dc)
     {
         if (_toastText is null || _toastLayout is null)
             return;
@@ -219,11 +225,15 @@ public sealed class OverlayCanvas : FrameworkElement
         // DrawOutlinedText takes its measurements from a panel layout; a one-line stand-in carries the toast's
         var measures = new PanelLayoutResult(Array.Empty<PanelSlot>(), null, default, t.FontSize, t.LineHeight, t.PaddingX, t.PaddingY, t.CornerRadius);
         var edgePen = RoundPen(DarkBrush, Math.Max(1.0, t.FontSize * 0.08) * 2);
-        DrawOutlinedText(dc, _toastText, r.X + t.PaddingX, r.Y + t.PaddingY, Math.Max(1.0, r.Width - 2 * t.PaddingX), measures, edgePen, pixelsPerDip, center: true);
+        DrawOutlinedText(dc, _toastText, r.X + t.PaddingX, r.Y + t.PaddingY, Math.Max(1.0, r.Width - 2 * t.PaddingX), measures, edgePen, center: true);
     }
 
-    private static FormattedText Format(string text, double size, double pixelsPerDip) =>
-        new(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, OverlayFonts.Bold, size, Brushes.White, pixelsPerDip);
+    /// <summary>
+    /// The text is measured and drawn in physical pixels (the canvas pushes a transform that undoes the window's DPI scaling), so one device-independent
+    /// unit of this text is exactly one pixel: pixelsPerDip is 1.0, not the window's value.
+    /// </summary>
+    private static FormattedText Format(string text, double size) =>
+        new(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, OverlayFonts.Bold, size, Brushes.White, 1.0);
 
     private static Brush Frozen(SolidColorBrush brush)
     {

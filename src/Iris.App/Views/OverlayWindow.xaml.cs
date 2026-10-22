@@ -12,6 +12,11 @@ namespace Iris.App.Views;
 /// After the window exists it gets the extended styles "layered, transparent, tool window, no activate": mouse clicks go through it to the game,
 /// it never takes the keyboard focus and it is not listed in Alt+Tab. It is created once and only hidden when not needed.
 /// <see cref="Present"/> is cheap to call again and again: nothing is moved or redrawn unless the model, the size or the settings changed.
+///
+/// Cost to remember for Phase 3: the window is a layered (transparent) window as large as the whole game window. For such a window Windows
+/// composites and updates the full surface (e.g. 2560x1440 or 3840x2160 pixels) on every redraw, however little changed in it. That is fine
+/// while the overlay redraws rarely (panel, confirmation) but not at the capture rate: Phase 3 must either throttle the redraws (only when the
+/// detections changed, with a cap per second) or shrink the window to the area that is actually drawn.
 /// </summary>
 public partial class OverlayWindow : Window
 {
@@ -52,7 +57,7 @@ public partial class OverlayWindow : Window
 
     /// <summary>
     /// Shows <paramref name="model"/> over <paramref name="bounds"/> (screen pixels). The model's coordinates are relative to the top-left
-    /// corner of that rectangle. Shows the window if it is hidden. <paramref name="toast"/> is a short confirmation text drawn at the top of the panel area.
+    /// corner of that rectangle. Shows the window if it is hidden. <paramref name="toast"/> is a short confirmation text drawn just above the panel's top.
     /// </summary>
     public void Present(OverlayModel model, PixelRect bounds, AppSettings settings, string? toast = null)
     {

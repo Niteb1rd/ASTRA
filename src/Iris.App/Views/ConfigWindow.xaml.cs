@@ -74,6 +74,13 @@ public partial class ConfigWindow : Window, IImportHost
     // The panel switch as the controls last knew it from the saved settings (see OnServicesSettingsApplied).
     private bool _knownPanelEnabled = true;
 
+    // True while the code (not the user) sets the "Disable Overlay" check box, so that its change event does not toggle the setting again.
+    private bool _syncingOverlayDisabled;
+
+    // True from the moment the user stops the test overlay with the button until the state-changed event for it was handled
+    // (the footer then says "stopped", not "ended").
+    private bool _testStoppedByUser;
+
     // Set once the window is built: the control events fire while it is still being created and must not touch anything yet.
     private bool _ready;
 
@@ -859,6 +866,7 @@ public partial class ConfigWindow : Window, IImportHost
         CacheTtlCombo.SelectedIndex = settings.CacheTtlDays == 7 ? 1 : 0;
         _knownPanelEnabled = settings.PanelEnabled;
         PanelDisabledCheck.IsChecked = !settings.PanelEnabled;
+        ShowOverlayDisabled(settings.OverlayDisabled);
         OverlayHotkeyBox.HotkeyValue = settings.HotkeyToggleOverlay;
         PanelHotkeyBox.HotkeyValue = settings.HotkeyTogglePanel;
         PanelWidthSlider.Value = settings.PanelWidthPercent;
@@ -923,8 +931,9 @@ public partial class ConfigWindow : Window, IImportHost
     private void OnHotkeyStatusChanged(object? sender, EventArgs e) => UpdateHotkeyErrors();
 
     /// <summary>
-    /// Shows in red, next to a box, why its hotkey does not work: the two boxes hold the same combination (checked on what is on screen), or
-    /// Windows refused the saved hotkey (only shown while the box still holds the saved one).
+    /// Shows in red, next to a box, that its hotkey does not work because both boxes hold the same combination. That is checked on what is on
+    /// screen; as long as a box still holds the saved hotkey the hotkey manager's own verdict (<c>OverlayError</c> / <c>PanelError</c>, also only
+    /// the same-combination case) is shown too. IRIS does not register hotkeys with Windows, so there is no other kind of refusal.
     /// </summary>
     private void UpdateHotkeyErrors()
     {
@@ -949,9 +958,10 @@ public partial class ConfigWindow : Window, IImportHost
     }
 
     /// <summary>
-    /// The saved settings changed (a tray click or a hotkey flipped the panel switch, or this window saved). If the panel switch differs from what
+    /// The saved settings changed (a tray click or a hotkey flipped a switch, or this window saved). If the panel switch differs from what
     /// the checkbox last knew, the checkbox follows it; edits of all other controls stay as they are, so a tray or hotkey toggle never discards
     /// unsaved edits. Because the saved value changed too, the window does not count that switch as an unsaved change.
+    /// The "Disable Overlay" checkbox always shows the saved value (it acts at once and is not an edit).
     /// </summary>
     private void OnServicesSettingsApplied(object? sender, EventArgs e)
     {
@@ -963,6 +973,7 @@ public partial class ConfigWindow : Window, IImportHost
             _knownPanelEnabled = enabled;
             PanelDisabledCheck.IsChecked = !enabled;
         }
+        ShowOverlayDisabled(_services.Settings.OverlayDisabled);
         UpdateHotkeyErrors();
         UpdateSaveButton();
     }
@@ -973,6 +984,36 @@ public partial class ConfigWindow : Window, IImportHost
     {
         slider.Maximum = maximum; // the maximum first: the default maximum (10) must not cap a larger minimum
         slider.Minimum = minimum;
+    }
+
+    /// <summary>Sets the "Disable Overlay" check box from the saved setting without toggling anything.</summary>
+    private void ShowOverlayDisabled(bool disabled)
+    {
+        if (OverlayDisabledCheck.IsChecked == disabled)
+            return;
+        _syncingOverlayDisabled = true;
+        try
+        {
+            OverlayDisabledCheck.IsChecked = disabled;
+        }
+        finally
+        {
+            _syncingOverlayDisabled = false;
+        }
+    }
+
+    /// <summary>
+    /// The user ticked or cleared "Disable Overlay": it acts at once, like the tray item (it saves just that setting and is no unsaved change of
+    /// this tab). Afterwards the box shows the saved value again, which also puts it back if saving failed (the user was told through a balloon).
+    /// </summary>
+    private void OnOverlayDisabledCheckChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_ready || _isClosed || _syncingOverlayDisabled)
+            return;
+        var wanted = OverlayDisabledCheck.IsChecked == true;
+        if (wanted != _services.Settings.OverlayDisabled)
+            _overlay.ToggleFromTray(HotkeyAction.ToggleOverlay);
+        ShowOverlayDisabled(_services.Settings.OverlayDisabled);
     }
 
     /// <summary>A panel check box or slider changed: the Save button follows, and a running test overlay shows the new values at once.</summary>
@@ -995,7 +1036,15 @@ public partial class ConfigWindow : Window, IImportHost
         {
             if (_overlay.IsTestRunning)
             {
-                _overlay.StopTest();
+                _testStoppedByUser = true; // OnTestStateChanged (raised by StopTest) must not write "ended" over "stopped"
+                try
+                {
+                    _overlay.StopTest();
+                }
+                finally
+                {
+                    _testStoppedByUser = false;
+                }
                 SetFooter("Test overlay stopped.");
                 return;
             }
@@ -1014,7 +1063,7 @@ public partial class ConfigWindow : Window, IImportHost
         if (_isClosed)
             return;
         UpdateTestButton();
-        if (!_overlay.IsTestRunning)
+        if (!_overlay.IsTestRunning && !_testStoppedByUser)
             SetFooter("Test overlay ended.");
     }
 

@@ -9,8 +9,11 @@ using Iris.Core.Overlay;
 
 namespace Iris.App.Services;
 
-/// <summary>What the tracker saw at the last check: the state, and for a game in front its window rectangle (screen pixels) and process.</summary>
-public sealed record GameWindowSnapshot(GameWindowState State, PixelRect Bounds, int ProcessId, IntPtr Handle)
+/// <summary>
+/// What the tracker saw at the last check: the state, and for a game in front its window rectangle (screen pixels), process, window style flags
+/// and the rectangle of its monitor (the last two are what the borderless decision was made from; they are logged for diagnosing it).
+/// </summary>
+public sealed record GameWindowSnapshot(GameWindowState State, PixelRect Bounds, int ProcessId, IntPtr Handle, uint Style = 0, PixelRect Monitor = default)
 {
     /// <summary>Star Citizen is not in front (or not running).</summary>
     public static readonly GameWindowSnapshot None = new(GameWindowState.GameNotActive, default, 0, IntPtr.Zero);
@@ -19,7 +22,7 @@ public sealed record GameWindowSnapshot(GameWindowState State, PixelRect Bounds,
 /// <summary>
 /// Watches whether Star Citizen is the window in front and whether it is borderless (<see cref="GameWindowRules"/>).
 /// Every 250 ms it asks Windows for the foreground window and which process owns it; the process name is remembered per process id,
-/// so nothing else happens while another program is in front. Only when the game is in front are its rectangle, its monitor and its
+/// so nothing else happens while another program is in front (a "not the game" answer is kept for 5 seconds, a "game" answer for 60). Only when the game is in front are its rectangle, its monitor and its
 /// style read. <see cref="Changed"/> is raised (on the UI thread) when the snapshot differs from the previous one; state changes are logged.
 /// </summary>
 public sealed class GameWindowTracker : IDisposable
@@ -28,7 +31,10 @@ public sealed class GameWindowTracker : IDisposable
     public const string GameProcessName = "StarCitizen";
 
     private static readonly TimeSpan CheckInterval = TimeSpan.FromMilliseconds(250);
-    private const long ProcessNameCacheMs = 60_000;
+    // A process id can be reused by another program after the game ended, so a "not the game" answer is only trusted for a few seconds
+    // (a game that starts must be noticed quickly); a "this is the game" answer may stay longer.
+    private const long GameProcessCacheMs = 60_000;
+    private const long OtherProcessCacheMs = 5_000;
     private const int ProcessNameCacheMaxEntries = 256;
 
     private readonly ILog _log;
@@ -102,14 +108,15 @@ public sealed class GameWindowTracker : IDisposable
             || !NativeMethods.TryGetMonitorBounds(foreground, out var monitor))
             return GameWindowSnapshot.None;
 
-        var state = GameWindowRules.Decide(true, window, monitor, NativeMethods.GetStyle(foreground));
-        return new GameWindowSnapshot(state, window, (int)processId, foreground);
+        var style = NativeMethods.GetStyle(foreground);
+        var state = GameWindowRules.Decide(true, window, monitor, style);
+        return new GameWindowSnapshot(state, window, (int)processId, foreground, style, monitor);
     }
 
     private bool IsGameProcess(uint processId)
     {
         var now = Environment.TickCount64;
-        if (_processCache.TryGetValue(processId, out var known) && now - known.CheckedAtMs < ProcessNameCacheMs)
+        if (_processCache.TryGetValue(processId, out var known) && now - known.CheckedAtMs < (known.IsGame ? GameProcessCacheMs : OtherProcessCacheMs))
             return known.IsGame;
 
         var isGame = false;
@@ -177,8 +184,9 @@ public sealed class GameWindowTracker : IDisposable
     {
         var detail = to.State == GameWindowState.GameNotActive
             ? string.Empty
-            : string.Format(CultureInfo.InvariantCulture, " (process {0}, window {1}x{2} at {3},{4})",
-                to.ProcessId, to.Bounds.Width, to.Bounds.Height, to.Bounds.X, to.Bounds.Y);
+            : string.Format(CultureInfo.InvariantCulture, " (process {0}, window {1}x{2} at {3},{4}, style 0x{5:X8}, monitor {6}x{7} at {8},{9})",
+                to.ProcessId, to.Bounds.Width, to.Bounds.Height, to.Bounds.X, to.Bounds.Y,
+                to.Style, to.Monitor.Width, to.Monitor.Height, to.Monitor.X, to.Monitor.Y);
         _log.Write(_clock.UtcNow, $"Game window: {from.State} -> {to.State}{detail}");
     }
 }

@@ -53,6 +53,55 @@ public class HotkeyTextTests
         Assert.Equal(string.Empty, HotkeyText.Normalize(text));
     }
 
+    [Theory]
+    [InlineData("Shift+O")]
+    [InlineData("Shift+5")]
+    [InlineData("Shift+Num3")]
+    [InlineData("shift+a")]
+    public void ShiftAlone_WithALetterOrDigit_IsRejected(string text)
+    {
+        Assert.False(HotkeyText.TryParse(text, out var hotkey, out var error));
+        Assert.Null(hotkey);
+        Assert.Contains("Shift", error);
+        Assert.Equal(string.Empty, HotkeyText.Normalize(text));
+    }
+
+    [Theory]
+    [InlineData("Ctrl+O")]
+    [InlineData("Alt+5")]
+    [InlineData("Win+Q")]
+    [InlineData("Ctrl+Shift+O")]
+    [InlineData("Shift+Alt+7")]
+    [InlineData("Shift+F5")]        // not a typing key: Shift alone is fine
+    [InlineData("Shift+Delete")]
+    [InlineData("Shift+Space")]
+    [InlineData("Shift+Up")]
+    public void LetterOrDigit_NeedsCtrlAltOrWin_OtherKeysDoNot(string text)
+    {
+        Assert.True(HotkeyText.TryParse(text, out _, out var error), error);
+    }
+
+    [Fact]
+    public void TryCreate_RejectsShiftAlone_WithATypingKey_AndSaysWhy()
+    {
+        Assert.False(HotkeyText.TryCreate(HotkeyModifiers.Shift, 0x4F, out var hotkey, out var error));
+        Assert.Null(hotkey);
+        Assert.Contains("Ctrl, Alt or Win", error);
+        Assert.False(HotkeyText.TryCreate(HotkeyModifiers.Shift, 0x35, out _));   // 5
+        Assert.False(HotkeyText.TryCreate(HotkeyModifiers.Shift, 0x65, out _));   // Num5
+        Assert.True(HotkeyText.TryCreate(HotkeyModifiers.Shift, 0x74, out _));    // F5
+        Assert.True(HotkeyText.TryCreate(HotkeyModifiers.Shift | HotkeyModifiers.Windows, 0x4F, out _));
+    }
+
+    [Fact]
+    public void TryCreate_NoModifier_AndUnsupportedKey_HaveTheirOwnMessages()
+    {
+        Assert.False(HotkeyText.TryCreate(HotkeyModifiers.None, 0x4F, out _, out var noModifier));
+        Assert.False(HotkeyText.TryCreate(HotkeyModifiers.Control, 0x1B, out _, out var badKey));
+        Assert.Contains("Hold", noModifier);
+        Assert.Contains("cannot be used", badKey);
+    }
+
     [Fact]
     public void FormatThenParse_RoundTrips_ForEverySupportedKey()
     {
@@ -141,6 +190,7 @@ public class HotkeySettingsTests : IDisposable
     [Theory]
     [InlineData("hotkey_toggle_overlay = \"O\"", "hotkey_toggle_overlay")]
     [InlineData("hotkey_toggle_overlay = \"Ctrl+Esc\"", "hotkey_toggle_overlay")]
+    [InlineData("hotkey_toggle_overlay = \"Shift+O\"", "hotkey_toggle_overlay")] // Shift alone with a letter would fire while typing
     [InlineData("hotkey_toggle_panel = \"nonsense\"", "hotkey_toggle_panel")]
     [InlineData("hotkey_toggle_panel = 5", "hotkey_toggle_panel")]
     public void InvalidHotkey_BecomesEmptyWithAWarning(string line, string key)
@@ -188,27 +238,60 @@ public class HotkeySettingsTests : IDisposable
 public class ToastLayoutTests
 {
     [Fact]
-    public void Toast_SitsAtTheTopOfThePanelArea_OneLineHigh()
+    public void Toast_SitsJustAboveThePanelTop_OneLineHigh()
     {
         var toast = PanelLayout.ComputeToast(2560, 1440, new AppSettings())!;
 
         Assert.Equal(2304.0, toast.Rect.Right, 6);
         Assert.Equal(0.16 * 2560, toast.Rect.Width, 6);
-        Assert.Equal(216.0, toast.Rect.Y, 6);
         Assert.Equal(18.0, toast.FontSize, 6);
         Assert.Equal(toast.LineHeight + 2 * toast.PaddingY, toast.Rect.Height, 6);
+        // the panel starts at 15 % of 1440 = 216; the box ends one entry gap (0.4 x font size) above it
+        Assert.Equal(216.0 - 0.4 * 18.0, toast.Rect.Bottom, 6);
+        Assert.True(toast.Rect.Y > 0);
+    }
+
+    [Fact]
+    public void Toast_DoesNotOverlapTheFirstPanelEntry()
+    {
+        var entries = new List<PanelEntry> { new("Abcd", Iris.Core.Social.MatchKind.NoMatch, Iris.Core.Config.OverlayColor.Blue, "Orgs: none found") };
+        var settings = new AppSettings();
+
+        var panel = PanelLayout.Compute(entries, 2560, 1440, settings);
+        var toast = PanelLayout.ComputeToast(2560, 1440, settings)!;
+
+        Assert.True(toast.Rect.Bottom < panel.Slots[0].Rect.Y);
     }
 
     [Fact]
     public void Toast_IsShownEvenWhenThePanelIsOff_AndFollowsTheSettings()
     {
-        var settings = new AppSettings { PanelEnabled = false, PanelWidthPercent = 20, PanelRightGapPercent = 0, PanelTopGapPercent = 0 };
+        var settings = new AppSettings { PanelEnabled = false, PanelWidthPercent = 20, PanelRightGapPercent = 0, PanelTopGapPercent = 30 };
 
         var toast = PanelLayout.ComputeToast(1000, 800, settings)!;
 
         Assert.Equal(1000.0, toast.Rect.Right, 6);
         Assert.Equal(200.0, toast.Rect.Width, 6);
+        Assert.Equal(240.0 - 0.4 * toast.FontSize, toast.Rect.Bottom, 6);
+    }
+
+    [Fact]
+    public void Toast_WithNoRoomAboveThePanel_StaysOnScreenAtTheTop()
+    {
+        var settings = new AppSettings { PanelTopGapPercent = 0 };
+
+        var toast = PanelLayout.ComputeToast(1000, 800, settings)!;
+
         Assert.Equal(0.0, toast.Rect.Y, 6);
+    }
+
+    [Fact]
+    public void Toast_InAVeryFlatWindow_NeverLeavesTheWindow()
+    {
+        var toast = PanelLayout.ComputeToast(1000, 20, new AppSettings { PanelTopGapPercent = 60 })!;
+
+        Assert.True(toast.Rect.Y >= 0);
+        Assert.True(toast.Rect.Bottom <= 20 || toast.Rect.Y == 0);
     }
 
     [Fact]
