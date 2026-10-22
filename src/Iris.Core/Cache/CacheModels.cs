@@ -3,7 +3,7 @@ using Iris.Core.Social;
 namespace Iris.Core.Cache;
 
 /// <summary>
-/// Why an entry is in the cache. Decides what "Update database now" may refresh:
+/// Why an entry is in the cache. Decides what the list refreshes ("Refresh Cache" and the fill-missing run after a config is loaded) may touch:
 /// only <see cref="PlayerList"/> and <see cref="OrgList"/> entries (the user's own lists).
 /// The numbers say how strong a source is: when an entry is written again from a weaker source,
 /// it keeps the stronger one (a player on the user's list stays 'player_list' even after a hotkey lookup).

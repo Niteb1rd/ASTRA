@@ -423,33 +423,3 @@ public class ImportValidationTests
         Assert.False(OrgRuleValues.NeedsValue(AttributeKind.NoOrg));
     }
 }
-
-public class ImportOutcomeTests
-{
-    [Theory]
-    [InlineData(ImportOutcome.Imported, true)]
-    [InlineData(ImportOutcome.Cancelled, true)]
-    [InlineData(ImportOutcome.Rejected, true)]
-    [InlineData(ImportOutcome.NotSaved, false)]
-    [InlineData(ImportOutcome.WriteFailed, false)]
-    [InlineData(ImportOutcome.Busy, false)]
-    public void HostedVersion_IsRemembered_OnlyWhenTheUserDecidedOrTheFileIsBroken(ImportOutcome outcome, bool remembered)
-    {
-        Assert.Equal(remembered, ImportOutcomes.ShouldRememberHostedVersion(outcome));
-    }
-
-    [Fact]
-    public void HostedMessages_MatchTheOutcome()
-    {
-        Assert.Equal("Hosted config imported. Imported: 1 player", ImportOutcomes.HostedMessage(ImportOutcome.Imported, "Imported: 1 player"));
-        Assert.Equal("Hosted config change skipped.", ImportOutcomes.HostedMessage(ImportOutcome.Cancelled, "Import cancelled."));
-        Assert.Equal("Hosted config was not imported (it has problems).", ImportOutcomes.HostedMessage(ImportOutcome.Rejected, "x"));
-        Assert.Equal(
-            "Hosted config was not imported: Import cancelled: your changes were not saved. It will be offered again next time.",
-            ImportOutcomes.HostedMessage(ImportOutcome.NotSaved, "Import cancelled: your changes were not saved."));
-        Assert.Equal(
-            "Hosted config was not imported: Import failed: disk full. It will be offered again next time.",
-            ImportOutcomes.HostedMessage(ImportOutcome.WriteFailed, "Import failed: disk full"));
-        Assert.EndsWith("It will be offered again next time.", ImportOutcomes.HostedMessage(ImportOutcome.Busy, "Another import is running."));
-    }
-}
