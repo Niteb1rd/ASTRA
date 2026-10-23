@@ -34,7 +34,7 @@ namespace Iris.App.Views;
 /// enabled on purpose, so the user can replace the broken file with what the window shows (a copy of the broken file is kept first).
 /// While the window is open it looks at the config files every 2 seconds: an edited file is loaded (unsaved edits in the window are discarded),
 /// a file with errors is reported in a red banner at the top and the previous version stays in use.
-/// Later increments add the overlay controls to this window.
+/// The Settings tab also has the Overlay section (right panel layout) and the "Show test overlay (15 s)" button.
 /// </summary>
 public partial class ConfigWindow : Window, IImportHost
 {
@@ -59,6 +59,7 @@ public partial class ConfigWindow : Window, IImportHost
     private readonly AppServices _services;
     private readonly ImportCoordinator _imports;
     private readonly CacheUpdater _updater;
+    private readonly OverlayController _overlay;
     private readonly ObservableCollection<PlayerRowViewModel> _players = new();
     private readonly ObservableCollection<OrgRowViewModel> _orgs = new();
     private readonly ObservableCollection<RuleRowViewModel> _rules = new();
@@ -69,6 +70,10 @@ public partial class ConfigWindow : Window, IImportHost
     private readonly Dictionary<ListRowViewModel, Task> _checks = new();
     private bool _saving;
     private bool _isClosed;
+
+    // True from the moment the user stops the test overlay with the button until the state-changed event for it was handled
+    // (the footer then says "stopped", not "ended").
+    private bool _testStoppedByUser;
 
     // Set once the window is built: the control events fire while it is still being created and must not touch anything yet.
     private bool _ready;
@@ -93,12 +98,19 @@ public partial class ConfigWindow : Window, IImportHost
     // The bad version of the settings file that was already copied to ".invalid-<time>" (see _copiedInvalidKey).
     private string? _copiedInvalidSettingsKey;
 
-    public ConfigWindow(AppServices services, ImportCoordinator imports, CacheUpdater updater)
+    public ConfigWindow(AppServices services, ImportCoordinator imports, CacheUpdater updater, OverlayController overlay)
     {
         _services = services;
         _imports = imports;
         _updater = updater;
+        _overlay = overlay;
         InitializeComponent();
+
+        // The slider ranges come from the settings limits (one place). The handlers ignore changes until the window is built (_ready).
+        ConfigureSlider(PanelWidthSlider, AppSettings.PanelWidthPercentMin, AppSettings.PanelWidthPercentMax);
+        ConfigureSlider(PanelTextSizeSlider, AppSettings.PanelTextSizeMin, AppSettings.PanelTextSizeMax);
+        ConfigureSlider(PanelRightGapSlider, AppSettings.PanelRightGapPercentMin, AppSettings.PanelRightGapPercentMax);
+        ConfigureSlider(PanelTopGapSlider, AppSettings.PanelTopGapPercentMin, AppSettings.PanelTopGapPercentMax);
 
         PlayersList.ItemsSource = _players;
         OrgsList.ItemsSource = _orgs;
@@ -116,6 +128,10 @@ public partial class ConfigWindow : Window, IImportHost
         imports.Host = this;
         updater.RefreshingChanged += OnRefreshingChanged;
         RefreshCacheButton.IsEnabled = !updater.IsRefreshing;
+        overlay.TestStateChanged += OnTestStateChanged;
+        overlay.Hotkeys.StatusChanged += OnHotkeyStatusChanged;
+        services.SettingsApplied += OnServicesSettingsApplied;
+        UpdateTestButton();
 
         _watchTimer.Tick += OnWatchTick;
         Loaded += (_, _) =>
@@ -130,6 +146,9 @@ public partial class ConfigWindow : Window, IImportHost
             _watchTimer.Stop();
             _watchTimer.Tick -= OnWatchTick;
             _updater.RefreshingChanged -= OnRefreshingChanged;
+            _overlay.TestStateChanged -= OnTestStateChanged;
+            _overlay.Hotkeys.StatusChanged -= OnHotkeyStatusChanged;
+            _services.SettingsApplied -= OnServicesSettingsApplied;
             if (ReferenceEquals(_imports.Host, this))
                 _imports.Host = null;
             _closing.Cancel();
@@ -326,6 +345,22 @@ public partial class ConfigWindow : Window, IImportHost
     {
         FocusManager.SetFocusedElement(this, FocusSink);
         Keyboard.Focus(FocusSink);
+    }
+
+    /// <summary>
+    /// Opening a tab must not leave the keyboard focus in a hotkey box (focus alone starts no recording, but the box would look selected):
+    /// when a tab was selected and a hotkey box ended up with the focus, the invisible <c>FocusSink</c> takes it. Done after WPF has finished
+    /// moving the focus. A Tab key press into the box later is the user's own choice and is left alone.
+    /// </summary>
+    private void OnTabsSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, Tabs))
+            return; // a drop-down inside a tab raised it
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            if (!_isClosed && Keyboard.FocusedElement is HotkeyBox)
+                EndEditing();
+        }));
     }
 
     /// <summary>A click on empty space ends editing: a focused text box gives up focus (and so gets checked).</summary>
@@ -839,6 +874,12 @@ public partial class ConfigWindow : Window, IImportHost
     {
         var settings = _services.Settings;
         CacheTtlCombo.SelectedIndex = settings.CacheTtlDays == 7 ? 1 : 0;
+        OverlayHotkeyBox.HotkeyValue = settings.HotkeyToggleOverlay;
+        PanelHotkeyBox.HotkeyValue = settings.HotkeyTogglePanel;
+        PanelWidthSlider.Value = settings.PanelWidthPercent;
+        PanelTextSizeSlider.Value = settings.PanelTextSize;
+        PanelRightGapSlider.Value = settings.PanelRightGapPercent;
+        PanelTopGapSlider.Value = settings.PanelTopGapPercent;
         LogEnabledCheck.IsChecked = settings.SessionLogEnabled;
         CheckUpdatesCheck.IsChecked = settings.CheckForUpdates;
         HostedUrlBox.Text = settings.HostedConfigUrl;
@@ -846,6 +887,7 @@ public partial class ConfigWindow : Window, IImportHost
         HostedUrlError.Visibility = Visibility.Collapsed;
         HostedAutoCheck.IsChecked = settings.HostedConfigAutoCheck && IsHostedUrlUsable();
         UpdateAutoCheckState();
+        UpdateHotkeyErrors();
         UpdateSaveButton();
     }
 
@@ -856,6 +898,12 @@ public partial class ConfigWindow : Window, IImportHost
     private AppSettings BuildSettings() => _services.Settings with
     {
         CacheTtlDays = CacheTtlCombo.SelectedIndex == 1 ? 7 : 30,
+        HotkeyToggleOverlay = OverlayHotkeyBox.HotkeyValue,
+        HotkeyTogglePanel = PanelHotkeyBox.HotkeyValue,
+        PanelWidthPercent = (int)Math.Round(PanelWidthSlider.Value),
+        PanelTextSize = (int)Math.Round(PanelTextSizeSlider.Value),
+        PanelRightGapPercent = (int)Math.Round(PanelRightGapSlider.Value),
+        PanelTopGapPercent = (int)Math.Round(PanelTopGapSlider.Value),
         SessionLogEnabled = LogEnabledCheck.IsChecked == true,
         CheckForUpdates = CheckUpdatesCheck.IsChecked == true,
         HostedConfigUrl = HostedUrlBox.Text.Trim(),
@@ -870,6 +918,126 @@ public partial class ConfigWindow : Window, IImportHost
         HostedUrlError.Text = problem ?? string.Empty;
         HostedUrlError.Visibility = problem is null ? Visibility.Collapsed : Visibility.Visible;
         return problem is null;
+    }
+
+    // ---- Hotkeys section ----
+
+    private void OnHotkeyBoxChanged(object? sender, EventArgs e)
+    {
+        if (!_ready)
+            return;
+        UpdateHotkeyErrors();
+        UpdateSaveButton();
+    }
+
+    private void OnClearOverlayHotkey(object sender, RoutedEventArgs e) => OverlayHotkeyBox.ClearHotkey();
+
+    private void OnClearPanelHotkey(object sender, RoutedEventArgs e) => PanelHotkeyBox.ClearHotkey();
+
+    private void OnHotkeyStatusChanged(object? sender, EventArgs e) => UpdateHotkeyErrors();
+
+    /// <summary>
+    /// Shows in red, next to a box, that its hotkey does not work because both boxes hold the same combination. That is checked on what is on
+    /// screen; as long as a box still holds the saved hotkey the hotkey manager's own verdict (<c>OverlayError</c> / <c>PanelError</c>, also only
+    /// the same-combination case) is shown too. IRIS does not register hotkeys with Windows, so there is no other kind of refusal.
+    /// </summary>
+    private void UpdateHotkeyErrors()
+    {
+        if (OverlayHotkeyError is null || PanelHotkeyError is null)
+            return; // still being built
+        var saved = _services.Settings;
+        var overlayText = OverlayHotkeyBox.HotkeyValue;
+        var panelText = PanelHotkeyBox.HotkeyValue;
+        var same = overlayText.Length > 0 && overlayText == panelText;
+        const string SameText = "Both hotkeys are the same. Choose two different ones.";
+
+        ShowHotkeyError(OverlayHotkeyError,
+            same ? SameText : overlayText == saved.HotkeyToggleOverlay ? _overlay.Hotkeys.OverlayError : null);
+        ShowHotkeyError(PanelHotkeyError,
+            same ? SameText : panelText == saved.HotkeyTogglePanel ? _overlay.Hotkeys.PanelError : null);
+    }
+
+    private static void ShowHotkeyError(TextBlock block, string? message)
+    {
+        block.Text = message ?? string.Empty;
+        block.Visibility = message is null ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>
+    /// The saved settings changed (a tray click or a hotkey flipped a switch, or this window saved). The window's controls are not touched, so
+    /// a tray or hotkey toggle never discards unsaved edits; only the hotkey errors and the Save button are looked at again. The two switches
+    /// "Disable Overlay" and "Disable Info Panel" are not on this tab at all (tray items and hotkeys only).
+    /// </summary>
+    private void OnServicesSettingsApplied(object? sender, EventArgs e)
+    {
+        if (_isClosed || !_ready)
+            return;
+        UpdateHotkeyErrors();
+        UpdateSaveButton();
+    }
+
+    // ---- Overlay section ----
+
+    private static void ConfigureSlider(Slider slider, int minimum, int maximum)
+    {
+        slider.Maximum = maximum; // the maximum first: the default maximum (10) must not cap a larger minimum
+        slider.Minimum = minimum;
+    }
+
+    /// <summary>A panel slider changed: the Save button follows, and a running test overlay shows the new values at once.</summary>
+    private void OnOverlaySliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => OverlayValuesChanged();
+
+    private void OverlayValuesChanged()
+    {
+        if (!_ready)
+            return; // the controls are still being filled
+        UpdateSaveButton();
+        _overlay.UpdateTestSettings(BuildSettings());
+    }
+
+    /// <summary>"Show test overlay (15 s)": shows or stops the sample overlay, using the values on screen (saved or not).</summary>
+    private void OnTestOverlay(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_overlay.IsTestRunning)
+            {
+                _testStoppedByUser = true; // OnTestStateChanged (raised by StopTest) must not write "ended" over "stopped"
+                try
+                {
+                    _overlay.StopTest();
+                }
+                finally
+                {
+                    _testStoppedByUser = false;
+                }
+                SetFooter("Test overlay stopped.");
+                return;
+            }
+            var where = _overlay.StartTest(BuildSettings(), this);
+            SetFooter($"Test overlay shown {where} for {OverlayController.TestSeconds} seconds.");
+        }
+        catch (Exception ex)
+        {
+            _services.Log.Write(DateTimeOffset.UtcNow, "Test overlay failed: " + ex);
+            SetFooter("Could not show the test overlay: " + ex.Message);
+        }
+    }
+
+    private void OnTestStateChanged(object? sender, EventArgs e)
+    {
+        if (_isClosed)
+            return;
+        UpdateTestButton();
+        if (!_overlay.IsTestRunning && !_testStoppedByUser)
+            SetFooter("Test overlay ended.");
+    }
+
+    private void UpdateTestButton()
+    {
+        TestOverlayButton.Content = _overlay.IsTestRunning
+            ? $"Stop test overlay ({_overlay.TestSecondsLeft} s)"
+            : $"Show test overlay ({OverlayController.TestSeconds} s)";
     }
 
     private void OnHostedUrlLostFocus(object sender, KeyboardFocusChangedEventArgs e) => ValidateHostedUrl();

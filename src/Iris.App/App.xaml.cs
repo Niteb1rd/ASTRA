@@ -30,6 +30,7 @@ public partial class App : Application
     private ImportCoordinator? _imports;
     private CacheUpdater? _updater;
     private HostedConfigAutoChecker? _hostedChecker;
+    private OverlayController? _overlay;
     private bool _shuttingDown;
 
     private const string AnswerFirstText = "Answer the open IRIS question first.";
@@ -82,7 +83,32 @@ public partial class App : Application
         updater.RefreshingChanged += (_, _) => tray.SetActivity(updater.IsRefreshing ? "refreshing the cache..." : null);
         updater.FillMissingFinished += (_, message) => ShowStatus(message);
         tray.SettingsRequested += (_, _) => OpenSettings();
-        tray.PauseChanged += (_, paused) => services.IsOverlayPaused = paused;
+
+        // The overlay: watches the game window every 250 ms and shows or hides the overlay window (nothing is drawn until Phase 3 feeds it detections;
+        // the Settings tab's test overlay uses it already).
+        var overlay = new OverlayController(services, imports);
+        _overlay = overlay;
+        overlay.Start();
+
+        // "Disable Overlay" / "Disable Info Panel": the tray only asks; the check marks always follow the saved settings
+        // (also when a hotkey or the Settings tab changed them).
+        void SyncTrayChecks()
+        {
+            tray.SetOverlayDisabled(services.Settings.OverlayDisabled);
+            tray.SetPanelDisabled(!services.Settings.PanelEnabled);
+        }
+        tray.ToggleOverlayRequested += (_, _) =>
+        {
+            overlay.ToggleFromTray(HotkeyAction.ToggleOverlay);
+            SyncTrayChecks(); // also puts the mark back if saving failed
+        };
+        tray.TogglePanelRequested += (_, _) =>
+        {
+            overlay.ToggleFromTray(HotkeyAction.TogglePanel);
+            SyncTrayChecks();
+        };
+        services.SettingsApplied += (_, _) => SyncTrayChecks();
+        SyncTrayChecks();
         tray.OpenLogRequested += (_, _) => OpenLog();
         tray.OpenConfigLocationRequested += (_, _) => OpenConfigLocation();
         tray.QuitRequested += (_, _) => Quit();
@@ -143,6 +169,8 @@ public partial class App : Application
     {
         _hostedChecker?.Dispose();
         _hostedChecker = null;
+        _overlay?.Dispose();
+        _overlay = null;
         _tray?.Dispose();
         _tray = null;
         _services?.Dispose();
@@ -190,7 +218,7 @@ public partial class App : Application
 
         // The config files may have been edited while the window was closed. The window looks at them itself as soon as it is shown
         // (its first check runs at once, on a background thread, not after 2 seconds), so nothing is read on the UI thread here.
-        var window = new ConfigWindow(_services, _imports!, _updater!);
+        var window = new ConfigWindow(_services, _imports!, _updater!, _overlay!);
         window.Closed += (_, _) => _configWindow = null;
         _configWindow = window;
         window.Show();
@@ -296,6 +324,7 @@ public partial class App : Application
         _shuttingDown = true;
         if (_imports is not null)
             _imports.IsQuitting = true; // no new import question from here on
+        _overlay?.CloseBorderlessNotice(); // the notice is not an IRIS question and may be open: close it before the app ends
         _hostedChecker?.Stop();
         _services?.RequestShutdown(); // a running cache refresh (no question open) stops cleanly: its RSI requests are cancelled
         _updater?.StopFillMissing(TimeSpan.FromMilliseconds(500)); // give the background fill a moment to stop before the database is disposed

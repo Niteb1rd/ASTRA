@@ -12,7 +12,20 @@
     <AssemblyName>IRIS</AssemblyName>
     <RootNamespace>Iris.App</RootNamespace>
     <ImplicitUsings>disable</ImplicitUsings>
+    <!-- PerMonitorV2 DPI awareness, so the overlay lines up with the game window in real pixels on every monitor. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- WFAC010 is a Windows Forms analyzer. IRIS is a WPF app, and WPF takes its PerMonitorV2 DPI awareness from app.manifest,
+         so the manifest setting is the right one here. -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The overlay font (Quantico, SIL Open Font License) is in Assets\Fonts together with its license (OFL.txt). The wildcards keep the build
+         working even if the files are removed: without the font the overlay uses Segoe UI Bold. The license text is a "None" item that the SDK's
+         default globs already include, so it is only updated here (copied next to IRIS.exe). -->
+    <Resource Include="Assets\Fonts\*.ttf" />
+    <None Update="Assets\Fonts\OFL*.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Iris.Core\Iris.Core.csproj" />

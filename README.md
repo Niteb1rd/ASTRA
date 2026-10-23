@@ -7,7 +7,7 @@ and summarizes their orgs in a side panel. See the requirements doc for the full
 
 ## Status
 
-Phase 1, increment 5: the Settings tab. IRIS runs as a tray app with a Social Overlay config window (no overlay or OCR yet). The window now has app settings, import and export of your lists, and an optional hosted config URL.
+Phase 2: the overlay shell. IRIS runs as a tray app with a Social Overlay config window, and now has the overlay window itself (brackets and the right-hand panel), driven by test data only: there is no screen capture or OCR yet, so the real overlay stays empty until Phase 3 feeds it detections. The Settings tab has an Overlay section and a "Show test overlay (15 s)" button to try it. See "Phase 2: the overlay" below.
 
 - `src/Iris.Core`: config file (TOML) read, write and validate; color and bracket rules; right-panel org line (increment 1).
 - `src/Iris.Core/Rsi`: reads robertsspaceindustries.com. Pure parsers for the player organizations page, the org page and the
@@ -23,7 +23,10 @@ Phase 1, increment 5: the Settings tab. IRIS runs as a tray app with a Social Ov
   config window: format, duplicates, cache first, then one RSI request (increment 4).
 - `src/Iris.Core/Settings`: `AppSettings` and `AppSettingsToml` (`Data\settings.toml`). `src/Iris.Core/Config` also holds
   `SocialConfigMerger`, `ConfigImporter` (the three import modes, export) and `HostedConfigClient` (increment 5).
-- `src/Iris.App`: the Windows app (WPF): tray icon, and the config window with the Players, Orgs, Org-Attribute and Settings tabs.
+- `src/Iris.Core/Overlay`: the overlay model and its math, without any windowing code: `OverlayModel` (brackets and panel entries), `OverlayModelBuilder`
+  (detections + cached orgs to model), `PanelLayout` (panel rectangles), `GameWindowRules` (the borderless decision), `StarCitizenDisplaySettings` (the game's WindowMode setting), `OverlayPalette`, `TestOverlayBuilder` (Phase 2).
+- `src/Iris.App`: the Windows app (WPF): tray icon, the config window with the Players, Orgs, Org-Attribute and Settings tabs, the overlay window
+  (`Views/OverlayWindow`, `Views/OverlayCanvas`), the game window tracker and the overlay controller (`Services`).
   It has no automated tests yet; everything testable lives in `Iris.Core`.
 - `tests/Iris.Core.Tests`: automated tests for all of the above. Tests that need real RSI pages are skipped until you capture them.
 - `tools/Iris.CaptureFixtures`: saves a few real RSI pages for those tests.
@@ -74,6 +77,92 @@ color = "Blue"
   and the Type drop-down of the other rows does not offer "No Match".
 - Import: **Merge** keeps your No Match color; **Replace** and **Backup** take the imported one (or the default if the imported file has none).
   The row counts in the import summary and in "New config loaded" do not count the No Match rule.
+
+## Phase 2: the overlay
+
+IRIS now has the overlay window. It is driven by **test data only**; Phase 3 will feed the same model with real detections from screen capture and OCR.
+
+**What it draws** (over the game window, nothing else is covered, mouse clicks go straight through it to the game, and it never takes the keyboard focus):
+
+- **Brackets** around each nameplate, in the player's color, with a thin dark outline so they show on dark and bright scenes:
+  `{ }` player list, `[ ]` org list, `< >` org-attribute match and No Match.
+- **The right-hand panel**: one rounded box per bracketed player, filled with the bracket color at 50% opacity. Line 1 is the handle, line 2 the orgs
+  line (the same text rules as before: deciding org first, main org with `*`, at most 40 characters). **Every** bracketed player is listed, No Match
+  players too. Orgs come from the cache; a player the cache knows nothing about shows `Orgs: not looked up`.
+  Order: player list, org list, org attribute, No Match; players of the same kind stay in the order they were first seen.
+- If the entries do not fit, the panel stops before the bottom 10% of the screen and its last line says `+N more`.
+
+**When it shows.** Star Citizen must be the window in front and must run in **borderless windowed mode**: IRIS only overlays a window that exactly
+covers its monitor and is not exclusive Fullscreen, because only then do window and screen coordinates line up. In the game, set
+*Graphics > Display Mode* to **Borderless Windowed**. IRIS reads the game's own setting: the `WindowMode` line of the running game's `attributes.xml`
+(`<Attr name="WindowMode" value="1"/>`; 0 = Windowed, 1 = Borderless Windowed, 2 = Fullscreen). Exclusive Fullscreen looks exactly like a borderless window from
+the outside (no title bar, size of the monitor), which is why the window alone cannot tell them apart. The file is found relative to the running `StarCitizen.exe`
+(`<install>\Bin64\StarCitizen.exe` gives `<install>\user\client\0\Profiles\default\attributes.xml`, or else the most recently changed
+`<install>\user\client\*\Profiles\default\attributes.xml`), so LIVE, PTU and EPTU installs side by side each use their own. It is only ever read, never
+written, and read only once per IRIS run (the first time the game is in front). Star Citizen removes the WindowMode line when Windowed is chosen, so a
+valid file without it counts as Windowed. A mode changed inside the game is picked up the next time IRIS starts. The log says which file
+is used and the mode read ("Star Citizen display mode: Fullscreen"). The setting alone decides; the window's shape is not looked at. If the file cannot be
+found, read or understood, IRIS tries once more a second later; if that fails too, it logs "Failed to open attributes.xml, assuming Borderless mode" and
+treats the game as Borderless. If the game is in front but not borderless, the overlay stays off and IRIS shows a small pop-up with a single **Close** button, naming the actual mode when it is known:
+"Star Citizen is in Fullscreen mode, so the IRIS overlay is turned off. Switch Display Mode to Borderless Windowed in the game's graphics settings." (or "Windowed mode"; when the mode
+is unknown: "Star Citizen is not in borderless windowed mode, so the IRIS overlay is turned off. Switch to Borderless in the game's graphics settings."). It is shown at most once per run of IRIS (not once per game session),
+never while Disable Overlay is on, and not while another IRIS pop-up is open. IRIS looks at every 250 ms check, not only when the window state changes, so a game that was already running in a non-borderless mode when IRIS started gets the notice too, and a skipped moment is tried again at the next check. Like IRIS's other pop-ups it does not take the focus from the game: it waits in the taskbar, and there is no tray balloon. It is not a question that IRIS waits for: the tray's Settings and Quit work while it is open (Quit closes it).
+**Disable Overlay** (tray) hides it, see "Disable Overlay, Disable Info Panel and hotkeys" below. The overlay window is created the first time it is needed and afterwards only hidden. While the game is not in front, the only work IRIS does is
+a check of the foreground window every 250 ms.
+
+**Test overlay.** Settings tab > Overlay > **Show test overlay (15 s)** shows a sample for 15 seconds: up to 3 players from your player list, 2 org-list
+examples (an org SID from your list with a made-up handle), 1 org-attribute example (if you have a rule) and 2 No Match examples (`TestPilot01`, `TestPilot02`, "Orgs: not looked up").
+It appears over the Star Citizen window if the game is running (even when it is not in front or not borderless), otherwise over the screen the settings window is on. It ignores the
+borderless/foreground rules. The button turns into a countdown ("Stop test overlay (12 s)"); press it again to stop. The sizes and gaps use the values currently shown in the
+Settings tab, saved or not, and follow them while you move the sliders, so you can tune and preview before pressing Save. Whether the panel is drawn at all follows the saved
+*Disable Info Panel* state (the tray check mark and its hotkey).
+
+**Overlay settings** (Settings tab, in `settings.toml` as the `panel_*` keys above):
+
+| Setting | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| Disable Info Panel (tray / hotkey only) | off | on/off | Hides the right panel; the brackets stay. Stored as `panel_enabled` (true = panel shown). Not a Settings tab control |
+| Panel width | 16 % | 8 to 40 | Of the game window width |
+| Text size | 18 px | 10 to 40 | Pixels at 1440p; scales linearly with the window height (27 px at 2160p) |
+| Right gap | 10 % | 0 to 40 | Panel right edge = width minus this share of the width |
+| Top gap | 15 % | 0 to 60 | Top of the panel, of the height |
+
+IRIS is per-monitor DPI aware (`app.manifest`, PerMonitorV2), so the overlay lines up with the game window in real pixels on every monitor and at any Windows scaling.
+
+### Disable Overlay, Disable Info Panel and hotkeys
+
+The tray menu has two check-mark items, and the same two switches exist as hotkeys (set in the Settings tab's Hotkeys section). There are no check boxes for them in the Settings
+tab. They always agree: the tray and the hotkeys change the same saved setting.
+
+- **Disable Overlay** (`overlay_disabled`): hides everything **and stops all screen reading (OCR)**. Only the 250 ms "is Star Citizen in front?" check keeps running.
+  The future capture loop must check `AppServices.IsOverlayDisabled` before each capture (event: `OverlayDisabledChanged`). Kept across restarts.
+  The test overlay ignores this switch.
+- **Disable Info Panel** (`panel_enabled = false`): hides only the right panel; the brackets stay. The test overlay follows the saved setting (the tray check mark).
+- A tray click or a hotkey saves just that one setting at once. If the settings window is open with other unsaved edits, they are kept.
+
+**Hotkeys** (Settings tab, top section, `hotkey_toggle_overlay` / `hotkey_toggle_panel`, empty by default): *Toggle Overlay* and *Toggle Info Panel*. No box has the focus when the window or the tab opens. **Click** a box (or Tab to it and press Enter or Space) to start recording, then
+press the hotkey; Esc cancels (Esc itself cannot be assigned), **Clear** removes it. Merely focusing a box does not start recording. A single key without any modifier is allowed (for example `F9` or `O`), because the key press
+always reaches the game as well; combine it with Ctrl, Alt, Shift or Win if you prefer. The modifiers must match exactly: a plain `O` hotkey does not fire while Ctrl is held. While a box is recording, hotkeys do not fire.
+An empty box shows "(none)". Written as text such as `Ctrl+Shift+O` or `F9`; keys: A-Z, 0-9, F1-F24,
+Num0-Num9, Space, Tab, Enter, Backspace, Insert, Delete, Home, End, PageUp, PageDown, arrows.
+
+Hotkeys are global and work while the game is in front. IRIS reads them with a low-level keyboard hook rather than by claiming the combination, so **the key press
+always reaches Star Citizen (or whatever program is in front) as well as IRIS**: IRIS never swallows a key, and it does not check whether another program uses the same
+combination. A hotkey fires once when its key goes down with exactly its modifiers held (holding the key does not repeat it) and is active again after the key is released.
+Key presses sent by other programs count too. The hook runs on its own background thread (so a busy settings window can never delay keystrokes or get the hook removed by Windows),
+is only installed while at least one hotkey is set, and is removed when IRIS quits. If Windows refuses the hook, the log says so and the next time settings are applied (for example when you press Save) IRIS tries again. The only thing IRIS checks is that
+the two hotkeys are not the same combination: the boxes then show a red message, the log has a line and neither is active.
+
+When a hotkey is pressed and Star Citizen is in front and borderless, the overlay shows a short confirmation ("Overlay off", "Overlay on", "Info panel off", "Info panel on")
+for about 2 seconds just above the top of the panel, white text with a dark edge on a dark translucent box. This also works while the overlay is disabled (only that text is drawn).
+A new press replaces a confirmation that is still showing. In any other case, including while the test overlay is running, the result is a tray balloon instead.
+Clicking the tray items shows no on-screen text.
+
+### Credits
+
+The overlay text uses the font **Quantico** (Bold), licensed under the SIL Open Font License 1.1. The font file (`Quantico-Bold.ttf`) and its license text
+(`OFL.txt`) are in the repository, in `src\Iris.App\Assets\Fonts\`; the font is built into `IRIS.exe` and `OFL.txt` is copied next to it. The project file picks up
+`Assets\Fonts\*.ttf` by wildcard, so the build still works if the file is removed; then the overlay uses Segoe UI Bold (as it also does if the font cannot be read).
 
 ## Build and test (Windows)
 
@@ -127,10 +216,19 @@ session_log_enabled = true     # write Data\logs\iris-yyyy-MM-dd.log
 check_for_updates = true       # a setting only for now: the GitHub version check arrives in a later version
 hosted_config_url = ""         # https:// address of a config file you host yourself
 hosted_config_last_hash = ""   # SHA-256 (64 hex characters) of the last hosted file you applied or declined (IRIS fills this in)
-hosted_config_auto_check = false              # true: check the hosted address every 24 hours (see "Hosted config URL")
+hosted_config_auto_check = false              # true: check the hosted address every 24 hours (see "Hosted Config URL")
 hosted_config_last_check = "2026-10-22T09:30:00Z"   # optional; when the last automatic check was made (UTC text; IRIS fills this in)
+panel_enabled = true           # false = "Disable Info Panel": the right-hand panel is hidden (the brackets stay)
+overlay_disabled = false       # true = "Disable Overlay": nothing is drawn and no screen reading happens
+hotkey_toggle_overlay = ""     # global hotkey for Disable Overlay, e.g. "Ctrl+Shift+O" or "F9"; empty = none
+hotkey_toggle_panel = ""       # global hotkey for Disable Info Panel; empty = none
+panel_width_percent = 16       # panel width, % of the game window width; 8 to 40
+panel_text_size = 18           # panel text size in pixels at 1440p (scales with the window height); 10 to 40
+panel_right_gap_percent = 10   # space right of the panel, % of the width; 0 to 40
+panel_top_gap_percent = 15     # space above the panel, % of the height; 0 to 60
 ```
 
+A hotkey that is not valid (no key, unknown key, more than one key, wrong type) is noted in the log and becomes empty. A `panel_*` value that is out of its range (or not a whole number) is noted in the log and replaced by its default.
 `hosted_config_auto_check` is off by default. Switching it on without a valid `hosted_config_url` switches it off again, with a note; a
 `hosted_config_last_check` that is not a date and time is noted and counts as "never checked". Unknown keys are noted in the log and ignored. A file that is not valid TOML is not changed until you save; until then the defaults
 apply and IRIS tells you; a background change (such as the remembered hosted version) is then kept in memory only, and the file is
@@ -195,9 +293,9 @@ You then pick what happens to your current lists, every time:
 With no list file yet, the import just asks for confirmation and writes the file. Afterwards the window shows the new rows, every
 name is checked against RSI, and the status bar says what was added.
 
-### Hosted config URL
+### Hosted Config URL
 
-Put the address of your own config file (for example a raw file in your own repository or a web space) into **Hosted config URL**.
+Put the address of your own config file (for example a raw file in your own repository or a web space) into **Hosted Config URL**.
 Rules IRIS follows when it fetches it: `https://` only, no user name or password in the address; one GET, 15 seconds, at most 1 MB;
 redirects are followed by hand only within the same site, same port (up to 3), a redirect to another site is refused with a message;
 every request URL, refused ones too, is logged without any user name or password; a failed fetch is never remembered.
@@ -207,7 +305,7 @@ imported from there, nothing is imported and IRIS says "Your hosted config has n
 
 #### Checking the hosted config every 24 hours (opt-in)
 
-Below the **Import from URL** button the Settings tab has the check box **Check hosted config URL for updates every 24 hrs**. It is greyed out
+Beside the **Import from URL** button the Settings tab has the check box **Check URL for updates every 24 hrs**. It is greyed out
 while the address box is empty or not a valid `https://` address (clearing the address unticks it); when a valid address is there it is enabled,
 and stays unticked until you tick it. It is saved with the Save button like every other setting.
 

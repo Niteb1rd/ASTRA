@@ -3,10 +3,12 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:Iris.App.Converters"
         xmlns:vm="clr-namespace:Iris.App.ViewModels"
+        xmlns:local="clr-namespace:Iris.App.Views"
         Title="IRIS &#8211; Companion App for Star Citizen"
         Width="760" Height="520"
         MinWidth="640" MinHeight="380"
         WindowStartupLocation="CenterScreen"
+        FocusManager.FocusedElement="{Binding ElementName=FocusSink}"
         PreviewMouseDown="OnWindowPreviewMouseDown"
         Closing="OnWindowClosing">
 
@@ -113,7 +115,7 @@
             </Border>
         </StackPanel>
 
-        <TabControl x:Name="Tabs" Grid.Row="1" Margin="8,8,8,0">
+        <TabControl x:Name="Tabs" Grid.Row="1" Margin="8,8,8,0" SelectionChanged="OnTabsSelectionChanged">
 
             <!-- ================= Players ================= -->
             <TabItem Header="Players">
@@ -362,7 +364,43 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel Margin="8">
                         <TextBlock Margin="0,0,0,12" TextWrapping="Wrap" Foreground="#616161"
-                                   Text="App settings for this PC. These are not included when you share or export your lists." />
+                                   Text="App settings for this PC. These are not included in the exported config." />
+
+                        <!-- Hotkeys (global: they work while the game is in front) -->
+                        <TextBlock Text="Hotkeys" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <TextBlock TextWrapping="Wrap" Foreground="#616161" Margin="0,0,0,6"
+                                   Text="Key combinations with Ctrl, Alt, Shift, Win allowed." />
+                        <Grid Margin="0,0,0,16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="230" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Toggle Overlay" VerticalAlignment="Center"
+                                       ToolTip="Flips the tray item Disable Overlay: hides everything and stops screen reading, or turns it back on." />
+                            <local:HotkeyBox x:Name="OverlayHotkeyBox" Grid.Row="0" Grid.Column="1" Margin="0,2" Padding="4,2"
+                                             HotkeyChanged="OnHotkeyBoxChanged" />
+                            <Button x:Name="ClearOverlayHotkeyButton" Grid.Row="0" Grid.Column="2" Content="Clear" Padding="10,2" Margin="8,2,0,2"
+                                    Click="OnClearOverlayHotkey" />
+                            <TextBlock x:Name="OverlayHotkeyError" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Foreground="#C62828"
+                                       TextWrapping="Wrap" Visibility="Collapsed" />
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Toggle Info Panel" VerticalAlignment="Center"
+                                       ToolTip="Flips the tray item Disable Info Panel: hides or shows the right panel. The brackets stay." />
+                            <local:HotkeyBox x:Name="PanelHotkeyBox" Grid.Row="2" Grid.Column="1" Margin="0,2" Padding="4,2"
+                                             HotkeyChanged="OnHotkeyBoxChanged" />
+                            <Button x:Name="ClearPanelHotkeyButton" Grid.Row="2" Grid.Column="2" Content="Clear" Padding="10,2" Margin="8,2,0,2"
+                                    Click="OnClearPanelHotkey" />
+                            <TextBlock x:Name="PanelHotkeyError" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Foreground="#C62828"
+                                       TextWrapping="Wrap" Visibility="Collapsed" />
+                        </Grid>
 
                         <!-- Logging -->
                         <TextBlock Text="Logging" FontWeight="SemiBold" Margin="0,0,0,4" />
@@ -377,34 +415,78 @@
                                   Checked="OnSettingChanged" Unchecked="OnSettingChanged"
                                   ToolTip="Checks start in a later version" />
 
-                        <!-- Shared config -->
-                        <TextBlock Text="Shared config" FontWeight="SemiBold" Margin="0,0,0,4" />
-                        <TextBlock Text="Hosted config URL" Margin="0,0,0,2" />
+                        <!-- Shared Config. Row 1: file buttons. Row 2: the hosted address and its message. Row 3: "Import from URL" with the 24-hour check beside it. -->
+                        <TextBlock Text="Shared Config" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,0,0,8">
+                            <Button x:Name="ImportFileButton" Content="Import from file&#8230;" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromFile" />
+                            <Button x:Name="ExportButton" Content="Export&#8230;" Padding="12,4" Click="OnExport" />
+                        </StackPanel>
+                        <TextBlock Text="Hosted Config URL" Margin="0,0,0,2" />
                         <TextBox x:Name="HostedUrlBox" MaxLength="2000" LostKeyboardFocus="OnHostedUrlLostFocus" TextChanged="OnHostedUrlTextChanged"
                                  ToolTip="Optional. An https:// address of a config file you host yourself. It is looked at when you press &quot;Import from URL&quot;, and once a day if you tick the check below." />
                         <TextBlock x:Name="HostedUrlError" Foreground="#C62828" TextWrapping="Wrap" Margin="0,2,0,0"
                                    Visibility="Collapsed" />
-                        <!-- Row 0: "Import from file" in column 0; column 1 holds "Import from URL" and "Export". Row 1: the 24-hour check, directly under "Import from URL". -->
-                        <Grid Margin="0,8,0,0">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,8,0,0">
+                            <Button x:Name="ImportUrlButton" Content="Import from URL" Padding="12,4" Margin="0,0,12,0" VerticalAlignment="Center" Click="OnImportFromUrl"
+                                    ToolTip="Fetches the hosted config. If it is the same version you imported last time, nothing is imported." />
+                            <CheckBox x:Name="HostedAutoCheck" VerticalAlignment="Center"
+                                      Content="Check URL for updates every 24 hrs" IsEnabled="False"
+                                      Checked="OnSettingChanged" Unchecked="OnSettingChanged"
+                                      ToolTip="Needs a valid https:// address above. While IRIS runs it checks the address once a day (also at startup, if a day has passed) and asks before importing anything. It is off until you tick it." />
+                        </StackPanel>
+
+                        <!-- Overlay -->
+                        <TextBlock Text="Overlay" FontWeight="SemiBold" Margin="0,16,0,4" />
+                        <Grid Margin="0,0,0,6">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="190" />
+                                <ColumnDefinition Width="220" />
+                                <ColumnDefinition Width="70" />
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
-                            <Button x:Name="ImportFileButton" Grid.Row="0" Grid.Column="0" Content="Import from file&#8230;" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromFile" />
-                            <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal">
-                                <Button x:Name="ImportUrlButton" Content="Import from URL" Padding="12,4" Margin="0,0,8,0" Click="OnImportFromUrl"
-                                        ToolTip="Fetches the hosted config. If it is the same version you imported last time, nothing is imported." />
-                                <Button x:Name="ExportButton" Content="Export&#8230;" Padding="12,4" Click="OnExport" />
-                            </StackPanel>
-                            <CheckBox x:Name="HostedAutoCheck" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"
-                                      Content="Check hosted config URL for updates every 24 hrs" IsEnabled="False"
-                                      Checked="OnSettingChanged" Unchecked="OnSettingChanged"
-                                      ToolTip="Needs a valid https:// address above. While IRIS runs it checks the address once a day (also at startup, if a day has passed) and asks before importing anything. It is off until you tick it." />
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Panel width" VerticalAlignment="Center"
+                                       ToolTip="Width of the panel, as a percentage of the game window width (8 to 40)." />
+                            <Slider x:Name="PanelWidthSlider" Grid.Row="0" Grid.Column="1" Margin="0,3" VerticalAlignment="Center"
+                                    TickFrequency="1" IsSnapToTickEnabled="True" SmallChange="1" LargeChange="4"
+                                    ValueChanged="OnOverlaySliderChanged" />
+                            <TextBlock Grid.Row="0" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center"
+                                       Text="{Binding Value, ElementName=PanelWidthSlider, StringFormat='{}{0:0}%'}" />
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Text size (pixels at 1440p)" VerticalAlignment="Center"
+                                       ToolTip="Text size in pixels on a 1440p-high game window (10 to 40). On other resolutions it scales with the window height." />
+                            <Slider x:Name="PanelTextSizeSlider" Grid.Row="1" Grid.Column="1" Margin="0,3" VerticalAlignment="Center"
+                                    TickFrequency="1" IsSnapToTickEnabled="True" SmallChange="1" LargeChange="4"
+                                    ValueChanged="OnOverlaySliderChanged" />
+                            <TextBlock Grid.Row="1" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center"
+                                       Text="{Binding Value, ElementName=PanelTextSizeSlider, StringFormat='{}{0:0} px'}" />
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Right gap" VerticalAlignment="Center"
+                                       ToolTip="Space between the panel and the right edge of the screen, as a percentage of the screen width (0 to 40)." />
+                            <Slider x:Name="PanelRightGapSlider" Grid.Row="2" Grid.Column="1" Margin="0,3" VerticalAlignment="Center"
+                                    TickFrequency="1" IsSnapToTickEnabled="True" SmallChange="1" LargeChange="4"
+                                    ValueChanged="OnOverlaySliderChanged" />
+                            <TextBlock Grid.Row="2" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center"
+                                       Text="{Binding Value, ElementName=PanelRightGapSlider, StringFormat='{}{0:0}%'}" />
+
+                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Top gap" VerticalAlignment="Center"
+                                       ToolTip="Space between the top of the screen and the panel, as a percentage of the screen height (0 to 60)." />
+                            <Slider x:Name="PanelTopGapSlider" Grid.Row="3" Grid.Column="1" Margin="0,3" VerticalAlignment="Center"
+                                    TickFrequency="1" IsSnapToTickEnabled="True" SmallChange="1" LargeChange="4"
+                                    ValueChanged="OnOverlaySliderChanged" />
+                            <TextBlock Grid.Row="3" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center"
+                                       Text="{Binding Value, ElementName=PanelTopGapSlider, StringFormat='{}{0:0}%'}" />
                         </Grid>
+                        <Button x:Name="TestOverlayButton" Content="Show test overlay (15 s)" HorizontalAlignment="Left"
+                                Padding="12,4" Margin="0,0,0,4" Click="OnTestOverlay"
+                                ToolTip="Shows a sample overlay for 15 seconds, over the Star Citizen window if it is running, otherwise over this screen. It uses the values above even before you save them, so you can adjust and preview. Click again to stop." />
+                        <TextBlock TextWrapping="Wrap" Foreground="#616161" Margin="0,0,0,0"
+                                   Text="The overlay only appears over Star Citizen in Borderless windowed mode. Changes to the values above show in a running test at once; press Save to keep them." />
 
                         <!-- Cache (last: the long-running action sits at the bottom) -->
                         <TextBlock Text="Cache" FontWeight="SemiBold" Margin="0,16,0,4" />

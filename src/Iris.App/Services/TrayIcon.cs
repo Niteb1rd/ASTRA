@@ -16,7 +16,8 @@ public sealed class TrayIcon : IDisposable
 
     private readonly Forms.NotifyIcon _icon;
     private readonly Forms.ContextMenuStrip _menu;
-    private readonly Forms.ToolStripMenuItem _pauseItem;
+    private readonly Forms.ToolStripMenuItem _disableOverlayItem;
+    private readonly Forms.ToolStripMenuItem _disablePanelItem;
     private bool _disposed;
 
     public TrayIcon()
@@ -24,8 +25,13 @@ public sealed class TrayIcon : IDisposable
         var settingsItem = new Forms.ToolStripMenuItem("Settings…");
         settingsItem.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
 
-        _pauseItem = new Forms.ToolStripMenuItem("Pause overlay (not active yet)") { CheckOnClick = true };
-        _pauseItem.CheckedChanged += (_, _) => PauseChanged?.Invoke(this, _pauseItem.Checked);
+        // The check marks are not flipped by the click itself: the click only asks (events below), and the app sets the marks from the
+        // saved settings (SetOverlayDisabled / SetPanelDisabled). So the tray, the Settings tab and the hotkeys always agree.
+        _disableOverlayItem = new Forms.ToolStripMenuItem("Disable Overlay");
+        _disableOverlayItem.Click += (_, _) => ToggleOverlayRequested?.Invoke(this, EventArgs.Empty);
+
+        _disablePanelItem = new Forms.ToolStripMenuItem("Disable Info Panel");
+        _disablePanelItem.Click += (_, _) => TogglePanelRequested?.Invoke(this, EventArgs.Empty);
 
         var openLogItem = new Forms.ToolStripMenuItem("Open log");
         openLogItem.Click += (_, _) => OpenLogRequested?.Invoke(this, EventArgs.Empty);
@@ -38,7 +44,8 @@ public sealed class TrayIcon : IDisposable
 
         _menu = new Forms.ContextMenuStrip();
         _menu.Items.Add(settingsItem);
-        _menu.Items.Add(_pauseItem);
+        _menu.Items.Add(_disableOverlayItem);
+        _menu.Items.Add(_disablePanelItem);
         _menu.Items.Add(new Forms.ToolStripSeparator());
         _menu.Items.Add(openLogItem);
         _menu.Items.Add(openConfigItem);
@@ -63,8 +70,25 @@ public sealed class TrayIcon : IDisposable
 
     public event EventHandler? QuitRequested;
 
-    /// <summary>Raised with the new state when the user ticks or unticks "Pause overlay".</summary>
-    public event EventHandler<bool>? PauseChanged;
+    /// <summary>The user clicked "Disable Overlay" (the app flips the setting and then calls <see cref="SetOverlayDisabled"/>).</summary>
+    public event EventHandler? ToggleOverlayRequested;
+
+    /// <summary>The user clicked "Disable Info Panel".</summary>
+    public event EventHandler? TogglePanelRequested;
+
+    /// <summary>Shows or clears the check mark of "Disable Overlay". Raises no event.</summary>
+    public void SetOverlayDisabled(bool disabled)
+    {
+        if (!_disposed)
+            _disableOverlayItem.Checked = disabled;
+    }
+
+    /// <summary>Shows or clears the check mark of "Disable Info Panel". Raises no event.</summary>
+    public void SetPanelDisabled(bool disabled)
+    {
+        if (!_disposed)
+            _disablePanelItem.Checked = disabled;
+    }
 
     /// <summary>Shows what IRIS is busy with in the tooltip ("refreshing the cache..."), or the plain name when <paramref name="activity"/> is null.</summary>
     public void SetActivity(string? activity)

@@ -347,7 +347,7 @@ public class ConfigImporterTests : IDisposable
         Assert.True(result.Success, result.Error);
         Assert.Equal(OverlayColor.Blue, OnlyNoMatch(SocialListStore.Load(ListPath).Config).Color);
         Assert.Equal(OverlayColor.Blue, OnlyNoMatch(result.Config!).Color);
-        Assert.Empty(theirs.OrgRules.Where(r => r.Kind == AttributeKind.NoMatch)); // the caller's config was not changed
+        Assert.DoesNotContain(theirs.OrgRules, r => r.Kind == AttributeKind.NoMatch); // the caller's config was not changed
     }
 
     [Fact]

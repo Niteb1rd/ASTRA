@@ -57,6 +57,35 @@ public sealed class FileLog : ILog
         }
     }
 
+    /// <summary>Writes an empty line (no time stamp), to separate one run of IRIS from the next in the log. Never throws.</summary>
+    public void WriteBlankLine(DateTimeOffset utcTime)
+    {
+        if (!_enabled)
+            return;
+        try
+        {
+            var bytes = Utf8NoBom.GetBytes(Environment.NewLine);
+            var path = PathForDay(utcTime);
+            lock (_gate)
+            {
+                try
+                {
+                    Directory.CreateDirectory(Folder);
+                    using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+                    stream.Write(bytes, 0, bytes.Length);
+                }
+                catch (Exception ex)
+                {
+                    _lastError = ex.Message;
+                }
+            }
+        }
+        catch
+        {
+            // never throw from a log
+        }
+    }
+
     public void Write(DateTimeOffset utcTime, string message)
     {
         if (!_enabled)
