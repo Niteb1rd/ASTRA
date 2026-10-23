@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Developer tool: runs the nameplate detector over a video or a folder of frames and reports what it finds (and, with a label
+       file, how well). It is for tuning and checking the detector on your own recordings; nothing it reads or writes is kept in
+       the repository. The native OpenCV library (Windows x64) comes with OpenCvSharp4.runtime.win. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Iris.Replay</RootNamespace>
+    <AssemblyName>Iris.Replay</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Iris.Core\Iris.Core.csproj" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.11.0.20250507" />
+  </ItemGroup>
+
+</Project>
