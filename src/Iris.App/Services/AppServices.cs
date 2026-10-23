@@ -234,6 +234,8 @@ public sealed class AppServices : IDisposable
         var settingsStartup = ConfigStartup.LoadSettings(settingsFile);
         var settingsLoad = settingsStartup.Load;
         fileLog.Enabled = settingsLoad.Settings.SessionLogEnabled;
+        fileLog.WriteBlankLine(clock.UtcNow); // separates this run from the previous one in the log
+        log.Write(clock.UtcNow, "IRIS started");
 
         foreach (var error in settingsStartup.MainFileErrors)
             log.Write(clock.UtcNow, settingsStartup.UsedLastGood

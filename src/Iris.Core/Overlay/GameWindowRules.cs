@@ -78,9 +78,11 @@ public sealed class BorderlessNoticeTracker
     /// borderless, the notice has not been shown during this run, the overlay is not disabled (the user switched it off on purpose) and no other
     /// IRIS pop-up is open. A check that says no uses nothing up, so the next check asks again; this is what makes a game that was already
     /// running (and already not borderless) when IRIS started get its notice too.
+    /// Never when the game's own setting says Borderless: then the window is only not filling the monitor YET (the game starts in a smaller window
+    /// while it loads, or is being restored), and telling the user to switch to Borderless would be wrong.
     /// </summary>
-    public bool ShouldShow(GameWindowState state, bool overlayDisabled, bool otherPopUpOpen) =>
-        state == GameWindowState.NotBorderless && !WasShown && !overlayDisabled && !otherPopUpOpen;
+    public bool ShouldShow(GameWindowState state, bool overlayDisabled, bool otherPopUpOpen, WindowMode? gameMode = null) =>
+        state == GameWindowState.NotBorderless && gameMode != WindowMode.Borderless && !WasShown && !overlayDisabled && !otherPopUpOpen;
 
     /// <summary>Records that the notice is being shown now; <see cref="ShouldNotify"/> is false from here on.</summary>
     public void MarkShown() => WasShown = true;

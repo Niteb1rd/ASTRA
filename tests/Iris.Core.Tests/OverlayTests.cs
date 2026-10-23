@@ -466,6 +466,17 @@ public class GameWindowRulesTests
         Assert.False(tracker.ShouldShow(GameWindowState.NotBorderless, overlayDisabled: false, otherPopUpOpen: false));
     }
 
+    [Fact]
+    public void BorderlessNotice_NeverWhenTheGameSettingSaysBorderless()
+    {
+        // the window does not fill the monitor (yet), but the game is set to Borderless: no "switch to Borderless" notice
+        var tracker = new BorderlessNoticeTracker();
+        Assert.False(tracker.ShouldShow(GameWindowState.NotBorderless, overlayDisabled: false, otherPopUpOpen: false, gameMode: WindowMode.Borderless));
+        Assert.True(tracker.ShouldShow(GameWindowState.NotBorderless, overlayDisabled: false, otherPopUpOpen: false, gameMode: WindowMode.Fullscreen));
+        Assert.True(tracker.ShouldShow(GameWindowState.NotBorderless, overlayDisabled: false, otherPopUpOpen: false, gameMode: WindowMode.Windowed));
+        Assert.True(tracker.ShouldShow(GameWindowState.NotBorderless, overlayDisabled: false, otherPopUpOpen: false, gameMode: null));
+    }
+
     [Theory]
     [InlineData(GameWindowState.GameNotActive)]
     [InlineData(GameWindowState.Ready)]

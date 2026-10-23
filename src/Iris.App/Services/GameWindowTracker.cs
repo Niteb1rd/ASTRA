@@ -339,7 +339,9 @@ public sealed class GameWindowTracker : IDisposable
     {
         // Once the game's own display mode is known (logged as "Star Citizen display mode: ..."), the window details add nothing:
         // only log them when IRIS has to rely on the window check, where they help diagnose a wrong decision.
-        if (from.Mode is not null || to.Mode is not null)
+        // Exception: the setting says Borderless but the window does not fill its monitor (yet) - worth the details.
+        var unexpected = to.State == GameWindowState.NotBorderless && to.Mode == WindowMode.Borderless;
+        if ((from.Mode is not null || to.Mode is not null) && !unexpected)
             return;
         var detail = to.State == GameWindowState.GameNotActive
             ? string.Empty

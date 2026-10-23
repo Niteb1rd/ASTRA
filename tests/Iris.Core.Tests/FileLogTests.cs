@@ -33,6 +33,38 @@ public class FileLogTests
     }
 
     [Fact]
+    public void WriteBlankLine_SeparatesRuns()
+    {
+        using var dir = new TempDir();
+        var clock = new FakeClock();
+        var log = new FileLog(dir.Path, clock);
+        var t = clock.UtcNow;
+
+        log.Write(t, "last line of the previous run");
+        log.WriteBlankLine(t);
+        log.Write(t, "IRIS started");
+
+        var text = File.ReadAllText(Path.Combine(dir.Path, DayName(t)));
+        var lines = text.Split(Environment.NewLine);
+        Assert.Equal(4, lines.Length); // three lines and the empty rest after the final line break
+        Assert.EndsWith("  last line of the previous run", lines[0]);
+        Assert.Equal(string.Empty, lines[1]);
+        Assert.EndsWith("  IRIS started", lines[2]);
+    }
+
+    [Fact]
+    public void WriteBlankLine_WritesNothingWhenDisabled()
+    {
+        using var dir = new TempDir();
+        var clock = new FakeClock();
+        var log = new FileLog(dir.Path, clock) { Enabled = false };
+
+        log.WriteBlankLine(clock.UtcNow);
+
+        Assert.False(File.Exists(Path.Combine(dir.Path, DayName(clock.UtcNow))));
+    }
+
+    [Fact]
     public void Write_CreatesTheFolderIfMissing()
     {
         using var dir = new TempDir();

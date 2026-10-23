@@ -277,7 +277,7 @@ public sealed class OverlayController : IDisposable
     {
         if (_disposed || _imports.IsQuitting)
             return;
-        if (_notice.ShouldShow(snapshot.State, _services.IsOverlayDisabled, PromptDialog.IsAnyOpen))
+        if (_notice.ShouldShow(snapshot.State, _services.IsOverlayDisabled, PromptDialog.IsAnyOpen, snapshot.Mode))
             ShowBorderlessNotice(snapshot.Mode);
     }
 
