@@ -24,7 +24,7 @@ Phase 2: the overlay shell. IRIS runs as a tray app with a Social Overlay config
 - `src/Iris.Core/Settings`: `AppSettings` and `AppSettingsToml` (`Data\settings.toml`). `src/Iris.Core/Config` also holds
   `SocialConfigMerger`, `ConfigImporter` (the three import modes, export) and `HostedConfigClient` (increment 5).
 - `src/Iris.Core/Overlay`: the overlay model and its math, without any windowing code: `OverlayModel` (brackets and panel entries), `OverlayModelBuilder`
-  (detections + cached orgs to model), `PanelLayout` (panel rectangles), `GameWindowRules` (the borderless decision), `OverlayPalette`, `TestOverlayBuilder` (Phase 2).
+  (detections + cached orgs to model), `PanelLayout` (panel rectangles), `GameWindowRules` (the borderless decision), `StarCitizenDisplaySettings` (the game's WindowMode setting), `OverlayPalette`, `TestOverlayBuilder` (Phase 2).
 - `src/Iris.App`: the Windows app (WPF): tray icon, the config window with the Players, Orgs, Org-Attribute and Settings tabs, the overlay window
   (`Views/OverlayWindow`, `Views/OverlayCanvas`), the game window tracker and the overlay controller (`Services`).
   It has no automated tests yet; everything testable lives in `Iris.Core`.
@@ -92,10 +92,18 @@ IRIS now has the overlay window. It is driven by **test data only**; Phase 3 wil
   Order: player list, org list, org attribute, No Match; players of the same kind stay in the order they were first seen.
 - If the entries do not fit, the panel stops before the bottom 10% of the screen and its last line says `+N more`.
 
-**When it shows.** Star Citizen must be the window in front and must run in **borderless windowed mode**: IRIS only overlays a window that has no
-title bar or frame and exactly covers its monitor, because only then do window and screen coordinates line up. In the game, set
-*Graphics > Windowed mode* to **Borderless**. If the game is in front but not borderless, the overlay stays off and IRIS shows a small pop-up with a single **Close** button:
-"Star Citizen is not in borderless windowed mode, so the IRIS overlay is turned off. Switch to Borderless in the game's graphics settings." It is shown at most once per run of IRIS (not once per game session),
+**When it shows.** Star Citizen must be the window in front and must run in **borderless windowed mode**: IRIS only overlays a window that exactly
+covers its monitor and is not exclusive Fullscreen, because only then do window and screen coordinates line up. In the game, set
+*Graphics > Display Mode* to **Borderless Windowed**. IRIS reads the game's own setting: the `WindowMode` line of the running game's `attributes.xml`
+(`<Attr name="WindowMode" value="1"/>`; 0 = Windowed, 1 = Borderless Windowed, 2 = Fullscreen). Exclusive Fullscreen looks exactly like a borderless window from
+the outside (no title bar, size of the monitor), which is why the window alone cannot tell them apart. The file is found relative to the running `StarCitizen.exe`
+(`<install>\Bin64\StarCitizen.exe` gives `<install>\user\client\0\Profiles\default\attributes.xml`, or else the most recently changed
+`<install>\user\client\*\Profiles\default\attributes.xml`), so LIVE, PTU and EPTU installs side by side each use their own. It is only ever read, never
+written, and re-read when its time stamp changes (looked at once per second; the game may only write it when the graphics settings are applied). The log says which file
+is used and each mode change ("Star Citizen display mode: Fullscreen"). If the file cannot be found or read, IRIS falls back to the window check (no title bar or frame and exactly the
+size of the monitor). If the game is in front but not borderless, the overlay stays off and IRIS shows a small pop-up with a single **Close** button, naming the actual mode when it is known:
+"Star Citizen is in Fullscreen mode, so the IRIS overlay is turned off. Switch Display Mode to Borderless Windowed in the game's graphics settings." (or "Windowed mode"; when the mode
+is unknown: "Star Citizen is not in borderless windowed mode, so the IRIS overlay is turned off. Switch to Borderless in the game's graphics settings."). It is shown at most once per run of IRIS (not once per game session),
 never while Disable Overlay is on, and not while another IRIS pop-up is open. IRIS looks at every 250 ms check, not only when the window state changes, so a game that was already running in a non-borderless mode when IRIS started gets the notice too, and a skipped moment is tried again at the next check. Like IRIS's other pop-ups it does not take the focus from the game: it waits in the taskbar, and there is no tray balloon. It is not a question that IRIS waits for: the tray's Settings and Quit work while it is open (Quit closes it).
 **Disable Overlay** (tray) hides it, see "Disable Overlay, Disable Info Panel and hotkeys" below. The overlay window is created the first time it is needed and afterwards only hidden. While the game is not in front, the only work IRIS does is
 a check of the foreground window every 250 ms. State changes (game in front, borderless or not) are written to the log.

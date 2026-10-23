@@ -278,7 +278,7 @@ public sealed class OverlayController : IDisposable
         if (_disposed || _imports.IsQuitting)
             return;
         if (_notice.ShouldShow(snapshot.State, _services.IsOverlayDisabled, PromptDialog.IsAnyOpen))
-            ShowBorderlessNotice();
+            ShowBorderlessNotice(snapshot.Mode);
     }
 
     /// <summary>
@@ -287,11 +287,11 @@ public sealed class OverlayController : IDisposable
     /// Quit work while it is open (Quit closes it, see <see cref="CloseBorderlessNotice"/>). It follows the pop-up policy: with the game in front
     /// it is not activated and waits in the taskbar; there is no tray balloon.
     /// </summary>
-    private void ShowBorderlessNotice()
+    private void ShowBorderlessNotice(WindowMode? gameMode)
     {
         _notice.MarkShown(); // first: this check must not open a second one, whatever happens below
-        _services.Log.Write(_services.Clock.UtcNow, "Told the user that Star Citizen is not in borderless windowed mode");
-        PromptDialog.ShowNotice(BorderlessNoticeTracker.Text);
+        _services.Log.Write(_services.Clock.UtcNow, "Told the user that Star Citizen is not in borderless windowed mode (game display mode: " + (gameMode?.ToString() ?? "unknown") + ")");
+        PromptDialog.ShowNotice(BorderlessNoticeTracker.TextFor(gameMode));
     }
 
     /// <summary>Closes the "not in borderless mode" pop-up if it is open (IRIS is quitting). Safe to call at any time.</summary>

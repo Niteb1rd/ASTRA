@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 using Iris.Core.Overlay;
 
 namespace Iris.App.Services;
@@ -134,6 +135,20 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr GetModuleHandle(string? moduleName);
 
+    public const uint ProcessQueryLimitedInformation = 0x1000;
+    private const int ErrorInsufficientBuffer = 122;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", EntryPoint = "QueryFullProcessImageNameW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder exeName, ref uint size);
+
     [DllImport("dwmapi.dll")]
     public static extern int DwmGetWindowAttribute(IntPtr hWnd, int attribute, out NativeRect value, int size);
 
@@ -178,6 +193,38 @@ internal static class NativeMethods
         }
         bounds = default;
         return false;
+    }
+
+    /// <summary>
+    /// The full path of the exe a process runs, asked with the limited-information right (PROCESS_QUERY_LIMITED_INFORMATION), which Windows also
+    /// grants for protected (anti-cheat) processes where Process.MainModule would be refused. False when the process cannot be opened or has ended.
+    /// </summary>
+    public static bool TryGetProcessImagePath(uint processId, out string path)
+    {
+        path = string.Empty;
+        var handle = OpenProcess(ProcessQueryLimitedInformation, false, processId);
+        if (handle == IntPtr.Zero)
+            return false;
+        try
+        {
+            foreach (var capacity in new[] { 1024u, 8192u, 32768u })
+            {
+                var buffer = new StringBuilder((int)capacity);
+                var size = capacity;
+                if (QueryFullProcessImageName(handle, 0, buffer, ref size))
+                {
+                    path = buffer.ToString();
+                    return path.Length > 0;
+                }
+                if (Marshal.GetLastWin32Error() != ErrorInsufficientBuffer)
+                    return false;
+            }
+            return false;
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
     }
 
     private static bool IsUsable(NativeRect r) => r.Right > r.Left && r.Bottom > r.Top;

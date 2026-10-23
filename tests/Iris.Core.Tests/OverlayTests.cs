@@ -483,6 +483,220 @@ public class GameWindowRulesTests
     }
 }
 
+public class GameWindowModeTests
+{
+    private static readonly PixelRect Monitor = new(0, 0, 2560, 1440);
+    private static readonly PixelRect Smaller = new(100, 100, 1600, 900);
+    private const uint PopupStyle = 0x80000000;   // WS_POPUP: no caption, no frame
+    private const uint FramedStyle = PopupStyle | 0x00C00000u | 0x00040000u; // caption + resizable frame
+
+    [Theory]
+    [InlineData(WindowMode.Borderless, true, PopupStyle, GameWindowState.Ready)]
+    [InlineData(WindowMode.Borderless, true, FramedStyle, GameWindowState.Ready)]      // the setting says borderless: the style is tolerated
+    [InlineData(WindowMode.Borderless, false, PopupStyle, GameWindowState.NotBorderless)] // ...but the window must fill the monitor
+    [InlineData(WindowMode.Borderless, false, FramedStyle, GameWindowState.NotBorderless)]
+    [InlineData(WindowMode.Fullscreen, true, PopupStyle, GameWindowState.NotBorderless)] // exclusive fullscreen looks like borderless to the style check
+    [InlineData(WindowMode.Fullscreen, true, FramedStyle, GameWindowState.NotBorderless)]
+    [InlineData(WindowMode.Fullscreen, false, PopupStyle, GameWindowState.NotBorderless)]
+    [InlineData(WindowMode.Windowed, true, PopupStyle, GameWindowState.NotBorderless)]
+    [InlineData(WindowMode.Windowed, false, FramedStyle, GameWindowState.NotBorderless)]
+    [InlineData(null, true, PopupStyle, GameWindowState.Ready)]                     // unknown: the window style check decides
+    [InlineData(null, true, FramedStyle, GameWindowState.NotBorderless)]
+    [InlineData(null, false, PopupStyle, GameWindowState.NotBorderless)]
+    [InlineData(null, false, FramedStyle, GameWindowState.NotBorderless)]
+    public void Decide_UsesTheGameMode_WhenKnown(WindowMode? mode, bool fillsMonitor, uint style, GameWindowState expected)
+    {
+        var window = fillsMonitor ? Monitor : Smaller;
+
+        Assert.Equal(expected, GameWindowRules.Decide(true, window, Monitor, style, mode));
+    }
+
+    [Theory]
+    [InlineData(WindowMode.Borderless)]
+    [InlineData(WindowMode.Fullscreen)]
+    [InlineData(WindowMode.Windowed)]
+    [InlineData(null)]
+    public void Decide_GameNotInFront_IsAlwaysNotActive(WindowMode? mode)
+    {
+        Assert.Equal(GameWindowState.GameNotActive, GameWindowRules.Decide(false, Monitor, Monitor, PopupStyle, mode));
+    }
+
+    [Fact]
+    public void Decide_BorderlessWithEmptyRectangles_IsNotReady()
+    {
+        Assert.Equal(GameWindowState.NotBorderless, GameWindowRules.Decide(true, default, default, PopupStyle, WindowMode.Borderless));
+    }
+
+    [Fact]
+    public void NoticeText_NamesTheActualMode()
+    {
+        Assert.Equal(
+            "Star Citizen is in Fullscreen mode, so the IRIS overlay is turned off. Switch Display Mode to Borderless Windowed in the game's graphics settings.",
+            BorderlessNoticeTracker.TextFor(WindowMode.Fullscreen));
+        Assert.Equal(
+            "Star Citizen is in Windowed mode, so the IRIS overlay is turned off. Switch Display Mode to Borderless Windowed in the game's graphics settings.",
+            BorderlessNoticeTracker.TextFor(WindowMode.Windowed));
+        Assert.Equal(BorderlessNoticeTracker.Text, BorderlessNoticeTracker.TextFor(null));
+        Assert.Equal(BorderlessNoticeTracker.Text, BorderlessNoticeTracker.TextFor(WindowMode.Borderless));
+    }
+}
+
+public class StarCitizenDisplaySettingsTests
+{
+    private static readonly string Install = Path.Combine(Path.GetTempPath(), "StarCitizen", "LIVE");
+    private static readonly string Exe = Path.Combine(Install, "Bin64", "StarCitizen.exe");
+    private static readonly string ClientDir = Path.Combine(Install, "user", "client");
+    private static string Attributes(string profile) => Path.Combine(ClientDir, profile, "Profiles", "default", "attributes.xml");
+
+    private static IEnumerable<(string path, DateTime modifiedUtc)> None(string dir) => Array.Empty<(string, DateTime)>();
+
+    [Fact]
+    public void PreferredProfileZero_IsUsedWhenItExists()
+    {
+        var result = StarCitizenDisplaySettings.AttributesPathFor(
+            Exe,
+            path => path == Attributes("0"),
+            _ => throw new InvalidOperationException("candidates must not be searched when client\\0 has the file"));
+
+        Assert.Equal(Attributes("0"), result);
+    }
+
+    [Fact]
+    public void WithoutProfileZero_TheMostRecentlyModifiedCandidateWins()
+    {
+        var older = (Attributes("1"), new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        var newest = (Attributes("7"), new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc));
+        var middle = (Attributes("3"), new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc));
+        string? searched = null;
+
+        var result = StarCitizenDisplaySettings.AttributesPathFor(
+            Exe,
+            _ => false,
+            dir =>
+            {
+                searched = dir;
+                return new[] { older, newest, middle };
+            });
+
+        Assert.Equal(Attributes("7"), result);
+        Assert.Equal(ClientDir, searched);
+    }
+
+    [Fact]
+    public void NoFileAnywhere_GivesNull()
+    {
+        Assert.Null(StarCitizenDisplaySettings.AttributesPathFor(Exe, _ => false, None));
+    }
+
+    [Fact]
+    public void SideBySideInstalls_EachUsesItsOwnFolder()
+    {
+        var ptuExe = Path.Combine(Path.GetTempPath(), "StarCitizen", "PTU", "Bin64", "StarCitizen.exe");
+        var ptuFile = Path.Combine(Path.GetTempPath(), "StarCitizen", "PTU", "user", "client", "0", "Profiles", "default", "attributes.xml");
+        Func<string, bool> both = path => path == Attributes("0") || path == ptuFile;
+
+        Assert.Equal(Attributes("0"), StarCitizenDisplaySettings.AttributesPathFor(Exe, both, None));
+        Assert.Equal(ptuFile, StarCitizenDisplaySettings.AttributesPathFor(ptuExe, both, None));
+    }
+
+    [Fact]
+    public void BinFolderNameIsMatchedWithoutRegardToCase()
+    {
+        var lower = Path.Combine(Install, "bin64", "StarCitizen.exe");
+
+        Assert.Equal(Attributes("0"), StarCitizenDisplaySettings.AttributesPathFor(lower, path => path == Attributes("0"), None));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("StarCitizen.exe")]
+    public void UnusableExePath_GivesNull(string exe)
+    {
+        Assert.Null(StarCitizenDisplaySettings.AttributesPathFor(exe, _ => true, _ => new[] { ("x", DateTime.UtcNow) }));
+    }
+
+    [Fact]
+    public void ExeNotInBin64_GivesNull()
+    {
+        var other = Path.Combine(Install, "Elsewhere", "StarCitizen.exe");
+
+        Assert.Null(StarCitizenDisplaySettings.AttributesPathFor(other, _ => true, _ => new[] { ("x", DateTime.UtcNow) }));
+    }
+
+    [Theory]
+    [InlineData("0", WindowMode.Windowed)]
+    [InlineData("1", WindowMode.Borderless)]
+    [InlineData("2", WindowMode.Fullscreen)]
+    [InlineData(" 2 ", WindowMode.Fullscreen)]
+    [InlineData("+1", WindowMode.Borderless)]
+    public void KnownValues_AreMapped(string value, WindowMode expected)
+    {
+        var xml = $"<Attributes><Attr name=\"WindowMode\" value=\"{value}\"/></Attributes>";
+
+        Assert.Equal(expected, StarCitizenDisplaySettings.ParseWindowMode(xml));
+    }
+
+    [Theory]
+    [InlineData("3")]
+    [InlineData("-1")]
+    [InlineData("100")]
+    [InlineData("1.0")]
+    [InlineData("abc")]
+    [InlineData("")]
+    [InlineData("99999999999")]
+    public void UnknownOrNonIntegerValues_GiveNull(string value)
+    {
+        var xml = $"<Attributes><Attr name=\"WindowMode\" value=\"{value}\"/></Attributes>";
+
+        Assert.Null(StarCitizenDisplaySettings.ParseWindowMode(xml));
+    }
+
+    [Fact]
+    public void RealisticFile_IsParsed()
+    {
+        var xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<!-- settings -->\r\n<Attributes>\r\n"
+            + " <Attr name=\"Width\" value=\"2560\"/>\r\n <Attr name=\"WindowMode\" value=\"2\"/>\r\n <Attr name=\"Height\" value=\"1440\"/>\r\n</Attributes>\r\n";
+
+        Assert.Equal(WindowMode.Fullscreen, StarCitizenDisplaySettings.ParseWindowMode(xml));
+    }
+
+    [Fact]
+    public void OtherAttributesNamedLikeIt_AreNotConfused()
+    {
+        Assert.Null(StarCitizenDisplaySettings.ParseWindowMode("<Attributes><Attr name=\"WindowModeX\" value=\"1\"/><Attr name=\"windowmode\" value=\"1\"/></Attributes>"));
+    }
+
+    [Fact]
+    public void MissingAttributeOrMissingValue_GivesNull()
+    {
+        Assert.Null(StarCitizenDisplaySettings.ParseWindowMode("<Attributes><Attr name=\"Width\" value=\"1\"/></Attributes>"));
+        Assert.Null(StarCitizenDisplaySettings.ParseWindowMode("<Attributes><Attr name=\"WindowMode\"/></Attributes>"));
+        Assert.Null(StarCitizenDisplaySettings.ParseWindowMode("<Attributes/>"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("not xml at all")]
+    [InlineData("<Attributes><Attr name=\"WindowMode\" value=\"1\"")] // cut off
+    [InlineData("<Attributes><Attr name=\"Width\" value=\"1\"></Attributes>")] // broken before the element
+    public void NotXml_GivesNull(string? text)
+    {
+        Assert.Null(StarCitizenDisplaySettings.ParseWindowMode(text));
+    }
+
+    [Fact]
+    public void DtdIsRefused_WithoutResolvingAnything()
+    {
+        var xml = "<?xml version=\"1.0\"?><!DOCTYPE Attributes [<!ENTITY x SYSTEM \"file:///etc/passwd\">]>"
+            + "<Attributes><Attr name=\"WindowMode\" value=\"1\"/></Attributes>";
+
+        Assert.Null(StarCitizenDisplaySettings.ParseWindowMode(xml));
+    }
+}
+
 public class OverlayPaletteTests
 {
     [Fact]

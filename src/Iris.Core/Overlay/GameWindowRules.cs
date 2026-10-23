@@ -35,12 +35,28 @@ public static class GameWindowRules
         return !window.IsEmpty && window == monitor;
     }
 
-    /// <summary>The state for the window in front: <paramref name="isStarCitizenInFront"/> false is always <see cref="GameWindowState.GameNotActive"/>.</summary>
-    public static GameWindowState Decide(bool isStarCitizenInFront, PixelRect window, PixelRect monitor, uint style)
+    /// <summary>The window is not empty and exactly covers the monitor (the style is not looked at).</summary>
+    public static bool FillsMonitor(PixelRect window, PixelRect monitor) => !window.IsEmpty && window == monitor;
+
+    /// <summary>
+    /// The state for the window in front: <paramref name="isStarCitizenInFront"/> false is always <see cref="GameWindowState.GameNotActive"/>.
+    /// <paramref name="gameMode"/> is the game's own Display Mode setting when it could be read: Borderless is Ready only if the window also
+    /// fills the monitor (the style is then not looked at), Windowed and Fullscreen are always NotBorderless (an exclusive Fullscreen window looks
+    /// exactly like a borderless one to the window style check). When it is null (unknown) the window style check decides.
+    /// </summary>
+    public static GameWindowState Decide(bool isStarCitizenInFront, PixelRect window, PixelRect monitor, uint style, WindowMode? gameMode = null)
     {
         if (!isStarCitizenInFront)
             return GameWindowState.GameNotActive;
-        return IsBorderless(window, monitor, style) ? GameWindowState.Ready : GameWindowState.NotBorderless;
+
+        var borderless = gameMode switch
+        {
+            WindowMode.Borderless => FillsMonitor(window, monitor),
+            WindowMode.Windowed => false,
+            WindowMode.Fullscreen => false,
+            _ => IsBorderless(window, monitor, style),
+        };
+        return borderless ? GameWindowState.Ready : GameWindowState.NotBorderless;
     }
 }
 
@@ -71,4 +87,12 @@ public sealed class BorderlessNoticeTracker
 
     public const string Text =
         "Star Citizen is not in borderless windowed mode, so the IRIS overlay is turned off. Switch to Borderless in the game's graphics settings.";
+
+    /// <summary>The notice text for the game's mode when it is known to be Fullscreen or Windowed; otherwise (unknown, or Borderless that does not fill the monitor) <see cref="Text"/>.</summary>
+    public static string TextFor(WindowMode? gameMode) => gameMode switch
+    {
+        WindowMode.Fullscreen => "Star Citizen is in Fullscreen mode, so the IRIS overlay is turned off. Switch Display Mode to Borderless Windowed in the game's graphics settings.",
+        WindowMode.Windowed => "Star Citizen is in Windowed mode, so the IRIS overlay is turned off. Switch Display Mode to Borderless Windowed in the game's graphics settings.",
+        _ => Text,
+    };
 }

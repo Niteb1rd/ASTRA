@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
+using System.Text;
 using System.Windows.Threading;
 using Iris.Core;
 using Iris.Core.Overlay;
@@ -11,9 +13,10 @@ namespace Iris.App.Services;
 
 /// <summary>
 /// What the tracker saw at the last check: the state, and for a game in front its window rectangle (screen pixels), process, window style flags
-/// and the rectangle of its monitor (the last two are what the borderless decision was made from; they are logged for diagnosing it).
+/// and the rectangle of its monitor, plus the game's own Display Mode setting when it could be read (null = unknown). These are what the
+/// borderless decision was made from; they are logged for diagnosing it.
 /// </summary>
-public sealed record GameWindowSnapshot(GameWindowState State, PixelRect Bounds, int ProcessId, IntPtr Handle, uint Style = 0, PixelRect Monitor = default)
+public sealed record GameWindowSnapshot(GameWindowState State, PixelRect Bounds, int ProcessId, IntPtr Handle, uint Style = 0, PixelRect Monitor = default, WindowMode? Mode = null)
 {
     /// <summary>Star Citizen is not in front (or not running).</summary>
     public static readonly GameWindowSnapshot None = new(GameWindowState.GameNotActive, default, 0, IntPtr.Zero);
@@ -23,7 +26,8 @@ public sealed record GameWindowSnapshot(GameWindowState State, PixelRect Bounds,
 /// Watches whether Star Citizen is the window in front and whether it is borderless (<see cref="GameWindowRules"/>).
 /// Every 250 ms it asks Windows for the foreground window and which process owns it; the process name is remembered per process id,
 /// so nothing else happens while another program is in front (a "not the game" answer is kept for 5 seconds, a "game" answer for 60). Only when the game is in front are its rectangle, its monitor and its
-/// style read. <see cref="Changed"/> is raised (on the UI thread) when the snapshot differs from the previous one; state changes are logged. <see cref="Checked"/> is raised after every check.
+/// style read, and the game's Display Mode (<see cref="StarCitizenDisplaySettings"/>: the WindowMode line of the attributes.xml that belongs to the
+/// running exe; read only, re-read when its last-write time changes, looked at most once per second). <see cref="Changed"/> is raised (on the UI thread) when the snapshot differs from the previous one; state changes are logged. <see cref="Checked"/> is raised after every check.
 /// </summary>
 public sealed class GameWindowTracker : IDisposable
 {
@@ -41,6 +45,11 @@ public sealed class GameWindowTracker : IDisposable
     private readonly IClock _clock;
     private readonly DispatcherTimer _timer;
     private readonly Dictionary<uint, (bool IsGame, long CheckedAtMs)> _processCache = new();
+    private readonly Dictionary<uint, GameProcessInfo> _gameInfo = new();
+
+    // the display setting file is looked at most once per second per game process
+    private const long SettingsCheckIntervalMs = 1_000;
+    private const int GameInfoMaxEntries = 16;
 
     public GameWindowTracker(ILog log, IClock clock)
     {
@@ -117,8 +126,9 @@ public sealed class GameWindowTracker : IDisposable
             return GameWindowSnapshot.None;
 
         var style = NativeMethods.GetStyle(foreground);
-        var state = GameWindowRules.Decide(true, window, monitor, style);
-        return new GameWindowSnapshot(state, window, (int)processId, foreground, style, monitor);
+        var mode = ReadGameMode(processId);
+        var state = GameWindowRules.Decide(true, window, monitor, style, mode);
+        return new GameWindowSnapshot(state, window, (int)processId, foreground, style, monitor, mode);
     }
 
     private bool IsGameProcess(uint processId)
@@ -141,7 +151,154 @@ public sealed class GameWindowTracker : IDisposable
         if (_processCache.Count >= ProcessNameCacheMaxEntries)
             _processCache.Clear();
         _processCache[processId] = (isGame, now);
+        if (isGame)
+            RefreshGameInfo(processId); // the exe of this process (a process id can be reused by another install's game)
         return isGame;
+    }
+
+    /// <summary>What is remembered about one running game process: its exe, its display settings file and the last mode read from it.</summary>
+    private sealed class GameProcessInfo
+    {
+        public GameProcessInfo(string? exePath) => ExePath = exePath;
+
+        public string? ExePath { get; }
+        public string? AttributesPath { get; set; }
+        public bool NotFoundLogged { get; set; }
+        public bool UnusableLogged { get; set; }
+        public bool HasRead { get; set; }
+        public DateTime LastWriteUtc { get; set; }
+        public long NextCheckMs { get; set; }
+        public WindowMode? Mode { get; set; }
+        public WindowMode? LoggedMode { get; set; }
+    }
+
+    /// <summary>Asks Windows for the exe of the game process and keeps the entry for it (a new entry when the exe is a different one).</summary>
+    private GameProcessInfo RefreshGameInfo(uint processId)
+    {
+        var exe = NativeMethods.TryGetProcessImagePath(processId, out var path) ? path : null;
+        if (_gameInfo.TryGetValue(processId, out var existing)
+            && (exe is null || string.Equals(exe, existing.ExePath, StringComparison.OrdinalIgnoreCase)))
+            return existing;
+
+        if (_gameInfo.Count >= GameInfoMaxEntries)
+            _gameInfo.Clear();
+        var created = new GameProcessInfo(exe);
+        _gameInfo[processId] = created;
+        return created;
+    }
+
+    /// <summary>
+    /// The game's Display Mode from its own attributes.xml (null = unknown: the window style check decides then). The file is found relative to the
+    /// running exe, read only when its last-write time changed, at most once per second; an unreadable file keeps the last known value.
+    /// </summary>
+    private WindowMode? ReadGameMode(uint processId)
+    {
+        if (!_gameInfo.TryGetValue(processId, out var info))
+            info = RefreshGameInfo(processId);
+
+        var now = Environment.TickCount64;
+        if (now < info.NextCheckMs)
+            return info.Mode;
+        info.NextCheckMs = now + SettingsCheckIntervalMs;
+
+        if (info.AttributesPath is null)
+        {
+            if (info.ExePath is not null)
+                info.AttributesPath = StarCitizenDisplaySettings.AttributesPathFor(info.ExePath, File.Exists, FindAttributesCandidates);
+            if (info.AttributesPath is null)
+            {
+                if (!info.NotFoundLogged)
+                {
+                    info.NotFoundLogged = true;
+                    _log.Write(_clock.UtcNow, "Star Citizen display settings (attributes.xml) not found, using the window check");
+                }
+                return info.Mode;
+            }
+            _log.Write(_clock.UtcNow, $"Star Citizen display settings file: {info.AttributesPath}");
+        }
+
+        DateTime stamp;
+        try
+        {
+            stamp = File.GetLastWriteTimeUtc(info.AttributesPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return info.Mode; // keep the last known value
+        }
+        if (info.HasRead && stamp == info.LastWriteUtc)
+            return info.Mode;
+
+        var text = TryReadText(info.AttributesPath);
+        if (text is null)
+            return info.Mode; // locked or gone for the moment: keep the last known value, try again in a second
+
+        var parsed = StarCitizenDisplaySettings.ParseWindowMode(text);
+        if (parsed is null && info.Mode is not null)
+        {
+            // possibly a half-written file: keep the last known value and look again next time (the time stamp is not remembered)
+            if (!info.UnusableLogged)
+            {
+                info.UnusableLogged = true;
+                _log.Write(_clock.UtcNow, $"Star Citizen display settings: WindowMode could not be read, keeping {info.Mode}");
+            }
+            return info.Mode;
+        }
+
+        info.HasRead = true;
+        info.LastWriteUtc = stamp;
+        info.Mode = parsed;
+        if (parsed is not null)
+        {
+            info.UnusableLogged = false;
+            if (parsed != info.LoggedMode)
+            {
+                info.LoggedMode = parsed;
+                _log.Write(_clock.UtcNow, $"Star Citizen display mode: {parsed}");
+            }
+        }
+        else if (!info.UnusableLogged)
+        {
+            info.UnusableLogged = true;
+            _log.Write(_clock.UtcNow, "Star Citizen display settings: no usable WindowMode value, using the window check");
+        }
+        return info.Mode;
+    }
+
+    private static string? TryReadText(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            return reader.ReadToEnd();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Every <c>&lt;client&gt;\*\Profiles\default\attributes.xml</c> that exists, with its last write time (UTC).</summary>
+    private static IEnumerable<(string path, DateTime modifiedUtc)> FindAttributesCandidates(string clientDirectory)
+    {
+        var found = new List<(string path, DateTime modifiedUtc)>();
+        try
+        {
+            if (!Directory.Exists(clientDirectory))
+                return found;
+            foreach (var profile in Directory.EnumerateDirectories(clientDirectory))
+            {
+                var file = Path.Combine(profile, "Profiles", "default", "attributes.xml");
+                if (File.Exists(file))
+                    found.Add((file, File.GetLastWriteTimeUtc(file)));
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // what was found so far is used
+        }
+        return found;
     }
 
     /// <summary>
@@ -192,9 +349,10 @@ public sealed class GameWindowTracker : IDisposable
     {
         var detail = to.State == GameWindowState.GameNotActive
             ? string.Empty
-            : string.Format(CultureInfo.InvariantCulture, " (process {0}, window {1}x{2} at {3},{4}, style 0x{5:X8}, monitor {6}x{7} at {8},{9})",
+            : string.Format(CultureInfo.InvariantCulture, " (process {0}, window {1}x{2} at {3},{4}, style 0x{5:X8}, monitor {6}x{7} at {8},{9}, game display mode {10})",
                 to.ProcessId, to.Bounds.Width, to.Bounds.Height, to.Bounds.X, to.Bounds.Y,
-                to.Style, to.Monitor.Width, to.Monitor.Height, to.Monitor.X, to.Monitor.Y);
+                to.Style, to.Monitor.Width, to.Monitor.Height, to.Monitor.X, to.Monitor.Y,
+                to.Mode?.ToString() ?? "unknown");
         _log.Write(_clock.UtcNow, $"Game window: {from.State} -> {to.State}{detail}");
     }
 }
