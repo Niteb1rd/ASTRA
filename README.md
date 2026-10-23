@@ -7,7 +7,7 @@ and summarizes their orgs in a side panel. See the requirements doc for the full
 
 ## Status
 
-Phase 2: the overlay shell. IRIS runs as a tray app with a Social Overlay config window, and now has the overlay window itself (brackets and the right-hand panel), driven by test data only: there is no screen capture or OCR yet, so the real overlay stays empty until Phase 3 feeds it detections. The Settings tab has an Overlay section and a "Show test overlay (15 s)" button to try it. See "Phase 2: the overlay" below.
+Phase 3, step 1 adds the nameplate letter recognizer (no screen capture yet; see "Phase 3, step 1" below). Phase 2: the overlay shell. IRIS runs as a tray app with a Social Overlay config window, and now has the overlay window itself (brackets and the right-hand panel), driven by test data only: there is no screen capture or OCR yet, so the real overlay stays empty until Phase 3 feeds it detections. The Settings tab has an Overlay section and a "Show test overlay (15 s)" button to try it. See "Phase 2: the overlay" below.
 
 - `src/Iris.Core`: config file (TOML) read, write and validate; color and bracket rules; right-panel org line (increment 1).
 - `src/Iris.Core/Rsi`: reads robertsspaceindustries.com. Pure parsers for the player organizations page, the org page and the
@@ -163,6 +163,49 @@ Clicking the tray items shows no on-screen text.
 The overlay text uses the font **Quantico** (Bold), licensed under the SIL Open Font License 1.1. The font file (`Quantico-Bold.ttf`) and its license text
 (`OFL.txt`) are in the repository, in `src\Iris.App\Assets\Fonts\`; the font is built into `IRIS.exe` and `OFL.txt` is copied next to it. The project file picks up
 `Assets\Fonts\*.ttf` by wildcard, so the build still works if the file is removed; then the overlay uses Segoe UI Bold (as it also does if the font cannot be read).
+
+## Phase 3, step 1: the nameplate letter recognizer
+
+Phase 3 reads real nameplates from the screen. Step 1 is the reader itself, without screen capture yet: it is given an image and the box of one
+nameplate line and returns the name. It lives in `src/Iris.Core/Detection/Letters/`:
+
+- `LetterModel`: the trained classifier (a small neural network: 388 numbers describing one letter in, a log probability for each of the 38 characters
+  `A-Z 0-9 _ -` out). Its weights are the embedded resource `letters-model.bin`. The file contains numbers only; it was trained from the developer's own
+  gameplay clips with a separate local training kit that is not part of this repository.
+- `NameplateFeatures`: the image side. Crop to a 4x text mask (local contrast on the brightest colour channel, so cyan, white, red and green text all work,
+  with an automatic contrast threshold), the capital band, cuts at blank columns, and the 388-number letter description.
+- `NameplateReader`: reads a line. Pieces are cut at blank columns; a piece too wide for one letter (letters touching) is cut by a dynamic-programming search for
+  the cut set whose letters the model is surest about. Input is an OpenCV `Mat` (BGR) or a pixel buffer (`byte[]`, width, height, stride) plus the name box.
+  Output is the text and a score (sum of the letters' log probabilities; closer to 0 is surer).
+
+It is a port of a Python prototype, step for step (same rounding and comparison rules), so that both give the same result. The tests in
+`tests/Iris.Core.Tests` (`LetterModelTests`, `NameplateReaderTests`) check this against **synthetic** fixtures in `tests/Iris.Core.Tests/Fixtures/letters/`:
+text drawn by a script onto generated noisy coloured backgrounds, with the Python results for every stage (mask, capital band, cuts, letter vectors, final
+text) and 200 feature vectors with the model's log probabilities. The model must agree within 1e-4, the mask with at least 99.5 % of its pixels (OpenCV builds
+can round differently at the edges), and the final text must be identical on every line. No game footage, screenshots or player names are in the repository.
+The tests that need OpenCV's native library are skipped on systems where it is not available (the tests project carries the Windows one).
+
+### OpenCvSharp4 (new dependency)
+
+The image operations use [OpenCvSharp4](https://github.com/shimat/opencvsharp) (a .NET wrapper of OpenCV, Apache-2.0 licence): `OpenCvSharp4` in `Iris.Core`,
+and the native library through `OpenCvSharp4.runtime.win` in `Iris.App` and the tests. The native library is large: expect the package download to be tens of
+megabytes (the Windows runtime package carries x64 and x86 builds) and `IRIS.exe`'s folder to grow by a similar amount. The first `dotnet test` or build downloads it.
+
+### The letter model file
+
+`letters-model.bin`, little endian:
+
+| Part | Type | Meaning |
+| --- | --- | --- |
+| magic | 8 bytes | `IRISLM01` |
+| version | uint32 | 1 |
+| charset | uint32 byte length N, then N bytes UTF-8 | the characters, in output order: output unit i is `charset[i]` (`-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_`) |
+| input size | uint32 | 388 (a 16x24 picture of the letter plus width, height, top and bottom offset relative to the capital height, each times 4) |
+| layer count | uint32 | L (currently 2: 388 to 256 to 38) |
+| each layer | uint32 rows (inputs), uint32 cols (outputs), float32 weights row-major (`weight[i][j]` connects input i to output j), float32 biases (cols values) | |
+
+ReLU follows every layer except the last; softmax follows the last. The reader clips each probability to at least 1e-6 and takes its logarithm.
+`LetterModel.Load` rejects files with a wrong magic, version or shape, or with missing or extra bytes.
 
 ## Build and test (Windows)
 
