@@ -28,6 +28,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Native OpenCV library (Windows x64) for the letter recognizer in Iris.Core. Apache-2.0 licence. -->
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.11.0.20250507" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Iris.Core\Iris.Core.csproj" />
   </ItemGroup>
 
