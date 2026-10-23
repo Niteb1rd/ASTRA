@@ -22,6 +22,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Iris.Core\Iris.Core.csproj" />
+    <!-- The replay tool's label, metrics and command line code is tested here too. -->
+    <ProjectReference Include="..\..\tools\Iris.Replay\Iris.Replay.csproj" />
   </ItemGroup>
 
 </Project>

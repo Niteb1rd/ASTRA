@@ -29,5 +29,8 @@ training-data/
 # imagery, so they are committed even though they are PNG files.
 !tests/Iris.Core.Tests/Fixtures/letters/**
 
+# Same for the nameplate detector's synthetic frames (drawn text on generated backgrounds, nothing from the game).
+!tests/Iris.Core.Tests/Fixtures/detector/**
+
 # Copies of RSI pages captured by tools/Iris.CaptureFixtures. Third-party content: keep local.
 tests/Iris.Core.Tests/Fixtures/rsi/

@@ -11,6 +11,20 @@ public readonly record struct NameplateRead(string Text, double Score)
 }
 
 /// <summary>
+/// One run of connected ink in a line, read as one or more letters (more than one when letters touch and had to be cut apart).
+/// </summary>
+/// <param name="Start">First mask column of the piece.</param>
+/// <param name="End">One past the last mask column.</param>
+/// <param name="Text">The characters read (one, or several for a cut piece; empty when a cut failed).</param>
+/// <param name="Score">Sum of the log probabilities of the characters, among the characters the read was allowed to choose from.</param>
+/// <param name="FreeScore">The same sum if every character of the model had been allowed. Equal to <paramref name="Score"/> for a cut
+/// piece and for a read without a restriction; the difference shows how much the restriction had to bend the model's opinion.</param>
+public readonly record struct ReadPiece(int Start, int End, string Text, double Score, double FreeScore);
+
+/// <summary>A line read piece by piece: the pieces and the capital height of the line in mask pixels.</summary>
+public sealed record PieceRead(IReadOnlyList<ReadPiece> Pieces, int CapHeight);
+
+/// <summary>
 /// Reads the name on one nameplate line with the trained <see cref="LetterModel"/>: mask, cut at blank columns, classify each
 /// piece; pieces that are too wide for one letter (letters touching) are cut by a dynamic-programming search for the cut set
 /// whose letters the model is surest about. A port of <c>Recognizer</c> in the Python prototype (<c>read</c>, <c>read_mask</c>,
@@ -19,6 +33,15 @@ public readonly record struct NameplateRead(string Text, double Score)
 public sealed class NameplateReader
 {
     private const double SplitFailureScore = -50.0;
+
+    /// <summary>
+    /// A run of touching ink wider than this many capital heights is not text (noise or a bright background) and is not cut: the
+    /// search would cost thousands of letter reads. The widest real run in the training clips is 4.1 capital heights.
+    /// </summary>
+    public const double MaxPieceCaps = 8.0;
+
+    /// <summary>A cut search over more candidate letter spans than this is not tried either (real runs need at most about 600).</summary>
+    public const int MaxSplitSpans = 1500;
 
     private readonly LetterModel _model;
 
@@ -44,10 +67,60 @@ public sealed class NameplateReader
     }
 
     /// <summary>Reads an already prepared mask (<c>read_mask</c>).</summary>
-    public NameplateRead ReadMask(LineMask m)
+    public NameplateRead ReadMask(LineMask m) => ReadCore(m, null, false, null, out _);
+
+    /// <summary>
+    /// Makes the list of characters a restricted read may choose from: element i is true when output i of the model is one of
+    /// <paramref name="characters"/>. Throws when none of them is in the model's charset.
+    /// </summary>
+    public bool[] CreateAlphabet(string characters)
+    {
+        var allowed = new bool[_model.ClassCount];
+        var any = false;
+        for (var i = 0; i < allowed.Length; i++)
+        {
+            if (characters.Contains(_model.Charset[i]))
+            {
+                allowed[i] = true;
+                any = true;
+            }
+        }
+
+        if (!any)
+            throw new ArgumentException("None of the characters is in the model's charset.", nameof(characters));
+        return allowed;
+    }
+
+    /// <summary>
+    /// Reads the line inside <paramref name="box"/> piece by piece, choosing every letter among <paramref name="allowed"/> only
+    /// (null: the whole charset), and giving up on runs of ink that are too wide to be text (<see cref="MaxPieceCaps"/>,
+    /// <see cref="MaxSplitSpans"/>), which keeps the time per line bounded on noise. Returns null when the box holds no text.
+    /// </summary>
+    public PieceRead? ReadPieces(Mat bgr, Rect box, bool[]? allowed = null)
+    {
+        var mask = NameplateFeatures.CreateMask(bgr, box);
+        return mask is null ? null : ReadPieces(mask, allowed);
+    }
+
+    /// <summary>The mask overload of <see cref="ReadPieces(Mat, Rect, bool[])"/>.</summary>
+    public PieceRead ReadPieces(LineMask m, bool[]? allowed = null)
+    {
+        if (allowed is not null && allowed.Length != _model.ClassCount)
+            throw new ArgumentException("The alphabet has to have one entry per character of the model.", nameof(allowed));
+        var pieces = new List<ReadPiece>();
+        ReadCore(m, allowed, true, pieces, out var cap);
+        return new PieceRead(pieces, cap);
+    }
+
+    /// <summary>
+    /// <c>read_mask</c> with two additions that the plain <see cref="ReadMask"/> leaves out: an optional restriction of the
+    /// alphabet, and (<paramref name="limitWork"/>) the work limits for runs of ink that are too wide to be text.
+    /// </summary>
+    private NameplateRead ReadCore(LineMask m, bool[]? allowed, bool limitWork, List<ReadPiece>? pieces, out int capHeight)
     {
         var band = NameplateFeatures.FindCapBand(m);
         var cap = band.Bottom - band.Top + 1;
+        capHeight = cap;
         var text = new StringBuilder();
         var total = 0.0;
 
@@ -78,15 +151,21 @@ public sealed class NameplateReader
                 if (!NameplateFeatures.GlyphVector(m, a, b, band, vector, scratch))
                     continue;
                 _model.PredictLogProbs(vector, lp, network);
-                var best = ArgMax(lp);
+                var best = ArgMax(lp, allowed);
                 text.Append(_model.Charset[best]);
                 total += lp[best];
+                if (pieces is not null)
+                {
+                    var free = allowed is null ? best : ArgMax(lp, null);
+                    pieces.Add(new ReadPiece(a, b, _model.Charset[best].ToString(), lp[best], lp[free]));
+                }
             }
             else
             {
-                var (piece, score) = Split(m, a, b, band, vector, lp, network, scratch);
+                var (piece, score) = Split(m, a, b, band, allowed, limitWork, vector, lp, network, scratch);
                 text.Append(piece);
                 total += score;
+                pieces?.Add(new ReadPiece(a, b, piece, score, score));
             }
         }
 
@@ -94,10 +173,12 @@ public sealed class NameplateReader
     }
 
     /// <summary>Best way to cut columns [x0, x1) into letters (<c>_split</c>).</summary>
-    private (string Text, double Score) Split(LineMask m, int x0, int x1, CapBand band, Span<double> vector, Span<double> lp, Span<double> network, GlyphScratch scratch)
+    private (string Text, double Score) Split(LineMask m, int x0, int x1, CapBand band, bool[]? allowed, bool limitWork, Span<double> vector, Span<double> lp, Span<double> network, GlyphScratch scratch)
     {
         var cap = band.Bottom - band.Top + 1;
         var width = x1 - x0;
+        if (limitWork && width > MaxPieceCaps * cap)
+            return ("", SplitFailureScore);
 
         // column ink profile of the piece
         var col = new int[width];
@@ -111,6 +192,27 @@ public sealed class NameplateReader
             if (col[x] <= col[x - 1] && col[x] <= col[x + 1] && col[x] <= 0.5 * cap)
                 cand.Add(x);
         cand.Add(width);
+
+        if (limitWork)
+        {
+            // count the candidate spans before reading any of them (same pairs as the loop below)
+            var pairCount = 0;
+            for (var i = 0; i < cand.Count; i++)
+            {
+                for (var j = i + 1; j < cand.Count; j++)
+                {
+                    var span = cand[j] - cand[i];
+                    if (span > 1.2 * cap)
+                        break;
+                    if (span < 0.25 * cap)
+                        continue;
+                    pairCount++;
+                }
+            }
+
+            if (pairCount > MaxSplitSpans)
+                return ("", SplitFailureScore);
+        }
 
         // every candidate span that could be one letter, with its best character and log probability
         var spanFrom = new List<int>();
@@ -129,7 +231,7 @@ public sealed class NameplateReader
                 if (!NameplateFeatures.GlyphVector(m, x0 + cand[i], x0 + cand[j], band, vector, scratch))
                     continue;
                 _model.PredictLogProbs(vector, lp, network);
-                var best = ArgMax(lp);
+                var best = ArgMax(lp, allowed);
                 spanFrom.Add(i);
                 spanTo.Add(j);
                 spanChar.Add(best);
@@ -176,13 +278,21 @@ public sealed class NameplateReader
         return (new string(letters.ToArray()), score[end]);
     }
 
-    /// <summary>Index of the first largest value (numpy.argmax).</summary>
-    private static int ArgMax(ReadOnlySpan<double> values)
+    /// <summary>
+    /// Index of the first largest value (numpy.argmax), among the entries that <paramref name="allowed"/> lets through (null: all).
+    /// Callers check that at least one entry is allowed.
+    /// </summary>
+    private static int ArgMax(ReadOnlySpan<double> values, bool[]? allowed)
     {
-        var best = 0;
-        for (var i = 1; i < values.Length; i++)
-            if (values[i] > values[best])
+        var best = -1;
+        for (var i = 0; i < values.Length; i++)
+        {
+            if (allowed is not null && !allowed[i])
+                continue;
+            if (best < 0 || values[i] > values[best])
                 best = i;
-        return best;
+        }
+
+        return Math.Max(best, 0);
     }
 }

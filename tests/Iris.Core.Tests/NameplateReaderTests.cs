@@ -213,4 +213,89 @@ public class NameplateReaderTests
         Assert.Equal(NameplateRead.Empty, reader.Read(image, new Rect(500, 500, 30, 12)));
         Assert.Equal(NameplateRead.Empty, reader.Read(image, new Rect(5, 5, 30, 12))); // flat image: no text
     }
+
+    /// <summary>
+    /// The piece by piece read says the same as the plain read: same text, same total score. Only for lines the work limits leave
+    /// alone: <see cref="NameplateReader.ReadPieces(LineMask, bool[])"/> refuses to cut a run of ink wider than
+    /// <see cref="NameplateReader.MaxPieceCaps"/> capital heights (or with too many candidate spans), the plain read does not.
+    /// </summary>
+    [OpenCvFact]
+    public void ReadPieces_SumUpToTheSameAsReadMask()
+    {
+        var reader = new NameplateReader(Model);
+        var compared = 0;
+        foreach (var line in LetterFixtures.LoadLines().Where(l => l.Mask is not null))
+        {
+            var band = NameplateFeatures.FindCapBand(line.Mask!);
+            var cap = band.Bottom - band.Top + 1;
+            if (NameplateFeatures.GapCuts(line.Mask!).Any(c => c.End - c.Start > NameplateReader.MaxPieceCaps * cap))
+                continue; // a run the work limit refuses to cut
+            compared++;
+
+            var plain = reader.ReadMask(line.Mask!);
+            var pieces = reader.ReadPieces(line.Mask!);
+
+            Assert.Equal(plain.Text, string.Concat(pieces.Pieces.Select(p => p.Text)));
+            Assert.Equal(plain.Score, pieces.Pieces.Sum(p => p.Score), 9);
+            Assert.All(pieces.Pieces, p => Assert.Equal(p.Score, p.FreeScore)); // no restriction: nothing to bend
+            Assert.Equal(NameplateFeatures.FindCapBand(line.Mask!).Height, pieces.CapHeight);
+            for (var i = 1; i < pieces.Pieces.Count; i++)
+                Assert.True(pieces.Pieces[i].Start >= pieces.Pieces[i - 1].End);
+        }
+
+        Assert.True(compared >= 10, $"only {compared} fixture lines were within the work limits");
+    }
+
+    /// <summary>With the alphabet restricted to digits and a few signs, nothing else comes out, and the free score is never worse.</summary>
+    [OpenCvFact]
+    public void ReadPieces_WithAnAlphabet_ChoosesOnlyFromIt()
+    {
+        var reader = new NameplateReader(Model);
+        const string allowed = "0123456789KM-_";
+        var alphabet = reader.CreateAlphabet(allowed);
+        Assert.Equal(Model.ClassCount, alphabet.Length);
+
+        var bent = 0;
+        foreach (var line in LetterFixtures.LoadLines().Where(l => l.Mask is not null))
+        {
+            var pieces = reader.ReadPieces(line.Mask!, alphabet);
+
+            foreach (var piece in pieces.Pieces)
+            {
+                Assert.All(piece.Text, c => Assert.Contains(c, allowed));
+                if (piece.Text.Length == 1)
+                {
+                    Assert.True(piece.FreeScore >= piece.Score - 1e-12);
+                    if (piece.FreeScore > piece.Score + 1e-6)
+                        bent++;
+                }
+            }
+        }
+
+        Assert.True(bent > 0, "none of the lines had a letter that the restriction had to change");
+    }
+
+    [Fact]
+    public void CreateAlphabet_NeedsCharactersOfTheModel()
+    {
+        var reader = new NameplateReader(Model);
+
+        Assert.Throws<ArgumentException>(() => reader.CreateAlphabet("abc.")); // lower case, dot: not in the charset
+        Assert.Throws<ArgumentException>(() => reader.CreateAlphabet(""));
+        Assert.Equal(2, reader.CreateAlphabet("A.B").Count(a => a));
+    }
+
+    /// <summary>A long run of touching ink is noise, not letters: it is given up on at once, not cut thousands of ways.</summary>
+    [OpenCvFact]
+    public void ReadPieces_GivesUpOnARunWiderThanEightCapitalHeights()
+    {
+        var reader = new NameplateReader(Model);
+        var solid = new LineMask(20, 400, Enumerable.Repeat((byte)1, 20 * 400).ToArray());
+
+        var pieces = reader.ReadPieces(solid);
+
+        var piece = Assert.Single(pieces.Pieces);
+        Assert.Equal(string.Empty, piece.Text);
+        Assert.Equal(-50.0, piece.Score);
+    }
 }
