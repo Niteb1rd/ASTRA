@@ -25,5 +25,9 @@ training-data/
 # IRIS's own app assets (for example its tray icon) are ours to commit, even though they are images.
 !src/Iris.App/Assets/**
 
+# The letter recognizer's parity fixtures are SYNTHETIC images (text drawn by a script on generated backgrounds), not game
+# imagery, so they are committed even though they are PNG files.
+!tests/Iris.Core.Tests/Fixtures/letters/**
+
 # Copies of RSI pages captured by tools/Iris.CaptureFixtures. Third-party content: keep local.
 tests/Iris.Core.Tests/Fixtures/rsi/
