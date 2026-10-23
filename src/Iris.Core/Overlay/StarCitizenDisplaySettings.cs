@@ -68,8 +68,9 @@ public static class StarCitizenDisplaySettings
     }
 
     /// <summary>
-    /// The mode in the text of an attributes.xml: the <c>value</c> of the first <c>&lt;Attr name="WindowMode" .../&gt;</c>. Null when the text is not
-    /// valid XML (before that element), the element is missing, the value is not a whole number or it is not 0, 1 or 2.
+    /// The mode in the text of an attributes.xml: the <c>value</c> of the first <c>&lt;Attr name="WindowMode" .../&gt;</c>. Star Citizen removes that
+    /// line when Windowed is chosen, so a complete, valid file WITHOUT it means <see cref="WindowMode.Windowed"/>. Null (unknown) when the text is
+    /// not valid XML, the element has no value, the value is not a whole number or it is not 0, 1 or 2.
     /// The XML is parsed without DTDs and without resolving anything external.
     /// </summary>
     public static WindowMode? ParseWindowMode(string? xmlText)
@@ -108,7 +109,7 @@ public static class StarCitizenDisplaySettings
                     _ => null,
                 };
             }
-            return null;
+            return WindowMode.Windowed; // the whole file was read and is valid XML, with no WindowMode line: the game writes it that way for Windowed
         }
         catch (Exception ex) when (ex is XmlException or InvalidOperationException or ArgumentException)
         {

@@ -27,7 +27,7 @@ public sealed record GameWindowSnapshot(GameWindowState State, PixelRect Bounds,
 /// Every 250 ms it asks Windows for the foreground window and which process owns it; the process name is remembered per process id,
 /// so nothing else happens while another program is in front (a "not the game" answer is kept for 5 seconds, a "game" answer for 60). Only when the game is in front are its rectangle, its monitor and its
 /// style read, and the game's Display Mode (<see cref="StarCitizenDisplaySettings"/>: the WindowMode line of the attributes.xml that belongs to the
-/// running exe; read only, read each time the game window comes to the front). <see cref="Changed"/> is raised (on the UI thread) when the snapshot differs from the previous one; state changes are logged. <see cref="Checked"/> is raised after every check.
+/// running exe; read only, read once per IRIS run). <see cref="Changed"/> is raised (on the UI thread) when the snapshot differs from the previous one; state changes are logged. <see cref="Checked"/> is raised after every check.
 /// </summary>
 public sealed class GameWindowTracker : IDisposable
 {
@@ -49,8 +49,9 @@ public sealed class GameWindowTracker : IDisposable
 
     private const int GameInfoMaxEntries = 16;
 
-    // The window that was in front at the previous check: the display setting file is read when the game's window comes to the front.
-    private IntPtr _lastForeground;
+    // Display modes read so far, by attributes.xml path: each file is read ONCE per IRIS run (the user rarely changes the mode; restarting
+    // IRIS reads it again). A different install (LIVE, PTU, ...) has its own file and is read once too.
+    private readonly Dictionary<string, WindowMode?> _modeByFile = new(StringComparer.OrdinalIgnoreCase);
 
     public GameWindowTracker(ILog log, IClock clock)
     {
@@ -113,8 +114,6 @@ public sealed class GameWindowTracker : IDisposable
     private GameWindowSnapshot Evaluate()
     {
         var foreground = NativeMethods.GetForegroundWindow();
-        var cameToFront = foreground != _lastForeground;
-        _lastForeground = foreground;
         if (foreground == IntPtr.Zero)
             return GameWindowSnapshot.None;
         if (NativeMethods.GetWindowThreadProcessId(foreground, out var processId) == 0 || processId == 0)
@@ -129,7 +128,7 @@ public sealed class GameWindowTracker : IDisposable
             return GameWindowSnapshot.None;
 
         var style = NativeMethods.GetStyle(foreground);
-        var mode = ReadGameMode(processId, cameToFront);
+        var mode = ReadGameMode(processId);
         var state = GameWindowRules.Decide(true, window, monitor, style, mode);
         return new GameWindowSnapshot(state, window, (int)processId, foreground, style, monitor, mode);
     }
@@ -190,16 +189,16 @@ public sealed class GameWindowTracker : IDisposable
 
     /// <summary>
     /// The game's Display Mode from its own attributes.xml (null = unknown: the window style check decides then). The file is found relative to the
-    /// running exe and read only when the game's window has just come to the front (tabbing in, or the game starting); in between, the value
-    /// read then is used. A read that fails (file locked or half written) is tried again at the next check until it succeeds.
+    /// running exe the first time the game is in front, and read ONCE per IRIS run; after that the value read then is used. A read that fails
+    /// (file locked or half written) is tried again at the next check until it succeeds.
     /// </summary>
-    private WindowMode? ReadGameMode(uint processId, bool cameToFront)
+    private WindowMode? ReadGameMode(uint processId)
     {
         if (!_gameInfo.TryGetValue(processId, out var info))
             info = RefreshGameInfo(processId);
 
-        if (cameToFront)
-            info.NeedsRead = true;
+        if (info.AttributesPath is not null && _modeByFile.TryGetValue(info.AttributesPath, out var known))
+            return known; // already read during this run
         if (!info.NeedsRead)
             return info.Mode;
 
@@ -209,7 +208,7 @@ public sealed class GameWindowTracker : IDisposable
                 info.AttributesPath = StarCitizenDisplaySettings.AttributesPathFor(info.ExePath, File.Exists, FindAttributesCandidates);
             if (info.AttributesPath is null)
             {
-                info.NeedsRead = false; // looked again at the next tab-in
+                info.NeedsRead = false; // not looked for again for this game process
                 if (!info.NotFoundLogged)
                 {
                     info.NotFoundLogged = true;
@@ -238,6 +237,7 @@ public sealed class GameWindowTracker : IDisposable
 
         info.NeedsRead = false;
         info.Mode = parsed;
+        _modeByFile[info.AttributesPath] = parsed;
         if (parsed is not null)
         {
             info.UnusableLogged = false;

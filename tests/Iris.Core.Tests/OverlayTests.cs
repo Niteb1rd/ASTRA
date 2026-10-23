@@ -664,15 +664,22 @@ public class StarCitizenDisplaySettingsTests
     [Fact]
     public void OtherAttributesNamedLikeIt_AreNotConfused()
     {
-        Assert.Null(StarCitizenDisplaySettings.ParseWindowMode("<Attributes><Attr name=\"WindowModeX\" value=\"1\"/><Attr name=\"windowmode\" value=\"1\"/></Attributes>"));
+        // no real WindowMode line in a valid file: Windowed (the game removes the line for Windowed)
+        Assert.Equal(WindowMode.Windowed,
+            StarCitizenDisplaySettings.ParseWindowMode("<Attributes><Attr name=\"WindowModeX\" value=\"1\"/><Attr name=\"windowmode\" value=\"1\"/></Attributes>"));
     }
 
     [Fact]
-    public void MissingAttributeOrMissingValue_GivesNull()
+    public void ValidFileWithoutWindowModeLine_IsWindowed()
     {
-        Assert.Null(StarCitizenDisplaySettings.ParseWindowMode("<Attributes><Attr name=\"Width\" value=\"1\"/></Attributes>"));
+        Assert.Equal(WindowMode.Windowed, StarCitizenDisplaySettings.ParseWindowMode("<Attributes><Attr name=\"Width\" value=\"1\"/></Attributes>"));
+        Assert.Equal(WindowMode.Windowed, StarCitizenDisplaySettings.ParseWindowMode("<Attributes/>"));
+    }
+
+    [Fact]
+    public void WindowModeLineWithoutValue_GivesNull()
+    {
         Assert.Null(StarCitizenDisplaySettings.ParseWindowMode("<Attributes><Attr name=\"WindowMode\"/></Attributes>"));
-        Assert.Null(StarCitizenDisplaySettings.ParseWindowMode("<Attributes/>"));
     }
 
     [Theory]

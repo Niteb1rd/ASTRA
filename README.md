@@ -99,7 +99,8 @@ covers its monitor and is not exclusive Fullscreen, because only then do window 
 the outside (no title bar, size of the monitor), which is why the window alone cannot tell them apart. The file is found relative to the running `StarCitizen.exe`
 (`<install>\Bin64\StarCitizen.exe` gives `<install>\user\client\0\Profiles\default\attributes.xml`, or else the most recently changed
 `<install>\user\client\*\Profiles\default\attributes.xml`), so LIVE, PTU and EPTU installs side by side each use their own. It is only ever read, never
-written, and read each time the game window comes to the front (when you tab into the game, or it starts). A mode changed inside the game is picked up the next time you tab back in. The log says which file
+written, and read only once per IRIS run (the first time the game is in front). Star Citizen removes the WindowMode line when Windowed is chosen, so a
+valid file without it counts as Windowed. A mode changed inside the game is picked up the next time IRIS starts. The log says which file
 is used and each mode change ("Star Citizen display mode: Fullscreen"). If the file cannot be found or read, IRIS falls back to the window check (no title bar or frame and exactly the
 size of the monitor). If the game is in front but not borderless, the overlay stays off and IRIS shows a small pop-up with a single **Close** button, naming the actual mode when it is known:
 "Star Citizen is in Fullscreen mode, so the IRIS overlay is turned off. Switch Display Mode to Borderless Windowed in the game's graphics settings." (or "Windowed mode"; when the mode
