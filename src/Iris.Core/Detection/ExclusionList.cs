@@ -35,6 +35,9 @@ public sealed class ExclusionList
     private readonly FileChangeDetector _detector;
     private HashSet<string> _names = new(StringComparer.OrdinalIgnoreCase);
 
+    // The same names in the accuracy look-alike form (0/O and 1/I folded together, see LookAlikes): what IsExcluded compares with.
+    private HashSet<string> _folded = new(StringComparer.Ordinal);
+
     // True while a problem (locked or missing file) has already been logged, so we log it only once.
     private bool _problemLogged;
 
@@ -81,14 +84,18 @@ public sealed class ExclusionList
         return reader.ReadToEnd();
     }
 
-    /// <summary>True if the name is on the list. Ignores upper/lower case and spaces around the name.</summary>
+    /// <summary>
+    /// True if the name is on the list. Ignores upper/lower case and spaces around the name, and tolerates the accuracy look-alikes of
+    /// <see cref="LookAlikes"/> (<c>0</c> for <c>O</c> and <c>1</c> for <c>I</c>, either way): a nameplate read as <c>UNKN0WN</c> is the
+    /// excluded name <c>UNKNOWN</c>. No other difference is tolerated.
+    /// </summary>
     public bool IsExcluded(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
             return false;
         var trimmed = name.Trim();
         lock (_gate)
-            return _names.Contains(trimmed);
+            return _names.Contains(trimmed) || _folded.Contains(LookAlikes.FoldName(trimmed));
     }
 
     /// <summary>A copy of the names on the list, as written in the file (no particular order).</summary>
@@ -147,7 +154,7 @@ public sealed class ExclusionList
             // The user may have added this name by hand since the last read. (If the file changed, ReloadCore leaves the "changed"
             // flag set for the next ReloadIfChanged; this call must not swallow that notification.)
             ReloadCore();
-            if (_names.Contains(trimmed))
+            if (_names.Contains(trimmed) || _folded.Contains(LookAlikes.FoldName(trimmed)))
                 return false;
 
             var date = _clock.UtcNow.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -197,6 +204,7 @@ public sealed class ExclusionList
             {
                 _detector.RememberFromDisk(); // our own append is not an outside edit
                 _names.Add(trimmed);
+                _folded.Add(LookAlikes.FoldName(trimmed));
             }
             else
             {
@@ -207,7 +215,7 @@ public sealed class ExclusionList
                 var expected = new HashSet<string>(_names, StringComparer.OrdinalIgnoreCase) { trimmed };
                 if (!onDisk.SetEquals(expected))
                     _changePending = true;
-                _names = onDisk;
+                SetNames(onDisk);
             }
 
             _log.Write(_clock.UtcNow, "Exclusion list: added \"" + trimmed + "\" automatically (" + cleanReason + ").");
@@ -222,7 +230,7 @@ public sealed class ExclusionList
         switch (change.Kind)
         {
             case FileChangeKind.Changed:
-                _names = ParseNames(change.Text!);
+                SetNames(ParseNames(change.Text!));
                 _problemLogged = false;
                 _changePending = true;
                 return true;
@@ -239,6 +247,13 @@ public sealed class ExclusionList
                 _problemLogged = false;
                 return false;
         }
+    }
+
+    // Caller holds _gate. Replaces the list (and its look-alike form).
+    private void SetNames(HashSet<string> names)
+    {
+        _names = names;
+        _folded = new HashSet<string>(names.Select(LookAlikes.FoldName), StringComparer.Ordinal);
     }
 
     /// <summary>The names in the text of an exclusion file: one per line, trimmed; blank lines and # comments are skipped.</summary>

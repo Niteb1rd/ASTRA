@@ -5,56 +5,55 @@ namespace Iris.Core.Tests;
 
 public class NameMatcherTests
 {
-    [Fact]
-    public void ConfusableCharacters_CostLessThanOtherSubstitutions()
-    {
-        Assert.Equal(0.0, NameMatcher.SubstitutionCost('A', 'A'));
-        Assert.Equal(0.35, NameMatcher.SubstitutionCost('0', 'O'));
-        Assert.Equal(0.35, NameMatcher.SubstitutionCost('D', 'Q'));
-        Assert.Equal(0.35, NameMatcher.SubstitutionCost('7', 'L'));
-        Assert.Equal(0.35, NameMatcher.SubstitutionCost('X', 'K'));
-        Assert.Equal(1.0, NameMatcher.SubstitutionCost('0', '1'));
-        Assert.Equal(1.0, NameMatcher.SubstitutionCost('A', 'B'));
-    }
-
     [Theory]
-    [InlineData("ABC", "ABC", 0.0)]
-    [InlineData("ABC", "ABCD", 1.0)]
-    [InlineData("", "ABC", 3.0)]
-    [InlineData("ABC", "", 3.0)]
-    [InlineData("B0B", "BOB", 0.35)]
-    [InlineData("KITTEN", "SITTING", 3.0)]
-    public void WeightedDistance_IsTheEditDistanceWithCheapConfusions(string a, string b, double expected)
+    [InlineData("ALPHA_ONE", "ALPHA_ONE", true)]
+    [InlineData("ALPHA_ONE", "alpha_one", true)]     // case does not matter
+    [InlineData("ALPHA_0NE", "ALPHA_ONE", true)]     // 0 <-> O
+    [InlineData("ALPHA_ONE", "ALPHA_0NE", true)]
+    [InlineData("L1GHT", "LIGHT", true)]             // 1 <-> I
+    [InlineData("LIGHT", "L1GHT", true)]
+    [InlineData("B0B1", "BOBI", true)]
+    [InlineData("ALPHA_ONE", "ALPHA_0N3", false)]    // 3 is not a look-alike of E
+    [InlineData("ABCD", "ABXD", false)]              // no other edit tolerance: K/N/X, D/Q/O, 5/S, 8/B, 6/G, 2/Z, L/1/7 are different letters
+    [InlineData("QUIET", "0UIET", false)]
+    [InlineData("DUCK", "0UCK", false)]
+    [InlineData("SAND", "5AND", false)]
+    [InlineData("BLUE", "8LUE", false)]
+    [InlineData("LION", "1ION", false)]
+    [InlineData("LION", "7ION", false)]
+    [InlineData("ALPHA", "ALPHAS", false)]           // a missing or an extra letter is not tolerated
+    public void Matches_ToleratesOnlyTheAccuracyLookAlikes(string a, string b, bool expected)
     {
-        Assert.Equal(expected, NameMatcher.WeightedDistance(a, b), 9);
-        Assert.Equal(expected, NameMatcher.WeightedDistance(b, a), 9);
+        Assert.Equal(expected, NameMatcher.Matches(a, b));
+        Assert.Equal(expected, NameMatcher.Matches(b, a));
     }
 
     [Fact]
-    public void BestMatch_FindsTheLikelyName()
+    public void BestMatch_FindsTheNameOfTheVocabulary()
     {
         var vocabulary = new[] { "ALPHA_ONE", "BRAVO-TWO", "CHARLIE3" };
 
         Assert.Equal("ALPHA_ONE", NameMatcher.BestMatch("ALPHA_ONE", vocabulary));
-        Assert.Equal("ALPHA_ONE", NameMatcher.BestMatch("ALPHA_0NE", vocabulary));   // confusable: 0.35
-        Assert.Equal("BRAVO-TWO", NameMatcher.BestMatch("BRAV0-TW0", vocabulary));   // 0.7 <= max(1, 1.8)
-        Assert.Equal("CHARLIE3", NameMatcher.BestMatch("CHARLIE", vocabulary));      // one missing letter, limit max(1, 1.6)
+        Assert.Equal("ALPHA_ONE", NameMatcher.BestMatch("ALPHA_0NE", vocabulary));
+        Assert.Equal("BRAVO-TWO", NameMatcher.BestMatch("BRAV0-TW0", vocabulary));
+        Assert.Equal("CHARLIE3", NameMatcher.BestMatch("charlie3", vocabulary));
     }
 
     [Fact]
-    public void BestMatch_RefusesWhatIsTooFarOffOrTooDifferentInLength()
+    public void BestMatch_AnExactMatchBeatsALookAlikeMatch()
+    {
+        Assert.Equal("B0B1", NameMatcher.BestMatch("B0B1", new[] { "BOBI", "B0B1" }));
+        Assert.Equal("BOBI", NameMatcher.BestMatch("B0B1", new[] { "BOBI" }));
+    }
+
+    [Fact]
+    public void BestMatch_ReturnsNullWhenNothingMatches()
     {
         var vocabulary = new[] { "ALPHA_ONE", "BRAVO-TWO" };
 
-        Assert.Null(NameMatcher.BestMatch("ZZZZZ_ZZZ", vocabulary));  // same length, far off
-        Assert.Null(NameMatcher.BestMatch("ALPHA", vocabulary));      // more than 2 characters shorter: not even compared
+        Assert.Null(NameMatcher.BestMatch("ALPHA_ON", vocabulary));        // one letter short: no edit tolerance
+        Assert.Null(NameMatcher.BestMatch("ALPHA_ONF", vocabulary));
         Assert.Null(NameMatcher.BestMatch("ALPHA_ONE", Array.Empty<string>()));
-    }
-
-    [Fact]
-    public void BestMatch_ShortNamesAllowOneEdit()
-    {
-        Assert.Equal("ABCD", NameMatcher.BestMatch("ABXD", new[] { "ABCD" }));   // 1.0 <= max(1, 0.8)
-        Assert.Null(NameMatcher.BestMatch("AXYD", new[] { "ABCD" }));            // 2.0 > 1
+        Assert.Null(NameMatcher.BestMatch("", vocabulary));
     }
 }

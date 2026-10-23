@@ -285,4 +285,32 @@ public class ExclusionListTests : IDisposable
         Assert.True(list.ReloadIfChanged());
         Assert.False(list.ReloadIfChanged());
     }
+
+    [Fact]
+    public void IsExcluded_ToleratesTheAccuracyLookAlikes_Only()
+    {
+        var path = PathOf();
+        WriteRaw(path, "Hurston\nLorville\n");
+        var list = Load(path);
+
+        Assert.True(list.IsExcluded("HURST0N"));
+        Assert.True(list.IsExcluded("hurst0n"));
+        Assert.True(list.IsExcluded("L0RV1LLE"));
+        Assert.True(list.IsExcluded("LORVILLE"));
+        Assert.False(list.IsExcluded("HURSTQN"));
+        Assert.False(list.IsExcluded("LORV1LLEX"));
+    }
+
+    [Fact]
+    public void AddAutomatic_DoesNotAddALookAlikeOfAListedName()
+    {
+        var path = PathOf();
+        WriteRaw(path, "Hurston\n");
+        var list = Load(path);
+        var before = list.Count;
+
+        list.AddAutomatic("HURST0N", "test");
+
+        Assert.Equal(before, list.Count);
+    }
 }

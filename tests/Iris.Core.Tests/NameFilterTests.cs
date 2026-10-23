@@ -68,4 +68,37 @@ public class NameFilterTests : IDisposable
 
         Assert.True(NameFilter.ShouldIgnore("Bob", list, PlayersOnly("Bob")));
     }
+
+    [Theory]
+    [InlineData("PA-5968-XF")]
+    [InlineData("PA5968XF")]
+    [InlineData("pa-5968-xf")]
+    public void ContactCodes_AreIgnored_UnlessOnThePlayerList(string handle)
+    {
+        var list = ListWith("Other");
+        Assert.True(NameFilter.ShouldIgnore(handle, list, PlayersOnly()));
+        Assert.False(NameFilter.ShouldIgnore(handle, list, PlayersOnly(handle)));
+    }
+
+    [Fact]
+    public void ContactCodeOnThePlayerList_IsKept_AlsoWithLookAlikes()
+    {
+        var list = ListWith("Other");
+
+        // the handle of a real player that has the shape of a code; the read has a zero where the handle has an O
+        Assert.False(NameFilter.ShouldIgnore("0A-5968-XF", list, PlayersOnly("OA-5968-XF")));
+        Assert.True(NameFilter.ShouldIgnore("0A-5968-XF", list, PlayersOnly("OA-5968-XX")));
+    }
+
+    [Fact]
+    public void ExcludedNames_AreMatchedWithLookAlikes_ButNothingElse()
+    {
+        var list = ListWith("Hurston", "Lorville");
+
+        Assert.True(NameFilter.ShouldIgnore("HURST0N", list, PlayersOnly()));     // 0 for O
+        Assert.True(NameFilter.ShouldIgnore("L0RV1LLE", list, PlayersOnly()));    // 0 for O, 1 for I
+        Assert.False(NameFilter.ShouldIgnore("HURSTQN", list, PlayersOnly()));    // Q is not a look-alike of O for names
+        Assert.True(NameFilter.ShouldIgnore("HURST0N", list, PlayersOnly("Nitebird")));
+        Assert.False(NameFilter.ShouldIgnore("HURST0N", list, PlayersOnly("Hurston")));   // the player list wins, also through a look-alike
+    }
 }
