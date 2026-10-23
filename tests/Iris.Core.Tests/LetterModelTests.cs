@@ -15,8 +15,8 @@ public class LetterModelTests
 
         Assert.Equal(NameplateFeatures.VectorLength, model.InputSize);
         Assert.Equal(388, model.InputSize);
-        Assert.Equal("-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_", model.Charset);
-        Assert.Equal(38, model.ClassCount);
+        Assert.Equal("-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_km", model.Charset);
+        Assert.Equal(41, model.ClassCount);
     }
 
     /// <summary>PARITY WITH PYTHON: 200 synthetic vectors, log probabilities within 1e-4 of the Python reference.</summary>

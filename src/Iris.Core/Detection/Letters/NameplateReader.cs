@@ -43,6 +43,13 @@ public sealed class NameplateReader
     /// <summary>A cut search over more candidate letter spans than this is not tried either (real runs need at most about 600).</summary>
     public const int MaxSplitSpans = 1500;
 
+    /// <summary>
+    /// A piece of ink with less ink than this fraction of (capital height)^2 is noise and is skipped. Names use this value.
+    /// A distance line needs its decimal point, a tiny speck: it is read in distance mode with a much smaller limit
+    /// (<see cref="NameplateDetectorSettings.DistanceMinInk"/> in the detector).
+    /// </summary>
+    public const double NameMinInk = 0.02;
+
     private readonly LetterModel _model;
 
     public NameplateReader(LetterModel model)
@@ -67,7 +74,7 @@ public sealed class NameplateReader
     }
 
     /// <summary>Reads an already prepared mask (<c>read_mask</c>).</summary>
-    public NameplateRead ReadMask(LineMask m) => ReadCore(m, null, false, null, out _);
+    public NameplateRead ReadMask(LineMask m) => ReadCore(m, null, false, NameMinInk, null, out _);
 
     /// <summary>
     /// Makes the list of characters a restricted read may choose from: element i is true when output i of the model is one of
@@ -95,28 +102,30 @@ public sealed class NameplateReader
     /// Reads the line inside <paramref name="box"/> piece by piece, choosing every letter among <paramref name="allowed"/> only
     /// (null: the whole charset), and giving up on runs of ink that are too wide to be text (<see cref="MaxPieceCaps"/>,
     /// <see cref="MaxSplitSpans"/>), which keeps the time per line bounded on noise. Returns null when the box holds no text.
+    /// <paramref name="minInk"/> is the noise limit (see <see cref="NameMinInk"/>); the distance mode of the detector passes a smaller one
+    /// so that the period of "5.8km" is kept.
     /// </summary>
-    public PieceRead? ReadPieces(Mat bgr, Rect box, bool[]? allowed = null)
+    public PieceRead? ReadPieces(Mat bgr, Rect box, bool[]? allowed = null, double minInk = NameMinInk)
     {
         var mask = NameplateFeatures.CreateMask(bgr, box);
-        return mask is null ? null : ReadPieces(mask, allowed);
+        return mask is null ? null : ReadPieces(mask, allowed, minInk);
     }
 
-    /// <summary>The mask overload of <see cref="ReadPieces(Mat, Rect, bool[])"/>.</summary>
-    public PieceRead ReadPieces(LineMask m, bool[]? allowed = null)
+    /// <summary>The mask overload of <see cref="ReadPieces(Mat, Rect, bool[], double)"/>.</summary>
+    public PieceRead ReadPieces(LineMask m, bool[]? allowed = null, double minInk = NameMinInk)
     {
         if (allowed is not null && allowed.Length != _model.ClassCount)
             throw new ArgumentException("The alphabet has to have one entry per character of the model.", nameof(allowed));
         var pieces = new List<ReadPiece>();
-        ReadCore(m, allowed, true, pieces, out var cap);
+        ReadCore(m, allowed, true, minInk, pieces, out var cap);
         return new PieceRead(pieces, cap);
     }
 
     /// <summary>
     /// <c>read_mask</c> with two additions that the plain <see cref="ReadMask"/> leaves out: an optional restriction of the
-    /// alphabet, and (<paramref name="limitWork"/>) the work limits for runs of ink that are too wide to be text.
+    /// alphabet, (<paramref name="limitWork"/>) the work limits for runs of ink that are too wide to be text, and the noise limit <paramref name="minInk"/>.
     /// </summary>
-    private NameplateRead ReadCore(LineMask m, bool[]? allowed, bool limitWork, List<ReadPiece>? pieces, out int capHeight)
+    private NameplateRead ReadCore(LineMask m, bool[]? allowed, bool limitWork, double minInk, List<ReadPiece>? pieces, out int capHeight)
     {
         var band = NameplateFeatures.FindCapBand(m);
         var cap = band.Bottom - band.Top + 1;
@@ -143,7 +152,7 @@ public sealed class NameplateReader
             for (var y = 0; y < m.Height; y++)
                 for (var x = a; x < b; x++)
                     ink += m.Data[y * m.Width + x];
-            if (ink < 0.02 * cap * cap) // specks of noise
+            if (ink < minInk * cap * cap) // specks of noise
                 continue;
 
             if (b - a <= 1.2 * cap)

@@ -280,9 +280,10 @@ public class NameplateReaderTests
     {
         var reader = new NameplateReader(Model);
 
-        Assert.Throws<ArgumentException>(() => reader.CreateAlphabet("abc.")); // lower case, dot: not in the charset
+        Assert.Throws<ArgumentException>(() => reader.CreateAlphabet("abc")); // lower case a, b, c: not in the charset (only k and m are, with the dot)
         Assert.Throws<ArgumentException>(() => reader.CreateAlphabet(""));
-        Assert.Equal(2, reader.CreateAlphabet("A.B").Count(a => a));
+        Assert.Equal(3, reader.CreateAlphabet("A.B").Count(a => a));
+        Assert.Equal(3, reader.CreateAlphabet(".km").Count(a => a));
     }
 
     /// <summary>A long run of touching ink is noise, not letters: it is given up on at once, not cut thousands of ways.</summary>
