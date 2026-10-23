@@ -371,55 +371,20 @@ public class TestOverlayBuilderTests
 
 public class GameWindowRulesTests
 {
-    private static readonly PixelRect Monitor = new(0, 0, 2560, 1440);
-    private const uint Popup = 0x80000000;   // WS_POPUP
-    private const uint Visible = 0x10000000; // WS_VISIBLE
-
-    [Fact]
-    public void PopupWindowCoveringTheMonitor_IsBorderless()
-    {
-        Assert.True(GameWindowRules.IsBorderless(Monitor, Monitor, Popup | Visible));
-    }
-
-    [Fact]
-    public void BorderlessOnASecondMonitor_IsBorderless()
-    {
-        var second = new PixelRect(2560, -200, 1920, 1080);
-
-        Assert.True(GameWindowRules.IsBorderless(second, second, Popup | Visible));
-    }
-
-    [Theory]
-    [InlineData(0x00C00000u)] // WS_CAPTION
-    [InlineData(0x00800000u)] // WS_BORDER alone
-    [InlineData(0x00400000u)] // WS_DLGFRAME alone
-    [InlineData(0x00040000u)] // WS_THICKFRAME
-    [InlineData(0x00CF0000u)] // WS_OVERLAPPEDWINDOW-like
-    public void CaptionOrFrameStyle_IsNotBorderless(uint extra)
-    {
-        Assert.False(GameWindowRules.IsBorderless(Monitor, Monitor, Popup | Visible | extra));
-    }
-
-    [Fact]
-    public void WindowThatDoesNotCoverTheMonitor_IsNotBorderless()
-    {
-        Assert.False(GameWindowRules.IsBorderless(new PixelRect(0, 0, 2560, 1439), Monitor, Popup));
-        Assert.False(GameWindowRules.IsBorderless(new PixelRect(1, 0, 2560, 1440), Monitor, Popup));
-        Assert.False(GameWindowRules.IsBorderless(new PixelRect(0, 0, 1920, 1080), Monitor, Popup));
-    }
-
-    [Fact]
-    public void EmptyRectangles_AreNotBorderless()
-    {
-        Assert.False(GameWindowRules.IsBorderless(default, default, Popup));
-    }
-
     [Fact]
     public void Decide_GivesTheThreeStates()
     {
-        Assert.Equal(GameWindowState.GameNotActive, GameWindowRules.Decide(false, Monitor, Monitor, Popup));
-        Assert.Equal(GameWindowState.Ready, GameWindowRules.Decide(true, Monitor, Monitor, Popup));
-        Assert.Equal(GameWindowState.NotBorderless, GameWindowRules.Decide(true, new PixelRect(100, 100, 1600, 900), Monitor, Popup | 0x00C00000u));
+        Assert.Equal(GameWindowState.GameNotActive, GameWindowRules.Decide(false, WindowMode.Borderless));
+        Assert.Equal(GameWindowState.Ready, GameWindowRules.Decide(true, WindowMode.Borderless));
+        Assert.Equal(GameWindowState.NotBorderless, GameWindowRules.Decide(true, WindowMode.Fullscreen));
+        Assert.Equal(GameWindowState.NotBorderless, GameWindowRules.Decide(true, WindowMode.Windowed));
+    }
+
+    [Fact]
+    public void Decide_ModeNotSettledYet_IsNotActive()
+    {
+        // between a failed first read and the retry a second later: no overlay and no notice
+        Assert.Equal(GameWindowState.GameNotActive, GameWindowRules.Decide(true, null));
     }
 
     [Fact]
@@ -496,32 +461,6 @@ public class GameWindowRulesTests
 
 public class GameWindowModeTests
 {
-    private static readonly PixelRect Monitor = new(0, 0, 2560, 1440);
-    private static readonly PixelRect Smaller = new(100, 100, 1600, 900);
-    private const uint PopupStyle = 0x80000000;   // WS_POPUP: no caption, no frame
-    private const uint FramedStyle = PopupStyle | 0x00C00000u | 0x00040000u; // caption + resizable frame
-
-    [Theory]
-    [InlineData(WindowMode.Borderless, true, PopupStyle, GameWindowState.Ready)]
-    [InlineData(WindowMode.Borderless, true, FramedStyle, GameWindowState.Ready)]      // the setting says borderless: the style is tolerated
-    [InlineData(WindowMode.Borderless, false, PopupStyle, GameWindowState.NotBorderless)] // ...but the window must fill the monitor
-    [InlineData(WindowMode.Borderless, false, FramedStyle, GameWindowState.NotBorderless)]
-    [InlineData(WindowMode.Fullscreen, true, PopupStyle, GameWindowState.NotBorderless)] // exclusive fullscreen looks like borderless to the style check
-    [InlineData(WindowMode.Fullscreen, true, FramedStyle, GameWindowState.NotBorderless)]
-    [InlineData(WindowMode.Fullscreen, false, PopupStyle, GameWindowState.NotBorderless)]
-    [InlineData(WindowMode.Windowed, true, PopupStyle, GameWindowState.NotBorderless)]
-    [InlineData(WindowMode.Windowed, false, FramedStyle, GameWindowState.NotBorderless)]
-    [InlineData(null, true, PopupStyle, GameWindowState.Ready)]                     // unknown: the window style check decides
-    [InlineData(null, true, FramedStyle, GameWindowState.NotBorderless)]
-    [InlineData(null, false, PopupStyle, GameWindowState.NotBorderless)]
-    [InlineData(null, false, FramedStyle, GameWindowState.NotBorderless)]
-    public void Decide_UsesTheGameMode_WhenKnown(WindowMode? mode, bool fillsMonitor, uint style, GameWindowState expected)
-    {
-        var window = fillsMonitor ? Monitor : Smaller;
-
-        Assert.Equal(expected, GameWindowRules.Decide(true, window, Monitor, style, mode));
-    }
-
     [Theory]
     [InlineData(WindowMode.Borderless)]
     [InlineData(WindowMode.Fullscreen)]
@@ -529,13 +468,7 @@ public class GameWindowModeTests
     [InlineData(null)]
     public void Decide_GameNotInFront_IsAlwaysNotActive(WindowMode? mode)
     {
-        Assert.Equal(GameWindowState.GameNotActive, GameWindowRules.Decide(false, Monitor, Monitor, PopupStyle, mode));
-    }
-
-    [Fact]
-    public void Decide_BorderlessWithEmptyRectangles_IsNotReady()
-    {
-        Assert.Equal(GameWindowState.NotBorderless, GameWindowRules.Decide(true, default, default, PopupStyle, WindowMode.Borderless));
+        Assert.Equal(GameWindowState.GameNotActive, GameWindowRules.Decide(false, mode));
     }
 
     [Fact]

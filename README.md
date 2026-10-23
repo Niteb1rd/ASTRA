@@ -101,13 +101,14 @@ the outside (no title bar, size of the monitor), which is why the window alone c
 `<install>\user\client\*\Profiles\default\attributes.xml`), so LIVE, PTU and EPTU installs side by side each use their own. It is only ever read, never
 written, and read only once per IRIS run (the first time the game is in front). Star Citizen removes the WindowMode line when Windowed is chosen, so a
 valid file without it counts as Windowed. A mode changed inside the game is picked up the next time IRIS starts. The log says which file
-is used and each mode change ("Star Citizen display mode: Fullscreen"). If the file cannot be found or read, IRIS falls back to the window check (no title bar or frame and exactly the
-size of the monitor). If the game is in front but not borderless, the overlay stays off and IRIS shows a small pop-up with a single **Close** button, naming the actual mode when it is known:
+is used and the mode read ("Star Citizen display mode: Fullscreen"). The setting alone decides; the window's shape is not looked at. If the file cannot be
+found, read or understood, IRIS tries once more a second later; if that fails too, it logs "Failed to open attributes.xml, assuming Borderless mode" and
+treats the game as Borderless. If the game is in front but not borderless, the overlay stays off and IRIS shows a small pop-up with a single **Close** button, naming the actual mode when it is known:
 "Star Citizen is in Fullscreen mode, so the IRIS overlay is turned off. Switch Display Mode to Borderless Windowed in the game's graphics settings." (or "Windowed mode"; when the mode
 is unknown: "Star Citizen is not in borderless windowed mode, so the IRIS overlay is turned off. Switch to Borderless in the game's graphics settings."). It is shown at most once per run of IRIS (not once per game session),
 never while Disable Overlay is on, and not while another IRIS pop-up is open. IRIS looks at every 250 ms check, not only when the window state changes, so a game that was already running in a non-borderless mode when IRIS started gets the notice too, and a skipped moment is tried again at the next check. Like IRIS's other pop-ups it does not take the focus from the game: it waits in the taskbar, and there is no tray balloon. It is not a question that IRIS waits for: the tray's Settings and Quit work while it is open (Quit closes it).
 **Disable Overlay** (tray) hides it, see "Disable Overlay, Disable Info Panel and hotkeys" below. The overlay window is created the first time it is needed and afterwards only hidden. While the game is not in front, the only work IRIS does is
-a check of the foreground window every 250 ms. State changes (game in front, borderless or not) are written to the log.
+a check of the foreground window every 250 ms.
 
 **Test overlay.** Settings tab > Overlay > **Show test overlay (15 s)** shows a sample for 15 seconds: up to 3 players from your player list, 2 org-list
 examples (an org SID from your list with a made-up handle), 1 org-attribute example (if you have a rule) and 2 No Match examples (`TestPilot01`, `TestPilot02`, "Orgs: not looked up").

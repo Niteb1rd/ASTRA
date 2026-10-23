@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Windows.Threading;
@@ -25,9 +24,10 @@ public sealed record GameWindowSnapshot(GameWindowState State, PixelRect Bounds,
 /// <summary>
 /// Watches whether Star Citizen is the window in front and whether it is borderless (<see cref="GameWindowRules"/>).
 /// Every 250 ms it asks Windows for the foreground window and which process owns it; the process name is remembered per process id,
-/// so nothing else happens while another program is in front (a "not the game" answer is kept for 5 seconds, a "game" answer for 60). Only when the game is in front are its rectangle, its monitor and its
-/// style read, and the game's Display Mode (<see cref="StarCitizenDisplaySettings"/>: the WindowMode line of the attributes.xml that belongs to the
-/// running exe; read only, read once per IRIS run). <see cref="Changed"/> is raised (on the UI thread) when the snapshot differs from the previous one; state changes are logged. <see cref="Checked"/> is raised after every check.
+/// so nothing else happens while another program is in front (a "not the game" answer is kept for 5 seconds, a "game" answer for 60). Only when the game is in front are its rectangle (to place the
+/// overlay), its monitor and its style read. Whether it is borderless comes ONLY from the game's Display Mode (<see cref="StarCitizenDisplaySettings"/>: the WindowMode line of the
+/// attributes.xml that belongs to the running exe; read only, once per IRIS run, one retry, then Borderless is assumed). <see cref="Changed"/> is raised (on the UI thread) when the
+/// snapshot differs from the previous one. <see cref="Checked"/> is raised after every check.
 /// </summary>
 public sealed class GameWindowTracker : IDisposable
 {
@@ -103,8 +103,6 @@ public sealed class GameWindowTracker : IDisposable
         if (snapshot != previous)
         {
             Current = snapshot;
-            if (previous.State != snapshot.State)
-                LogChange(previous, snapshot);
             Changed?.Invoke(this, snapshot);
         }
 
@@ -129,7 +127,7 @@ public sealed class GameWindowTracker : IDisposable
 
         var style = NativeMethods.GetStyle(foreground);
         var mode = ReadGameMode(processId);
-        var state = GameWindowRules.Decide(true, window, monitor, style, mode);
+        var state = GameWindowRules.Decide(true, mode);
         return new GameWindowSnapshot(state, window, (int)processId, foreground, style, monitor, mode);
     }
 
@@ -165,11 +163,10 @@ public sealed class GameWindowTracker : IDisposable
 
         public string? ExePath { get; }
         public string? AttributesPath { get; set; }
-        public bool NotFoundLogged { get; set; }
-        public bool UnusableLogged { get; set; }
-        public bool NeedsRead { get; set; } = true;
+        public bool Settled { get; set; }
+        public int Attempts { get; set; }
+        public long RetryAtMs { get; set; }
         public WindowMode? Mode { get; set; }
-        public WindowMode? LoggedMode { get; set; }
     }
 
     /// <summary>Asks Windows for the exe of the game process and keeps the entry for it (a new entry when the exe is a different one).</summary>
@@ -188,71 +185,54 @@ public sealed class GameWindowTracker : IDisposable
     }
 
     /// <summary>
-    /// The game's Display Mode from its own attributes.xml (null = unknown: the window style check decides then). The file is found relative to the
-    /// running exe the first time the game is in front, and read ONCE per IRIS run; after that the value read then is used. A read that fails
-    /// (file locked or half written) is tried again at the next check until it succeeds.
+    /// The game's Display Mode, decided ONLY from its own attributes.xml (found relative to the running exe), read once per IRIS run.
+    /// If the first read fails (no exe path, file not found, unreadable, or not valid XML), it is tried once more a second later; if that fails
+    /// too, IRIS logs it and assumes Borderless. Null while that second read is still due: no overlay and no notice in the meantime.
     /// </summary>
     private WindowMode? ReadGameMode(uint processId)
     {
         if (!_gameInfo.TryGetValue(processId, out var info))
             info = RefreshGameInfo(processId);
+        if (info.Settled)
+            return info.Mode;
 
+        var now = Environment.TickCount64;
+        if (info.Attempts == 1 && now < info.RetryAtMs)
+            return null; // the second try is due a second after the first
+
+        if (info.AttributesPath is null && info.ExePath is not null)
+            info.AttributesPath = StarCitizenDisplaySettings.AttributesPathFor(info.ExePath, File.Exists, FindAttributesCandidates);
         if (info.AttributesPath is not null && _modeByFile.TryGetValue(info.AttributesPath, out var known))
-            return known; // already read during this run
-        if (!info.NeedsRead)
-            return info.Mode;
+            return Settle(info, known); // read already during this run
 
-        if (info.AttributesPath is null)
-        {
-            if (info.ExePath is not null)
-                info.AttributesPath = StarCitizenDisplaySettings.AttributesPathFor(info.ExePath, File.Exists, FindAttributesCandidates);
-            if (info.AttributesPath is null)
-            {
-                info.NeedsRead = false; // not looked for again for this game process
-                if (!info.NotFoundLogged)
-                {
-                    info.NotFoundLogged = true;
-                    _log.Write(_clock.UtcNow, "Star Citizen display settings (attributes.xml) not found, using the window check");
-                }
-                return info.Mode;
-            }
-            _log.Write(_clock.UtcNow, $"Star Citizen display settings file: {info.AttributesPath}");
-        }
-
-        var text = TryReadText(info.AttributesPath);
-        if (text is null)
-            return info.Mode; // locked or gone for the moment: keep the last known value, try again at the next check
-
+        info.Attempts++;
+        var text = info.AttributesPath is null ? null : TryReadText(info.AttributesPath);
         var parsed = StarCitizenDisplaySettings.ParseWindowMode(text);
-        if (parsed is null && info.Mode is not null)
-        {
-            // possibly a half-written file: keep the last known value and try again at the next check
-            if (!info.UnusableLogged)
-            {
-                info.UnusableLogged = true;
-                _log.Write(_clock.UtcNow, $"Star Citizen display settings: WindowMode could not be read, keeping {info.Mode}");
-            }
-            return info.Mode;
-        }
-
-        info.NeedsRead = false;
-        info.Mode = parsed;
-        _modeByFile[info.AttributesPath] = parsed;
         if (parsed is not null)
         {
-            info.UnusableLogged = false;
-            if (parsed != info.LoggedMode)
-            {
-                info.LoggedMode = parsed;
-                _log.Write(_clock.UtcNow, $"Star Citizen display mode: {parsed}");
-            }
+            _log.Write(_clock.UtcNow, $"Star Citizen display settings file: {info.AttributesPath}");
+            _log.Write(_clock.UtcNow, $"Star Citizen display mode: {parsed}");
+            _modeByFile[info.AttributesPath!] = parsed;
+            return Settle(info, parsed);
         }
-        else if (!info.UnusableLogged)
+
+        if (info.Attempts == 1)
         {
-            info.UnusableLogged = true;
-            _log.Write(_clock.UtcNow, "Star Citizen display settings: no usable WindowMode value, using the window check");
+            info.RetryAtMs = now + 1_000;
+            return null;
         }
-        return info.Mode;
+
+        _log.Write(_clock.UtcNow, "Failed to open attributes.xml, assuming Borderless mode");
+        if (info.AttributesPath is not null)
+            _modeByFile[info.AttributesPath] = WindowMode.Borderless;
+        return Settle(info, WindowMode.Borderless);
+    }
+
+    private static WindowMode? Settle(GameProcessInfo info, WindowMode? mode)
+    {
+        info.Settled = true;
+        info.Mode = mode;
+        return mode;
     }
 
     private static string? TryReadText(string path)
@@ -333,22 +313,5 @@ public sealed class GameWindowTracker : IDisposable
 
         bounds = default;
         return false;
-    }
-
-    private void LogChange(GameWindowSnapshot from, GameWindowSnapshot to)
-    {
-        // Once the game's own display mode is known (logged as "Star Citizen display mode: ..."), the window details add nothing:
-        // only log them when IRIS has to rely on the window check, where they help diagnose a wrong decision.
-        // Exception: the setting says Borderless but the window does not fill its monitor (yet) - worth the details.
-        var unexpected = to.State == GameWindowState.NotBorderless && to.Mode == WindowMode.Borderless;
-        if ((from.Mode is not null || to.Mode is not null) && !unexpected)
-            return;
-        var detail = to.State == GameWindowState.GameNotActive
-            ? string.Empty
-            : string.Format(CultureInfo.InvariantCulture, " (process {0}, window {1}x{2} at {3},{4}, style 0x{5:X8}, monitor {6}x{7} at {8},{9}, game display mode {10})",
-                to.ProcessId, to.Bounds.Width, to.Bounds.Height, to.Bounds.X, to.Bounds.Y,
-                to.Style, to.Monitor.Width, to.Monitor.Height, to.Monitor.X, to.Monitor.Y,
-                to.Mode?.ToString() ?? "unknown");
-        _log.Write(_clock.UtcNow, $"Game window: {from.State} -> {to.State}{detail}");
     }
 }

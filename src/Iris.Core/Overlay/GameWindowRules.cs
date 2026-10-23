@@ -6,57 +6,30 @@ public enum GameWindowState
     /// <summary>Star Citizen is not running, not in front, or minimized: no overlay.</summary>
     GameNotActive,
 
-    /// <summary>Star Citizen is in front but is not a borderless window covering its monitor: no overlay (it would not line up).</summary>
+    /// <summary>Star Citizen is in front but its Display Mode is Windowed or Fullscreen: no overlay.</summary>
     NotBorderless,
 
-    /// <summary>Star Citizen is in front and borderless: the overlay may be shown over it.</summary>
+    /// <summary>Star Citizen is in front and its Display Mode is Borderless Windowed: the overlay may be shown over it.</summary>
     Ready,
 }
 
 /// <summary>
-/// The overlay's rules about the game window, as pure functions over rectangles and window style flags
-/// (the Windows calls that read them live in the app).
+/// The overlay's rule about the game window. The game's Display Mode comes ONLY from its own attributes.xml (see
+/// <see cref="StarCitizenDisplaySettings"/>); the window's shape and style are not looked at (an exclusive Fullscreen window looks exactly like
+/// a borderless one, and a borderless game can be smaller than its monitor for a moment while it loads).
 /// </summary>
 public static class GameWindowRules
 {
-    /// <summary>WS_CAPTION (title bar and border): 0x00C00000.</summary>
-    public const uint StyleCaption = 0x00C00000;
-
-    /// <summary>WS_THICKFRAME (resizable frame): 0x00040000.</summary>
-    public const uint StyleThickFrame = 0x00040000;
-
-    /// <summary>
-    /// Borderless = no caption bits, no resizable frame, and the window rectangle is exactly the monitor's rectangle.
-    /// </summary>
-    public static bool IsBorderless(PixelRect window, PixelRect monitor, uint style)
-    {
-        if ((style & StyleCaption) != 0 || (style & StyleThickFrame) != 0)
-            return false;
-        return !window.IsEmpty && window == monitor;
-    }
-
-    /// <summary>The window is not empty and exactly covers the monitor (the style is not looked at).</summary>
-    public static bool FillsMonitor(PixelRect window, PixelRect monitor) => !window.IsEmpty && window == monitor;
-
     /// <summary>
     /// The state for the window in front: <paramref name="isStarCitizenInFront"/> false is always <see cref="GameWindowState.GameNotActive"/>.
-    /// <paramref name="gameMode"/> is the game's own Display Mode setting when it could be read: Borderless is Ready only if the window also
-    /// fills the monitor (the style is then not looked at), Windowed and Fullscreen are always NotBorderless (an exclusive Fullscreen window looks
-    /// exactly like a borderless one to the window style check). When it is null (unknown) the window style check decides.
+    /// Borderless is Ready; Windowed and Fullscreen are NotBorderless. Null means the mode is not settled yet (the first read failed and the
+    /// second is due a second later): no overlay and no notice yet, so it counts as <see cref="GameWindowState.GameNotActive"/>.
     /// </summary>
-    public static GameWindowState Decide(bool isStarCitizenInFront, PixelRect window, PixelRect monitor, uint style, WindowMode? gameMode = null)
+    public static GameWindowState Decide(bool isStarCitizenInFront, WindowMode? gameMode)
     {
-        if (!isStarCitizenInFront)
+        if (!isStarCitizenInFront || gameMode is null)
             return GameWindowState.GameNotActive;
-
-        var borderless = gameMode switch
-        {
-            WindowMode.Borderless => FillsMonitor(window, monitor),
-            WindowMode.Windowed => false,
-            WindowMode.Fullscreen => false,
-            _ => IsBorderless(window, monitor, style),
-        };
-        return borderless ? GameWindowState.Ready : GameWindowState.NotBorderless;
+        return gameMode == WindowMode.Borderless ? GameWindowState.Ready : GameWindowState.NotBorderless;
     }
 }
 
