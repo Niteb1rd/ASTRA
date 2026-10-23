@@ -214,13 +214,24 @@ public class NameplateReaderTests
         Assert.Equal(NameplateRead.Empty, reader.Read(image, new Rect(5, 5, 30, 12))); // flat image: no text
     }
 
-    /// <summary>The piece by piece read says the same as the plain read: same text, same total score.</summary>
+    /// <summary>
+    /// The piece by piece read says the same as the plain read: same text, same total score. Only for lines the work limits leave
+    /// alone: <see cref="NameplateReader.ReadPieces(LineMask, bool[])"/> refuses to cut a run of ink wider than
+    /// <see cref="NameplateReader.MaxPieceCaps"/> capital heights (or with too many candidate spans), the plain read does not.
+    /// </summary>
     [OpenCvFact]
     public void ReadPieces_SumUpToTheSameAsReadMask()
     {
         var reader = new NameplateReader(Model);
+        var compared = 0;
         foreach (var line in LetterFixtures.LoadLines().Where(l => l.Mask is not null))
         {
+            var band = NameplateFeatures.FindCapBand(line.Mask!);
+            var cap = band.Bottom - band.Top + 1;
+            if (NameplateFeatures.GapCuts(line.Mask!).Any(c => c.End - c.Start > NameplateReader.MaxPieceCaps * cap))
+                continue; // a run the work limit refuses to cut
+            compared++;
+
             var plain = reader.ReadMask(line.Mask!);
             var pieces = reader.ReadPieces(line.Mask!);
 
@@ -231,6 +242,8 @@ public class NameplateReaderTests
             for (var i = 1; i < pieces.Pieces.Count; i++)
                 Assert.True(pieces.Pieces[i].Start >= pieces.Pieces[i - 1].End);
         }
+
+        Assert.True(compared >= 10, $"only {compared} fixture lines were within the work limits");
     }
 
     /// <summary>With the alphabet restricted to digits and a few signs, nothing else comes out, and the free score is never worse.</summary>

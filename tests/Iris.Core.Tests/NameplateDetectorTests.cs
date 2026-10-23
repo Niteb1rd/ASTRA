@@ -72,7 +72,7 @@ public class NameplateDetectorTests
         Assert.Equal(22, s.Scale(1440, 22));
         Assert.Equal(5, s.Scale(1080, 7));     // 5.25
         Assert.Equal(17, s.Scale(1080, 22));   // 16.5 rounds up
-        Assert.Equal(22, s.Scale(2160, 11));   // 4K
+        Assert.Equal(17, s.Scale(2160, 11));   // 4K: 16.5 rounds up
         Assert.Equal(1, s.Scale(100, 1));      // never below 1
     }
 
