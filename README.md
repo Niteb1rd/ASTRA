@@ -7,7 +7,7 @@ and summarizes their orgs in a side panel. See the requirements doc for the full
 
 ## Status
 
-Phase 3, step 1 adds the nameplate letter recognizer (no screen capture yet; see "Phase 3, step 1" below). Phase 2: the overlay shell. IRIS runs as a tray app with a Social Overlay config window, and now has the overlay window itself (brackets and the right-hand panel), driven by test data only: there is no screen capture yet, so the real overlay stays empty until Phase 3 feeds it detections. The Settings tab has an Overlay section and a "Show test overlay (15 s)" button to try it. See "Phase 2: the overlay" below.
+Phase 3, step 2 adds the nameplate detector and a replay tool (see "Phase 3, step 2" below); step 1 added the nameplate letter recognizer (no screen capture yet; see "Phase 3, step 1" below). Phase 2: the overlay shell. IRIS runs as a tray app with a Social Overlay config window, and now has the overlay window itself (brackets and the right-hand panel), driven by test data only: there is no screen capture yet, so the real overlay stays empty until Phase 3 feeds it detections. The Settings tab has an Overlay section and a "Show test overlay (15 s)" button to try it. See "Phase 2: the overlay" below.
 
 - `src/Iris.Core`: config file (TOML) read, write and validate; color and bracket rules; right-panel org line (increment 1).
 - `src/Iris.Core/Rsi`: reads robertsspaceindustries.com. Pure parsers for the player organizations page, the org page and the
@@ -30,6 +30,7 @@ Phase 3, step 1 adds the nameplate letter recognizer (no screen capture yet; see
   It has no automated tests yet; everything testable lives in `Iris.Core`.
 - `tests/Iris.Core.Tests`: automated tests for all of the above. Tests that need real RSI pages are skipped until you capture them.
 - `tools/Iris.CaptureFixtures`: saves a few real RSI pages for those tests.
+- `tools/Iris.Replay`: developer tool that runs the nameplate detector over a video or a folder of frames and measures recall (Phase 3, step 2).
 
 The page parsers were written without access to RSI's real pages. Their CSS selectors and label texts are guesses, collected as
 named constants at the top of each parser. Capture the fixtures and run the tests to find out which guesses are right.
@@ -206,6 +207,50 @@ megabytes (the Windows x64 build) and `IRIS.exe`'s folder to grow by a similar a
 
 ReLU follows every layer except the last; softmax follows the last. The reader clips each probability to at least 1e-6 and takes its logarithm.
 `LetterModel.Load` rejects files with a wrong magic, version or shape, or with missing or extra bytes.
+
+## Phase 3, step 2: the nameplate detector and the replay tool
+
+The detector finds nameplates in a whole frame and reads them with the letter model of step 1 (`src/Iris.Core/Detection/NameplateDetector.cs`).
+It does not use Tesseract or any other OCR: IRIS does not ship one. It returns, per nameplate, the name, a score, the name box and the distance line
+(box and text) under it. The rule, in the order it is applied:
+
+1. **Colour mask.** Top-hat (11x11) on each colour channel, then the cyan/white, red and green rules of the prototype (`detect.py`).
+2. **Tall blobs dropped.** Connected components taller than 22 px are removed (ship hulls, bright planets, UI frames).
+3. **Text lines and pairs.** Dilation 7x1, connected components, size and fill filters give text lines; a name line is paired with the line under it.
+4. **Scan region.** Default x 15-85 %, y 10-70 % of the frame (`NameplateDetectorSettings`; the replay tool takes `--region`).
+5. **Read and confirm.** The upper line is read with the letter model (4 to 25 characters, score per letter at least -0.20). The lower line must then look like
+   a distance, such as `9.05km` or `209m`: it is read with the same model restricted to `0-9 K M - _` (a letter forced into a digit is rejected by the gap between the
+   restricted and the free best score), and the shape of the result is checked (digits, optional decimal mark, then a unit K or M, a small limit on glued characters).
+   The model has never seen lowercase `km` / `m` or the decimal point, so the check works on token shapes rather than exact characters. A number without a unit is accepted
+   only when the name is very sure (score per letter at least -0.15, 6 or more characters).
+6. **Stacked rule.** A nameplate directly above an already confirmed one (the game stacks plates of ships close together) is accepted without its own distance line.
+
+Noise protection: a run of ink wider than 8 capital heights, or a cut search of more than 1500 candidate spans, is not cut (the line reads as nothing).
+
+**Resolution.** The pixel constants (22 px height, kernels, line sizes, gaps) are tuned for a 3440x1440 frame and are scaled by `frame height / 1440` (rounded, at least 1; the
+top-hat kernel is kept odd). The letter reader itself is not scaled: it works from the capital height of the line. Other aspect ratios use the same factor, so the scan region
+fractions apply to the actual width and height. Frames much smaller than 1080 lines high are not tuned or tested.
+
+**Parity fixtures.** `tests/Iris.Core.Tests/Fixtures/detector/` has four synthetic frames (fake nameplates in the game's colours with made-up names, plus decoys: single lines, speed lines such as
+`209m/s(9.05km)`, bars, stars) and `detector.json` with the stages (boxes, pairs, detections) of the Python reference. `NameplateDetectorTests` compare the C# detector with it.
+They were made by a script of the local training kit; like the letter fixtures they check agreement with the reference, not accuracy on real footage.
+
+### Replay tool (developer tool)
+
+`tools/Iris.Replay` runs the detector over a recording and reports what it finds. It is for tuning and checking on your own footage; your footage, labels and results stay
+outside the repository (the tool refuses to write into a folder that is inside a git repository).
+
+    dotnet run --project tools/Iris.Replay -- <input> [--labels FILE] [--out FOLDER] [--annotate] [--every N] [--model FILE] [--region L,R,T,B]
+
+- `<input>`: a video file, a folder of images or screenshots, a folder with one sub folder (or video) per clip, or one image. Videos are opened with OpenCV's `VideoCapture`; the
+  `OpenCvSharp4.runtime.win` package may not include an FFmpeg backend for every codec. If a video does not open, cut it into frames
+  (`ffmpeg -i clip.mp4 -vf fps=10 frames\%05d.jpg`) and give the folder.
+- `--labels`: `clips.txt` (`clip: NAME1, NAME2`) or `screenshots.csv` (`file,expected_players,notes`, names separated by `;`). With labels the tool prints recall and wrong-read measures
+  per clip (or per image): names read exactly, (frame, name) pairs found exactly or fuzzy (`NameMatcher`, the weighted edit distance with the confusable groups `0OQD 1IL7 5S 8B 6G 2Z KNX`),
+  and wrong reads (not a label, not a word of the exclusion list).
+- `--out`: default `%LOCALAPPDATA%\Iris\replay`. It gets `detections.csv` (`source,frame,name,score,x,y,w,h,distance,...`). With `--annotate` it also gets PNGs with the boxes and reads in `annotated\<clip>\`.
+- The console shows a per-clip summary: frames, frames with a nameplate, nameplates, distinct names, and ms per frame (median, 95th percentile).
+- `--every N` uses every Nth frame.
 
 ## Build and test (Windows)
 
