@@ -225,7 +225,9 @@ It does not use Tesseract or any other OCR: IRIS does not ship one. It returns, 
    only when the name is very sure (score per letter at least -0.15, 6 or more characters).
 6. **Stacked rule.** A nameplate directly above an already confirmed one (the game stacks plates of ships close together) is accepted without its own distance line.
 
-Noise protection: a run of ink wider than 8 capital heights, or a cut search of more than 1500 candidate spans, is not cut (the line reads as nothing).
+Noise protection: a run of ink wider than 8 capital heights, or a cut search of more than 1500 candidate spans, is not cut: that run reads as nothing and scores -50, which fails the name check.
+
+**Work budget (differs from the Python reference).** A frame reads at most `MaxCandidateTopsPerFrame` (default 24) different name lines; further candidate pairs are ignored. The reference has no such limit; the budget only protects the frame time on very noisy frames, and real frames and the parity fixtures stay far below it.
 
 **Resolution.** The pixel constants (22 px height, kernels, line sizes, gaps) are tuned for a 3440x1440 frame and are scaled by `frame height / 1440` (rounded, at least 1; the
 top-hat kernel is kept odd). The letter reader itself is not scaled: it works from the capital height of the line. Other aspect ratios use the same factor, so the scan region
@@ -250,7 +252,9 @@ outside the repository (the tool refuses to write into a folder that is inside a
   and wrong reads (not a label, not a word of the exclusion list).
 - `--out`: default `%LOCALAPPDATA%\Iris\replay`. It gets `detections.csv` (`source,frame,name,score,x,y,w,h,distance,...`). With `--annotate` it also gets PNGs with the boxes and reads in `annotated\<clip>\`.
 - The console shows a per-clip summary: frames, frames with a nameplate, nameplates, distinct names, and ms per frame (median, 95th percentile).
-- `--every N` uses every Nth frame.
+- `--every N` uses every Nth frame. For a video every frame is still decoded (the decoder has to run); the option saves detection time only.
+- A video that does not open does not stop the run: it is reported as `(skipped: ...)` and the next clip is replayed; the summary and the measures are still printed.
+- With labels from a clip list, the measures table is followed by the names of each clip that were never read exactly (marked when only a close read was found).
 
 ## Build and test (Windows)
 

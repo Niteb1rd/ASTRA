@@ -1,10 +1,16 @@
 using Iris.Core.Detection;
+using System.Text.RegularExpressions;
 using Iris.Replay;
 using Xunit;
 
 namespace Iris.Core.Tests;
 
-/// <summary>The developer tool tools/Iris.Replay: command line, label files, recall measures and one run over the synthetic frames.</summary>
+/// <summary>
+/// The developer tool tools/Iris.Replay: command line, label files, recall measures and one run over the synthetic frames.
+/// Two tests redirect Console.Out / Console.Error, which are process wide: the "Console" collection keeps them from running in
+/// parallel with other test classes.
+/// </summary>
+[Collection("Console")]
 public class ReplayToolTests
 {
     // ------------------------------------------------------------------------------------------------ command line
@@ -41,15 +47,21 @@ public class ReplayToolTests
         Assert.EndsWith(Path.Combine("Iris", "replay"), options.OutDirectory);
     }
 
+    /// <summary>Argument lists the parser must refuse. TheoryData, because an InlineData array argument would be spread into the parameters.</summary>
+    public static TheoryData<string[]> BadArgs => new()
+    {
+        new string[0],
+        new[] { "a", "b" },
+        new[] { "a", "--every" },
+        new[] { "a", "--every", "0" },
+        new[] { "a", "--every", "x" },
+        new[] { "a", "--region", "0.1,0.2" },
+        new[] { "a", "--region", "0.9,0.1,0.1,0.7" },
+        new[] { "a", "--bogus" },
+    };
+
     [Theory]
-    [InlineData(new string[0])]
-    [InlineData(new[] { "a", "b" })]
-    [InlineData(new[] { "a", "--every" })]
-    [InlineData(new[] { "a", "--every", "0" })]
-    [InlineData(new[] { "a", "--every", "x" })]
-    [InlineData(new[] { "a", "--region", "0.1,0.2" })]
-    [InlineData(new[] { "a", "--region", "0.9,0.1,0.1,0.7" })]
-    [InlineData(new[] { "a", "--bogus" })]
+    [MemberData(nameof(BadArgs))]
     public void Options_RejectWhatIsWrong(string[] args)
     {
         var options = ReplayOptions.Parse(args, out var error);
@@ -138,6 +150,20 @@ public class ReplayToolTests
     }
 
     [Fact]
+    public void Metrics_ListTheNamesNeverReadExactly()
+    {
+        var labels = ClipLabels.ParseClipList("clip1: ALPHA_ONE, BRAVO-TWO, CHARLIE3\n");
+        var metrics = new ReplayMetrics(labels, Array.Empty<string>());
+
+        metrics.AddFrame("clip1", "f1", 1, new[] { Detection("BRAVO-TWO"), Detection("ALPHA_0NE") }, out _);
+
+        var text = metrics.Format();
+        Assert.Contains("Names never read exactly:", text);
+        Assert.Contains("clip1: ALPHA_ONE (close reads only), CHARLIE3", text);
+        Assert.DoesNotContain("BRAVO-TWO (", text);
+    }
+
+    [Fact]
     public void Metrics_ForScreenshotsCountEachImage()
     {
         var labels = ClipLabels.ParseScreenshotCsv("file,expected_players\nshot1.jpg,ALPHA_ONE\nshot2.jpg,\n");
@@ -156,7 +182,7 @@ public class ReplayToolTests
     [Theory]
     [InlineData("f00041.jpg", 41)]
     [InlineData("clip1_000123.png", 123)]
-    [InlineData("ScreenShot-2026-10-20_18-51-54-C92.jpg", 92)]
+    [InlineData("Sample-Capture_Invented-C92.jpg", 92)]
     public void TrailingNumber_IsTheLastDigitRun(string file, int expected)
     {
         Assert.Equal(expected, FrameSources.TrailingNumber(file));
@@ -192,6 +218,8 @@ public class ReplayToolTests
     /// <summary>
     /// The tool over the synthetic detector frames, as a folder of images: it writes detections.csv with the nameplates of the
     /// frames, the label measures, and annotated images.
+    /// Note: the input and output folders are made in the system temp folder (%TEMP%). The tool refuses to write inside a git
+    /// repository, so if %TEMP% itself lies inside one (a .git folder in a parent folder), this test fails with exit code 2.
     /// </summary>
     [OpenCvFact]
     public void ReplayOverSyntheticFrames_WritesTheReport()
@@ -226,7 +254,8 @@ public class ReplayToolTests
             Assert.Contains(lines, l => l.StartsWith("synthetic/frame_a.png,") && l.Contains(",SYNTH_ALPHA,"));
             Assert.Contains(lines, l => l.StartsWith("synthetic/frame_b.png,") && l.Contains(",DUMMY_DELTA,"));
             Assert.DoesNotContain(lines, l => l.StartsWith("synthetic/frame_d.png,")); // stars only
-            Assert.Contains("4 ", console.ToString()); // the 4 frames
+            // the summary line: "ALL", then the number of frames replayed (the 4 synthetic frames)
+            Assert.Matches(new Regex(@"^ALL\s+4\s", RegexOptions.Multiline), console.ToString());
             Assert.Contains("TOTAL", console.ToString());
             Assert.True(File.Exists(Path.Combine(output, "annotated", "synthetic", "frame_a.png")));
             Assert.False(File.Exists(Path.Combine(output, "annotated", "synthetic", "frame_d.png")));
@@ -259,4 +288,10 @@ public class ReplayToolTests
             Directory.Delete(root, true);
         }
     }
+}
+
+/// <summary>Tests that redirect the process wide console streams do not run in parallel with any other test.</summary>
+[CollectionDefinition("Console", DisableParallelization = true)]
+public sealed class ConsoleCollection
+{
 }

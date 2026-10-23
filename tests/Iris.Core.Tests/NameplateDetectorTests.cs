@@ -83,6 +83,7 @@ public class NameplateDetectorTests
         Assert.NotNull((NameplateDetectorSettings.Default with { RegionLeft = 0.9, RegionRight = 0.1 }).Validate());
         Assert.NotNull((NameplateDetectorSettings.Default with { RegionBottom = 1.5 }).Validate());
         Assert.NotNull((NameplateDetectorSettings.Default with { MinNameLength = 10, MaxNameLength = 4 }).Validate());
+        Assert.NotNull((NameplateDetectorSettings.Default with { MaxCandidateTopsPerFrame = 0 }).Validate());
     }
 
     /// <summary>Text lines and pairs (stages 2 to 4: mask, lines, pairing) equal the reference, with the default scan region and with the whole frame.</summary>

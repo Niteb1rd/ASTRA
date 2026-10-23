@@ -22,6 +22,11 @@ namespace Iris.Core.Detection;
 /// <see cref="NameplateDetectorSettings.ReferenceHeight"/>). The detector reuses its image buffers between frames, so one instance
 /// handles one frame at a time (it is not thread safe); give each thread its own, they can share the <see cref="NameplateReader"/>
 /// and its model. Dispose it when done.
+/// <para>
+/// One deliberate difference from the Python reference: a frame with very many candidate lines reads at most
+/// <see cref="NameplateDetectorSettings.MaxCandidateTopsPerFrame"/> of them (a work budget against noisy frames; the default is far
+/// above what real frames and the parity fixtures need).
+/// </para>
 /// </summary>
 public sealed class NameplateDetector : IDisposable
 {
@@ -46,13 +51,12 @@ public sealed class NameplateDetector : IDisposable
     private readonly Mat _scratch = new();
     private readonly Mat _mask = new();
     private readonly Mat _kept = new();
+    private readonly Mat _labelHit = new(); // scratch: pixels of one component inside its bounding box
     private readonly Mat _joined = new();
     private readonly Mat _labels = new();
     private readonly Mat _stats = new();
     private readonly Mat _centroids = new();
     private int[] _statsBuffer = Array.Empty<int>();
-    private int[] _labelBuffer = Array.Empty<int>();
-    private byte[] _keptBuffer = Array.Empty<byte>();
     private bool _disposed;
 
     public NameplateDetector(NameplateReader reader, NameplateDetectorSettings? settings = null)
@@ -83,16 +87,26 @@ public sealed class NameplateDetector : IDisposable
         var distances = new PieceRead?[boxes.Count];
         var distanceRead = new bool[boxes.Count];
         var confirmed = new HashSet<int>();
+        var namesRead = 0;
+
+        // Work budget (a deliberate difference from the Python reference, see NameplateDetectorSettings.MaxCandidateTopsPerFrame):
+        // at most that many different name lines are read per frame; once it is used up, pairs whose upper line is new are skipped.
+        bool CanRead(int i) => names[i] is not null || namesRead < _settings.MaxCandidateTopsPerFrame;
 
         (string Text, double Score) Name(int i)
         {
-            names[i] ??= ReadName(bgr, boxes[i]);
+            if (names[i] is null)
+            {
+                names[i] = ReadName(bgr, boxes[i]);
+                namesRead++;
+            }
+
             return names[i]!.Value;
         }
 
         foreach (var (top, bottom) in pairs)
         {
-            if (confirmed.Contains(top))
+            if (confirmed.Contains(top) || !CanRead(top))
                 continue;
             var (text, score) = Name(top);
             if (!IsName(text, score))
@@ -120,7 +134,7 @@ public sealed class NameplateDetector : IDisposable
         // stacked nameplates: a name directly above a confirmed name hides its own distance line
         foreach (var (top, bottom) in pairs)
         {
-            if (confirmed.Contains(top) || !confirmed.Contains(bottom))
+            if (confirmed.Contains(top) || !confirmed.Contains(bottom) || !CanRead(top))
                 continue;
             var (text, score) = Name(top);
             if (!IsName(text, score))
@@ -171,7 +185,7 @@ public sealed class NameplateDetector : IDisposable
         if (_disposed)
             return;
         _disposed = true;
-        foreach (var mat in new[] { _blue, _green, _red, _hat, _cyanWhite, _redMask, _greenMask, _scratch, _mask, _kept, _joined, _labels, _stats, _centroids })
+        foreach (var mat in new[] { _blue, _green, _red, _hat, _cyanWhite, _redMask, _greenMask, _scratch, _mask, _kept, _labelHit, _joined, _labels, _stats, _centroids })
             mat.Dispose();
         foreach (var kernel in _kernels.Values)
             kernel.Dispose();
@@ -315,20 +329,21 @@ public sealed class NameplateDetector : IDisposable
         if (!anyTall)
             return _mask;
 
-        var pixels = _mask.Rows * _mask.Cols;
-        if (_labelBuffer.Length < pixels)
-            _labelBuffer = new int[pixels];
-        if (_keptBuffer.Length < pixels)
-            _keptBuffer = new byte[pixels];
-        Marshal.Copy(_labels.Data, _labelBuffer, 0, pixels);
-        for (var p = 0; p < pixels; p++)
+        // Same result as keeping a pixel when its label is not 0 and its component is not too tall, without a loop over the
+        // pixels in managed code: copy the mask, then clear every tall component inside its bounding box (the label image says
+        // which pixels of the box belong to it; other shapes inside the same box stay).
+        _mask.CopyTo(_kept);
+        for (var i = 1; i < count; i++)
         {
-            var label = _labelBuffer[p];
-            _keptBuffer[p] = label != 0 && _statsBuffer[label * 5 + 3] <= maxHeight ? (byte)255 : (byte)0;
+            if (_statsBuffer[i * 5 + 3] <= maxHeight)
+                continue;
+            var box = new Rect(_statsBuffer[i * 5 + 0], _statsBuffer[i * 5 + 1], _statsBuffer[i * 5 + 2], _statsBuffer[i * 5 + 3]);
+            using var labelsRoi = new Mat(_labels, box);
+            using var keptRoi = new Mat(_kept, box);
+            Cv2.Compare(labelsRoi, new Scalar(i), _labelHit, CmpType.EQ);
+            keptRoi.SetTo(Scalar.All(0), _labelHit);
         }
 
-        _kept.Create(_mask.Rows, _mask.Cols, MatType.CV_8UC1);
-        Marshal.Copy(_keptBuffer, 0, _kept.Data, pixels);
         return _kept;
     }
 

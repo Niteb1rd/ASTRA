@@ -77,9 +77,10 @@ public static class FrameSources
     }
 
     /// <summary>
-    /// The frames of a clip, every <paramref name="every"/>th one. Video frames are decoded one at a time (frames that are skipped
-    /// are only advanced over, not decoded). Throws InvalidOperationException when a video cannot be opened. Images that cannot be
-    /// read are skipped and counted in <paramref name="unreadable"/>.
+    /// The frames of a clip, every <paramref name="every"/>th one. Every frame of a video is decoded: <c>Grab()</c> runs the FFmpeg
+    /// decoder, and only the conversion to an image (<c>Retrieve</c>) is skipped for the frames in between, so <c>--every</c> saves
+    /// detection time, not decoding time. Throws InvalidOperationException when a video cannot be opened. Images that cannot be
+    /// read are skipped and reported to <paramref name="unreadable"/> (with the path).
     /// </summary>
     public static IEnumerable<SourceFrame> Frames(ClipInput clip, int every, Action<string>? unreadable = null)
     {
@@ -117,10 +118,9 @@ public static class FrameSources
             if (index % every != 0)
                 continue;
             var path = clip.Images[index];
-            var image = Cv2.ImRead(path, ImreadModes.Color);
-            if (image.Empty())
+            var image = ReadImage(path);
+            if (image is null)
             {
-                image.Dispose();
                 unreadable?.Invoke(path);
                 continue;
             }
@@ -128,5 +128,25 @@ public static class FrameSources
             var fileName = Path.GetFileName(path);
             yield return new SourceFrame(clip.Clip, TrailingNumber(fileName) ?? index + 1, fileName, image);
         }
+    }
+
+    /// <summary>
+    /// Reads an image file as BGR. The bytes are read with .NET and decoded with <c>ImDecode</c>, because <c>ImRead</c> cannot open
+    /// paths with non-ASCII characters on Windows. Null when the file cannot be read or is not an image.
+    /// </summary>
+    internal static Mat? ReadImage(string path)
+    {
+        try
+        {
+            var image = Cv2.ImDecode(File.ReadAllBytes(path), ImreadModes.Color);
+            if (!image.Empty())
+                return image;
+            image.Dispose();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or OpenCVException)
+        {
+        }
+
+        return null;
     }
 }

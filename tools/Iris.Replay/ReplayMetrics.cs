@@ -176,6 +176,30 @@ public sealed class ReplayMetrics
         text.AppendLine();
         text.AppendLine("names = labeled names read exactly in at least one frame; exact / fuzzy = (frame, name) pairs found exactly / exactly or close;");
         text.AppendLine("fz-names = names found exactly or close; wrong = reads that are no labeled name and no excluded-type word; excl. = excluded-type words.");
+
+        if (_labels.Mode == LabelMode.ByClip)
+        {
+            var first = true;
+            foreach (var (key, g) in _groups)
+            {
+                var missing = (_labels.NamesFor(key) ?? Array.Empty<string>())
+                    .Distinct()
+                    .Where(n => !g.ExactFrames.ContainsKey(n))
+                    .Select(n => g.FuzzyFrames.ContainsKey(n) ? n + " (close reads only)" : n)
+                    .ToList();
+                if (missing.Count == 0)
+                    continue;
+                if (first)
+                {
+                    text.AppendLine();
+                    text.AppendLine("Names never read exactly:");
+                    first = false;
+                }
+
+                text.AppendLine($"  {key}: {string.Join(", ", missing)}");
+            }
+        }
+
         return text.ToString();
     }
 

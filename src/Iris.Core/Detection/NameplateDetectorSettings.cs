@@ -1,9 +1,9 @@
 namespace Iris.Core.Detection;
 
 /// <summary>
-/// The tunable numbers of <see cref="NameplateDetector"/>. The defaults were tuned on 13 gameplay clips and 14 screenshots at
-/// 3440x1440 (see the README section "Nameplate detector"); every pixel size below is given for a frame 1440 pixels high
-/// and is scaled with the real frame height (see <see cref="ReferenceHeight"/>).
+/// The tunable numbers of <see cref="NameplateDetector"/>. The defaults were tuned on gameplay footage at 3440x1440 (see the
+/// README section "Phase 3, step 2: the nameplate detector and the replay tool"); every pixel size below is given for a frame
+/// 1440 pixels high and is scaled with the real frame height (see <see cref="ReferenceHeight"/>).
 /// </summary>
 public sealed record NameplateDetectorSettings
 {
@@ -63,6 +63,14 @@ public sealed record NameplateDetectorSettings
     /// </summary>
     public int MaxGluedAfterUnit { get; init; } = 6;
 
+    /// <summary>
+    /// Work budget per frame: at most this many different name lines (the upper lines of candidate pairs) are read with the letter
+    /// model; further pairs are ignored. A deliberate difference from the Python reference, which has no such limit: a very noisy
+    /// frame (explosions, bright clouds) can produce hundreds of candidate lines, and every read costs milliseconds. Real frames
+    /// have a handful, so the default does not change the results on the parity fixtures.
+    /// </summary>
+    public int MaxCandidateTopsPerFrame { get; init; } = 24;
+
     /// <summary>A gap between two pieces of ink wider than this many capital heights is a space.</summary>
     public double WordGap { get; init; } = 0.33;
 
@@ -90,6 +98,8 @@ public sealed record NameplateDetectorSettings
             return "ReferenceHeight must be positive.";
         if (MinNameLength < 1 || MaxNameLength < MinNameLength)
             return "The name length limits are not usable.";
+        if (MaxCandidateTopsPerFrame < 1)
+            return "MaxCandidateTopsPerFrame must be at least 1.";
         return null;
     }
 }

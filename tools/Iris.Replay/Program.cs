@@ -68,8 +68,10 @@ public static class Program
         using var csv = new StreamWriter(csvPath, false, new UTF8Encoding(false));
         csv.WriteLine(CsvHeader);
 
-        Console.WriteLine($"Replaying {clips.Count} clip(s), every {options.Every}th frame, scan region " +
-            $"x {options.Settings.RegionLeft:P0}-{options.Settings.RegionRight:P0}, y {options.Settings.RegionTop:P0}-{options.Settings.RegionBottom:P0}.");
+        var inv = CultureInfo.InvariantCulture;
+        var step = options.Every == 1 ? "every frame" : string.Create(inv, $"every {options.Every} frames");
+        var settings = options.Settings;
+        Console.WriteLine(string.Create(inv, $"Replaying {clips.Count} clip(s), {step}, scan region x {settings.RegionLeft:P0}-{settings.RegionRight:P0}, y {settings.RegionTop:P0}-{settings.RegionBottom:P0}."));
         Console.WriteLine();
         Console.WriteLine(string.Format(CultureInfo.InvariantCulture, "{0,-24} {1,7} {2,10} {3,11} {4,9} {5,10} {6,9}",
             "clip", "frames", "with plate", "nameplates", "distinct", "ms median", "ms p95"));
@@ -83,38 +85,56 @@ public static class Program
             var plates = 0;
             var distinct = new HashSet<string>();
             var unreadable = 0;
+            var annotateFailures = new List<string>();
+            string? skipped = null;
 
-            foreach (var frame in FrameSources.Frames(clip, options.Every, _ => unreadable++))
+            try
             {
-                using var image = frame.Image;
-                var stopwatch = Stopwatch.StartNew();
-                var detections = detector.Detect(image);
-                stopwatch.Stop();
-                times.Add(stopwatch.Elapsed.TotalMilliseconds);
-
-                IReadOnlyList<(string? Label, bool Exact)> matches = Array.Empty<(string?, bool)>();
-                metrics?.AddFrame(frame.Clip, frame.Name, frame.Number, detections, out matches);
-
-                if (detections.Count > 0)
-                    withPlates++;
-                plates += detections.Count;
-                for (var i = 0; i < detections.Count; i++)
+                foreach (var frame in FrameSources.Frames(clip, options.Every, _ => unreadable++))
                 {
-                    distinct.Add(detections[i].Name);
-                    var match = i < matches.Count ? matches[i] : (Label: (string?)null, Exact: false);
-                    csv.WriteLine(CsvRow(clip.Clip, frame, detections[i], match.Label, match.Exact, metrics is not null));
-                }
+                    using var image = frame.Image;
+                    var stopwatch = Stopwatch.StartNew();
+                    var detections = detector.Detect(image);
+                    stopwatch.Stop();
+                    times.Add(stopwatch.Elapsed.TotalMilliseconds);
 
-                if (options.Annotate && detections.Count > 0)
-                    SaveAnnotated(image, detections, annotatedFolder, clip, frame);
+                    IReadOnlyList<(string? Label, bool Exact)> matches = Array.Empty<(string?, bool)>();
+                    metrics?.AddFrame(frame.Clip, frame.Name, frame.Number, detections, out matches);
+
+                    if (detections.Count > 0)
+                        withPlates++;
+                    plates += detections.Count;
+                    for (var i = 0; i < detections.Count; i++)
+                    {
+                        distinct.Add(detections[i].Name);
+                        var match = i < matches.Count ? matches[i] : (Label: (string?)null, Exact: false);
+                        csv.WriteLine(CsvRow(clip.Clip, frame, detections[i], match.Label, match.Exact, metrics is not null));
+                    }
+
+                    if (options.Annotate && detections.Count > 0)
+                    {
+                        var problem = SaveAnnotated(image, detections, annotatedFolder, clip, frame);
+                        if (problem is not null)
+                            annotateFailures.Add(problem);
+                    }
+                }
+            }
+            catch (Exception e) when (e is InvalidOperationException or OpenCVException)
+            {
+                // a video that will not open (or breaks) must not stop the other clips
+                skipped = e.Message;
             }
 
             totalFrames += times.Count;
             allTimes.AddRange(times);
             Console.WriteLine(string.Format(CultureInfo.InvariantCulture, "{0,-24} {1,7} {2,10} {3,11} {4,9} {5,10} {6,9}",
                 Shorten(clip.Clip, 24), times.Count, withPlates, plates, distinct.Count, Format(Median(times)), Format(Percentile95(times))));
+            if (skipped is not null)
+                Console.WriteLine($"  (skipped: {skipped})");
             if (unreadable > 0)
                 Console.WriteLine($"  ({unreadable} image file(s) of this clip could not be read and were skipped)");
+            if (annotateFailures.Count > 0)
+                Console.WriteLine($"  ({annotateFailures.Count} annotated image(s) could not be written, the first: {annotateFailures[0]})");
         }
 
         csv.Flush();
@@ -140,7 +160,8 @@ public static class Program
     private static string CsvRow(string clip, SourceFrame frame, NameplateDetection d, string? label, bool exact, bool labeled)
     {
         var inv = CultureInfo.InvariantCulture;
-        var source = frame.Name.Contains('#') || frame.Name == clip ? frame.Name : $"{clip}/{frame.Name}";
+        // a video frame (clip#number) and a single image (named like its clip) stand alone; an image in a folder is folder/file
+        var source = frame.Name.Contains('#') || Path.GetFileNameWithoutExtension(frame.Name) == clip ? frame.Name : $"{clip}/{frame.Name}";
         var fields = new[]
         {
             Escape(source),
@@ -160,7 +181,8 @@ public static class Program
     private static string Escape(string value) =>
         value.IndexOfAny(new[] { ',', '"', '\n', '\r' }) < 0 ? value : "\"" + value.Replace("\"", "\"\"") + "\"";
 
-    private static void SaveAnnotated(Mat image, IReadOnlyList<NameplateDetection> detections, string folder, ClipInput clip, SourceFrame frame)
+    /// <summary>Writes the annotated PNG. Returns null, or why it could not be written.</summary>
+    private static string? SaveAnnotated(Mat image, IReadOnlyList<NameplateDetection> detections, string folder, ClipInput clip, SourceFrame frame)
     {
         using var copy = image.Clone();
         var thickness = Math.Max(1, image.Height / 700);
@@ -175,9 +197,21 @@ public static class Program
         }
 
         var clipFolder = Path.Combine(folder, MakeSafe(clip.Clip));
-        Directory.CreateDirectory(clipFolder);
         var fileName = clip.VideoPath is null ? Path.GetFileNameWithoutExtension(frame.Name) : $"{frame.Number:D6}";
-        Cv2.ImWrite(Path.Combine(clipFolder, MakeSafe(fileName) + ".png"), copy);
+        var target = Path.Combine(clipFolder, MakeSafe(fileName) + ".png");
+        try
+        {
+            // ImEncode + File.WriteAllBytes instead of ImWrite: ImWrite cannot write paths with non-ASCII characters on Windows
+            if (!Cv2.ImEncode(".png", copy, out var png))
+                return $"{target}: PNG encoding failed";
+            Directory.CreateDirectory(clipFolder);
+            File.WriteAllBytes(target, png);
+            return null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or OpenCVException)
+        {
+            return $"{target}: {e.Message}";
+        }
     }
 
     private static Rect Inflate(Rect r, int by) => new(r.X - by, r.Y - by, r.Width + 2 * by, r.Height + 2 * by);
