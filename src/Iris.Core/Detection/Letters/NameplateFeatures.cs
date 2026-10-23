@@ -27,6 +27,16 @@ public static class NameplateFeatures
     public const int VectorLength = GlyphWidth * GlyphHeight + 4;
 
     /// <summary>
+    /// Structuring elements, made once and never changed (OpenCV only reads them). Kept in a class of their own so that the
+    /// native library is first touched when a mask is made, not when the managed-only members (cuts, capital band) are used.
+    /// </summary>
+    private static class Kernels
+    {
+        public static readonly Mat TopHat = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(31, 31));
+        public static readonly Mat Open = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(1, 3)); // 3 rows x 1 column
+    }
+
+    /// <summary>
     /// Text mask of the nameplate line inside <paramref name="box"/> of a BGR (8 bit, 3 channel) image (<c>line_mask</c>).
     /// Returns null when the crop has no text. <paramref name="threshold"/> null picks the contrast threshold per crop
     /// (Otsu's method, limited to 25..90).
@@ -77,7 +87,6 @@ public static class NameplateFeatures
         Cv2.Resize(crop, big, new Size(0, 0), Scale, Scale, InterpolationFlags.Cubic);
 
         // brightest local contrast over the three channels: max of the top-hats (31x31 rectangle)
-        using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(31, 31));
         var channels = Cv2.Split(big);
         using var topHat = new Mat();
         try
@@ -87,11 +96,11 @@ public static class NameplateFeatures
             {
                 if (i == 0)
                 {
-                    Cv2.MorphologyEx(channels[i], topHat, MorphTypes.TopHat, kernel);
+                    Cv2.MorphologyEx(channels[i], topHat, MorphTypes.TopHat, Kernels.TopHat);
                 }
                 else
                 {
-                    Cv2.MorphologyEx(channels[i], one, MorphTypes.TopHat, kernel);
+                    Cv2.MorphologyEx(channels[i], one, MorphTypes.TopHat, Kernels.TopHat);
                     Cv2.Max(topHat, one, topHat);
                 }
             }
@@ -118,9 +127,8 @@ public static class NameplateFeatures
         Cv2.Threshold(topHat, binary, thr, 1, ThresholdTypes.Binary); // 1 where top-hat > thr (strictly)
 
         // break 1-pixel bridges between touching letters: opening with a 3 rows x 1 column kernel
-        using var openKernel = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(1, 3));
         using var opened = new Mat();
-        Cv2.MorphologyEx(binary, opened, MorphTypes.Open, openKernel);
+        Cv2.MorphologyEx(binary, opened, MorphTypes.Open, Kernels.Open);
 
         var w = opened.Width;
         var h = opened.Height;
@@ -267,10 +275,28 @@ public static class NameplateFeatures
     /// <summary>
     /// The 388 numbers that describe the letter in columns [x0, x1) (<c>glyph_vec</c>): its bounding box shrunk or stretched to
     /// 16x24 (area averaging), then its width, height and offsets from the capital band, relative to the capital height, times 4.
-    /// Null when the columns hold no ink.
+    /// Null when the columns hold no ink. Allocates its work space on every call; <see cref="NameplateReader"/> uses the
+    /// allocation free overload below.
     /// </summary>
     public static double[]? GlyphVector(LineMask m, int x0, int x1, CapBand band)
     {
+        using var scratch = new GlyphScratch(m.Height, m.Width);
+        var vector = new double[VectorLength];
+        return GlyphVector(m, x0, x1, band, vector, scratch) ? vector : null;
+    }
+
+    /// <summary>
+    /// Same numbers as the overload above, written into <paramref name="vector"/> (at least <see cref="VectorLength"/> long) with
+    /// the buffers of <paramref name="scratch"/>, which must have been made for a mask at least as large as <paramref name="m"/>.
+    /// Returns false (and leaves <paramref name="vector"/> alone) when the columns hold no ink.
+    /// </summary>
+    internal static bool GlyphVector(LineMask m, int x0, int x1, CapBand band, Span<double> vector, GlyphScratch scratch)
+    {
+        if (vector.Length < VectorLength)
+            throw new ArgumentException($"The vector needs room for {VectorLength} values.", nameof(vector));
+        if (m.Height > scratch.MaxHeight || m.Width > scratch.MaxWidth)
+            throw new ArgumentException("The scratch is smaller than the mask.", nameof(scratch));
+
         x1 = Math.Min(x1, m.Width);
         var cap = Math.Max(1, band.Bottom - band.Top + 1);
         int rowMin = -1, rowMax = -1, colMin = int.MaxValue, colMax = -1;
@@ -291,41 +317,81 @@ public static class NameplateFeatures
         }
 
         if (rowMin < 0)
-            return null;
+            return false;
 
         var gh = rowMax - rowMin + 1;
         var gw = colMax - colMin + 1;
-        var pixels = new float[gh * gw];
+
+        // the bounding box as 32 bit floats, row by row, into the top left corner of the reusable source Mat
+        var srcStep = (int)scratch.Source.Step();
+        var row = scratch.Row;
         for (var y = 0; y < gh; y++)
-            for (var x = 0; x < gw; x++)
-                pixels[y * gw + x] = m.Data[(rowMin + y) * m.Width + colMin + x];
-
-        var vector = new double[VectorLength];
-        using (var src = new Mat(gh, gw, MatType.CV_32FC1))
-        using (var dst = new Mat())
         {
-            Marshal.Copy(pixels, 0, src.Data, pixels.Length);
-            Cv2.Resize(src, dst, new Size(GlyphWidth, GlyphHeight), 0, 0, InterpolationFlags.Area);
-            var small = new float[GlyphWidth * GlyphHeight];
-            if (dst.IsContinuous())
-            {
-                Marshal.Copy(dst.Data, small, 0, small.Length);
-            }
-            else
-            {
-                using var copy = dst.Clone();
-                Marshal.Copy(copy.Data, small, 0, small.Length);
-            }
-
-            for (var i = 0; i < small.Length; i++)
-                vector[i] = small[i];
+            for (var x = 0; x < gw; x++)
+                row[x] = m.Data[(rowMin + y) * m.Width + colMin + x];
+            Marshal.Copy(row, 0, scratch.Source.Data + y * srcStep, gw);
         }
+
+        using (var view = scratch.Source.SubMat(0, gh, 0, gw)) // a header over the same pixels, no copy
+        {
+            Cv2.Resize(view, scratch.Target, new Size(GlyphWidth, GlyphHeight), 0, 0, InterpolationFlags.Area);
+        }
+
+        var small = scratch.Small;
+        if (scratch.Target.IsContinuous())
+        {
+            Marshal.Copy(scratch.Target.Data, small, 0, small.Length);
+        }
+        else
+        {
+            using var copy = scratch.Target.Clone();
+            Marshal.Copy(copy.Data, small, 0, small.Length);
+        }
+
+        for (var i = 0; i < small.Length; i++)
+            vector[i] = small[i];
 
         var n = GlyphWidth * GlyphHeight;
         vector[n] = (double)gw / cap * 4.0;
         vector[n + 1] = (double)gh / cap * 4.0;
         vector[n + 2] = (double)(rowMin - band.Top) / cap * 4.0;
         vector[n + 3] = (double)(rowMax - band.Bottom) / cap * 4.0;
-        return vector;
+        return true;
+    }
+}
+
+/// <summary>
+/// Reusable work space for <see cref="NameplateFeatures.GlyphVector(LineMask, int, int, CapBand, Span{double}, GlyphScratch)"/>:
+/// one 32 bit float Mat big enough for any letter box of the mask, one 16x24 result Mat, and the managed buffers between them.
+/// Made once per reader call, so the many candidate letters of a split do not allocate. Not thread safe: one per thread.
+/// </summary>
+internal sealed class GlyphScratch : IDisposable
+{
+    public GlyphScratch(int maxHeight, int maxWidth)
+    {
+        MaxHeight = maxHeight;
+        MaxWidth = maxWidth;
+        Source = new Mat(maxHeight, maxWidth, MatType.CV_32FC1); // a fresh Mat is continuous: rows are maxWidth floats apart
+        Target = new Mat(NameplateFeatures.GlyphHeight, NameplateFeatures.GlyphWidth, MatType.CV_32FC1);
+        Row = new float[maxWidth];
+        Small = new float[NameplateFeatures.GlyphWidth * NameplateFeatures.GlyphHeight];
+    }
+
+    public int MaxHeight { get; }
+
+    public int MaxWidth { get; }
+
+    public Mat Source { get; }
+
+    public Mat Target { get; }
+
+    public float[] Row { get; }
+
+    public float[] Small { get; }
+
+    public void Dispose()
+    {
+        Source.Dispose();
+        Target.Dispose();
     }
 }

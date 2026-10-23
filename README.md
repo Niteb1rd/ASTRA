@@ -7,7 +7,7 @@ and summarizes their orgs in a side panel. See the requirements doc for the full
 
 ## Status
 
-Phase 3, step 1 adds the nameplate letter recognizer (no screen capture yet; see "Phase 3, step 1" below). Phase 2: the overlay shell. IRIS runs as a tray app with a Social Overlay config window, and now has the overlay window itself (brackets and the right-hand panel), driven by test data only: there is no screen capture or OCR yet, so the real overlay stays empty until Phase 3 feeds it detections. The Settings tab has an Overlay section and a "Show test overlay (15 s)" button to try it. See "Phase 2: the overlay" below.
+Phase 3, step 1 adds the nameplate letter recognizer (no screen capture yet; see "Phase 3, step 1" below). Phase 2: the overlay shell. IRIS runs as a tray app with a Social Overlay config window, and now has the overlay window itself (brackets and the right-hand panel), driven by test data only: there is no screen capture yet, so the real overlay stays empty until Phase 3 feeds it detections. The Settings tab has an Overlay section and a "Show test overlay (15 s)" button to try it. See "Phase 2: the overlay" below.
 
 - `src/Iris.Core`: config file (TOML) read, write and validate; color and bracket rules; right-panel org line (increment 1).
 - `src/Iris.Core/Rsi`: reads robertsspaceindustries.com. Pure parsers for the player organizations page, the org page and the
@@ -170,7 +170,7 @@ Phase 3 reads real nameplates from the screen. Step 1 is the reader itself, with
 nameplate line and returns the name. It lives in `src/Iris.Core/Detection/Letters/`:
 
 - `LetterModel`: the trained classifier (a small neural network: 388 numbers describing one letter in, a log probability for each of the 38 characters
-  `A-Z 0-9 _ -` out). Its weights are the embedded resource `letters-model.bin`. The file contains numbers only; it was trained from the developer's own
+  `A-Z 0-9 _ -` out). Its weights are the file `letters-model.bin`, embedded in `Iris.Core` as the resource `Iris.Core.Detection.Letters.letters-model.bin`. The file contains numbers only; it was trained from the developer's own
   gameplay clips with a separate local training kit that is not part of this repository.
 - `NameplateFeatures`: the image side. Crop to a 4x text mask (local contrast on the brightest colour channel, so cyan, white, red and green text all work,
   with an automatic contrast threshold), the capital band, cuts at blank columns, and the 388-number letter description.
@@ -181,15 +181,15 @@ nameplate line and returns the name. It lives in `src/Iris.Core/Detection/Letter
 It is a port of a Python prototype, step for step (same rounding and comparison rules), so that both give the same result. The tests in
 `tests/Iris.Core.Tests` (`LetterModelTests`, `NameplateReaderTests`) check this against **synthetic** fixtures in `tests/Iris.Core.Tests/Fixtures/letters/`:
 text drawn by a script onto generated noisy coloured backgrounds, with the Python results for every stage (mask, capital band, cuts, letter vectors, final
-text) and 200 feature vectors with the model's log probabilities. The model must agree within 1e-4, the mask with at least 99.5 % of its pixels (OpenCV builds
-can round differently at the edges), and the final text must be identical on every line. No game footage, screenshots or player names are in the repository.
-The tests that need OpenCV's native library are skipped on systems where it is not available (the tests project carries the Windows one).
+text) and 200 feature vectors with the model's log probabilities. The model must agree within 1e-4, the mask with at least 99.5 % of the pixels of the overlap (OpenCV builds
+can round differently at the edges, so a size difference of 1 row or column is tolerated), and the final text must be identical on every line. These fixtures check that the C# code gives the same results as the Python reference (parity); they do not measure how accurately real nameplates are read. No game footage, screenshots or player names are in the repository.
+The tests that need OpenCV's native library are skipped on systems other than Windows where it is not available (the tests project carries the Windows x64 one); on Windows they are never skipped, so a broken native library fails them.
 
 ### OpenCvSharp4 (new dependency)
 
 The image operations use [OpenCvSharp4](https://github.com/shimat/opencvsharp) (a .NET wrapper of OpenCV, Apache-2.0 licence): `OpenCvSharp4` in `Iris.Core`,
 and the native library through `OpenCvSharp4.runtime.win` in `Iris.App` and the tests. The native library is large: expect the package download to be tens of
-megabytes (the Windows runtime package carries x64 and x86 builds) and `IRIS.exe`'s folder to grow by a similar amount. The first `dotnet test` or build downloads it.
+megabytes (the Windows x64 build) and `IRIS.exe`'s folder to grow by a similar amount. The first `dotnet test` or build downloads it.
 
 ### The letter model file
 

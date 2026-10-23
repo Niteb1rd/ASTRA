@@ -22,6 +22,8 @@
   <ItemGroup>
     <!-- The shipped exclusion list. ExclusionList copies it next to the user's settings the first time IRIS runs. -->
     <EmbeddedResource Include="Detection\exclusions.default.txt" LogicalName="Iris.Core.Detection.exclusions.default.txt" />
+    <!-- The trained letter classifier (numbers only). LetterModel.LoadEmbedded reads it by this exact name. -->
+    <EmbeddedResource Include="Detection\Letters\letters-model.bin" LogicalName="Iris.Core.Detection.Letters.letters-model.bin" />
   </ItemGroup>
 
 </Project>

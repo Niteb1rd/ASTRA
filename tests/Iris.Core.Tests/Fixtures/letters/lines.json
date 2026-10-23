@@ -1,5 +1,5 @@
 {
-"note": "Synthetic. Produced by the local training kit's make_fixtures.py; see tests LetterRecognizerParityTests.",
+"note": "Synthetic. Produced by the local training kit's make_fixtures.py; see tests NameplateReaderTests and LetterModelTests.",
 "generator": {"opencv_python": "5.0.0", "numpy": "2.5.3"},
 "model_sha256": "b89785ab7358b6226f2df17f3b3c0077b707f6046e98fae309e7becc0c0a367b",
 "vector_count": 200,

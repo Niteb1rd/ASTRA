@@ -50,9 +50,21 @@ public sealed class NameplateReader
         var cap = band.Bottom - band.Top + 1;
         var text = new StringBuilder();
         var total = 0.0;
-        Span<double> lp = _model.ClassCount <= 256 ? stackalloc double[_model.ClassCount] : new double[_model.ClassCount];
 
-        foreach (var (a, b) in NameplateFeatures.GapCuts(m))
+        var cuts = NameplateFeatures.GapCuts(m);
+        if (cuts.Count == 0)
+            return new NameplateRead("", 0.0);
+
+        // Work space for the whole call, made once: a letter vector, the log probabilities and the network's buffers on the stack
+        // (heap for unusually large models), and the Mats for the letter pictures. Expected call counts: one GlyphVector +
+        // PredictLogProbs per separate piece, and per touching piece one per candidate span (pairs of cut candidates no wider than
+        // 1.2 capital heights), so a line costs about as many calls as it has letters plus a few per touching pair. None allocates.
+        Span<double> vector = stackalloc double[NameplateFeatures.VectorLength];
+        Span<double> lp = _model.ClassCount <= 256 ? stackalloc double[_model.ClassCount] : new double[_model.ClassCount];
+        Span<double> network = _model.ScratchSize <= 2048 ? stackalloc double[_model.ScratchSize] : new double[_model.ScratchSize];
+        using var scratch = new GlyphScratch(m.Height, m.Width);
+
+        foreach (var (a, b) in cuts)
         {
             var ink = 0;
             for (var y = 0; y < m.Height; y++)
@@ -63,17 +75,16 @@ public sealed class NameplateReader
 
             if (b - a <= 1.2 * cap)
             {
-                var vector = NameplateFeatures.GlyphVector(m, a, b, band);
-                if (vector is null)
+                if (!NameplateFeatures.GlyphVector(m, a, b, band, vector, scratch))
                     continue;
-                _model.PredictLogProbs(vector, lp);
+                _model.PredictLogProbs(vector, lp, network);
                 var best = ArgMax(lp);
                 text.Append(_model.Charset[best]);
                 total += lp[best];
             }
             else
             {
-                var (piece, score) = Split(m, a, b, band);
+                var (piece, score) = Split(m, a, b, band, vector, lp, network, scratch);
                 text.Append(piece);
                 total += score;
             }
@@ -83,7 +94,7 @@ public sealed class NameplateReader
     }
 
     /// <summary>Best way to cut columns [x0, x1) into letters (<c>_split</c>).</summary>
-    private (string Text, double Score) Split(LineMask m, int x0, int x1, CapBand band)
+    private (string Text, double Score) Split(LineMask m, int x0, int x1, CapBand band, Span<double> vector, Span<double> lp, Span<double> network, GlyphScratch scratch)
     {
         var cap = band.Bottom - band.Top + 1;
         var width = x1 - x0;
@@ -106,7 +117,6 @@ public sealed class NameplateReader
         var spanTo = new List<int>();
         var spanChar = new List<int>();
         var spanLogP = new List<double>();
-        var lp = new double[_model.ClassCount];
         for (var i = 0; i < cand.Count; i++)
         {
             for (var j = i + 1; j < cand.Count; j++)
@@ -116,10 +126,9 @@ public sealed class NameplateReader
                     break;
                 if (span < 0.25 * cap)
                     continue;
-                var vector = NameplateFeatures.GlyphVector(m, x0 + cand[i], x0 + cand[j], band);
-                if (vector is null)
+                if (!NameplateFeatures.GlyphVector(m, x0 + cand[i], x0 + cand[j], band, vector, scratch))
                     continue;
-                _model.PredictLogProbs(vector, lp);
+                _model.PredictLogProbs(vector, lp, network);
                 var best = ArgMax(lp);
                 spanFrom.Add(i);
                 spanTo.Add(j);

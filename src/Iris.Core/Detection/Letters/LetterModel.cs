@@ -133,20 +133,35 @@ public sealed class LetterModel
         }
     }
 
+    /// <summary>Length of the scratch buffer the three argument <see cref="PredictLogProbs(ReadOnlySpan{double}, Span{double}, Span{double})"/> needs.</summary>
+    public int ScratchSize => 2 * _maxWidth;
+
     /// <summary>
     /// Log probability of every character for one letter vector: <c>log(clip(softmax(network(input)), 1e-6, 1))</c>.
     /// </summary>
-    /// <param name="input">The <see cref="InputSize"/> numbers from <see cref="NameplateFeatures.GlyphVector"/>.</param>
+    /// <param name="input">The <see cref="InputSize"/> numbers from <see cref="NameplateFeatures.GlyphVector(LineMask, int, int, CapBand)"/>.</param>
     /// <param name="logProbs">Receives <see cref="ClassCount"/> values (it may be longer).</param>
     public void PredictLogProbs(ReadOnlySpan<double> input, Span<double> logProbs)
+    {
+        Span<double> scratch = ScratchSize <= StackLimit ? stackalloc double[ScratchSize] : new double[ScratchSize];
+        PredictLogProbs(input, logProbs, scratch);
+    }
+
+    /// <summary>
+    /// Same as <see cref="PredictLogProbs(ReadOnlySpan{double}, Span{double})"/>, but works in a buffer of the caller (at least
+    /// <see cref="ScratchSize"/> values; contents on return are unspecified), so a caller that predicts many letters allocates once.
+    /// </summary>
+    public void PredictLogProbs(ReadOnlySpan<double> input, Span<double> logProbs, Span<double> scratch)
     {
         if (input.Length != InputSize)
             throw new ArgumentException($"Expected {InputSize} input values, got {input.Length}.", nameof(input));
         if (logProbs.Length < ClassCount)
             throw new ArgumentException($"Output needs room for {ClassCount} values.", nameof(logProbs));
+        if (scratch.Length < ScratchSize)
+            throw new ArgumentException($"Scratch needs room for {ScratchSize} values.", nameof(scratch));
 
-        Span<double> bufferA = _maxWidth <= StackLimit ? stackalloc double[_maxWidth] : new double[_maxWidth];
-        Span<double> bufferB = _maxWidth <= StackLimit ? stackalloc double[_maxWidth] : new double[_maxWidth];
+        var bufferA = scratch.Slice(0, _maxWidth);
+        var bufferB = scratch.Slice(_maxWidth, _maxWidth);
 
         ReadOnlySpan<double> current = input;
         for (var l = 0; l < _layers.Length; l++)
