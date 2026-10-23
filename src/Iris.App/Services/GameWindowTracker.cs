@@ -337,6 +337,10 @@ public sealed class GameWindowTracker : IDisposable
 
     private void LogChange(GameWindowSnapshot from, GameWindowSnapshot to)
     {
+        // Once the game's own display mode is known (logged as "Star Citizen display mode: ..."), the window details add nothing:
+        // only log them when IRIS has to rely on the window check, where they help diagnose a wrong decision.
+        if (from.Mode is not null || to.Mode is not null)
+            return;
         var detail = to.State == GameWindowState.GameNotActive
             ? string.Empty
             : string.Format(CultureInfo.InvariantCulture, " (process {0}, window {1}x{2} at {3},{4}, style 0x{5:X8}, monitor {6}x{7} at {8},{9}, game display mode {10})",
