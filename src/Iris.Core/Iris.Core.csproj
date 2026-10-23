@@ -14,6 +14,9 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
     <!-- HTML parser for RSI pages (MIT licence) -->
     <PackageReference Include="AngleSharp" Version="1.5.0" />
+    <!-- Image operations for the nameplate letter recognizer (Apache-2.0 licence). The native OpenCV library for Windows
+         comes with the runtime package in Iris.App and the tests, so Iris.Core itself stays platform independent. -->
+    <PackageReference Include="OpenCvSharp4" Version="4.11.0.20250507" />
   </ItemGroup>
 
   <ItemGroup>
