@@ -11,6 +11,7 @@ public sealed class ReplayOptions
 
         Usage:
           Iris.Replay <input> [--labels FILE] [--out FOLDER] [--annotate] [--every N] [--model FILE] [--region L,R,T,B]
+                              [--fps N] [--confirm-reads N] [--confirm-span MS]
 
           <input>      a video file (mp4, mkv, mov, avi, webm), a folder of frame images (png, jpg, bmp, tif),
                        a folder with one such sub folder (or video) per clip, or a single image
@@ -18,10 +19,18 @@ public sealed class ReplayOptions
                        file,expected_players,... and ';' between the names): reports recall and wrong reads
           --out FOLDER where detections.csv and the annotated images go (default: Iris\replay in the local application data
                        folder). It must not be inside a git repository: frames and reads are your own data
-          --annotate   also write a PNG per frame with a nameplate, with boxes and reads, to FOLDER\annotated
+          --annotate   also write a PNG per frame with tracked lines to FOLDER\annotated: confirmed names green, nameplates not yet
+                       confirmed yellow, rejected pairs red
           --every N    use every Nth frame (default 1)
           --model F    use this letters-model.bin instead of the one built into IRIS
           --region R   scan region as fractions of the frame: left,right,top,bottom (default 0.15,0.85,0.10,0.70)
+          --fps N      frame rate that the frame numbers of image files stand for (default 10, as in the training kit); a video
+                       brings its own
+          --confirm-reads N   a name is confirmed after N identical reads (default 3)
+          --confirm-span MS   ... spread over at least this many milliseconds (default 300)
+
+        Frames of a clip are run through the tracker in order. With screenshot labels (--labels file.csv) every image stands alone and
+        is read once, without the tracker.
 
         If a video does not open, cut it into frames first (ffmpeg -i clip.mp4 -vf fps=10 frames\%05d.jpg) and give the folder.
         """;
@@ -39,6 +48,11 @@ public sealed class ReplayOptions
     public string? ModelPath { get; private set; }
 
     public NameplateDetectorSettings Settings { get; private set; } = NameplateDetectorSettings.Default;
+
+    public NameplateTrackerSettings TrackerSettings { get; private set; } = NameplateTrackerSettings.Default;
+
+    /// <summary>Frame rate that the frame numbers of image files stand for.</summary>
+    public double ImageFps { get; private set; } = 10.0;
 
     public bool ShowHelp { get; private set; }
 
@@ -69,6 +83,9 @@ public sealed class ReplayOptions
                 case "--model":
                 case "--every":
                 case "--region":
+                case "--fps":
+                case "--confirm-reads":
+                case "--confirm-span":
                     if (i + 1 >= args.Count)
                     {
                         error = $"{arg} needs a value.";
@@ -120,6 +137,21 @@ public sealed class ReplayOptions
                 if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var every) || every < 1)
                     return "--every needs a whole number of at least 1.";
                 Every = every;
+                return null;
+            case "--fps":
+                if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var fps) || !(fps > 0 && fps <= 1000))
+                    return "--fps needs a number above 0.";
+                ImageFps = fps;
+                return null;
+            case "--confirm-reads":
+                if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var reads) || reads < 1)
+                    return "--confirm-reads needs a whole number of at least 1.";
+                TrackerSettings = TrackerSettings with { ConfirmReads = reads };
+                return null;
+            case "--confirm-span":
+                if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var span) || span < 0)
+                    return "--confirm-span needs a number of milliseconds, 0 or more.";
+                TrackerSettings = TrackerSettings with { ConfirmSpanMs = span };
                 return null;
             default: // --region
                 var changed = ParseRegion(value, Settings, out var problem);

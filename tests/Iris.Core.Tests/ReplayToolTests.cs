@@ -116,8 +116,8 @@ public class ReplayToolTests
 
     // ------------------------------------------------------------------------------------------------ metrics
 
-    private static NameplateDetection Detection(string name, bool stacked = false) =>
-        new(name, -0.1, new OpenCvSharp.Rect(1, 2, 3, 4), new OpenCvSharp.Rect(1, 8, 3, 4), "9-0K-", stacked);
+    private static NameplateDetection Detection(string name) =>
+        new(name, -0.1, new OpenCvSharp.Rect(1, 2, 3, 4), new OpenCvSharp.Rect(1, 8, 3, 4), "9.0km");
 
     [Fact]
     public void Metrics_SeparateLabeledExcludedAndWrongReads()
@@ -125,42 +125,106 @@ public class ReplayToolTests
         var labels = ClipLabels.ParseClipList("clip1: ALPHA_ONE, BRAVO-TWO\n");
         var metrics = new ReplayMetrics(labels, new[] { "Stanton", "UNKNOWN" });
 
-        metrics.AddFrame("clip1", "f1", 1, new[] { Detection("ALPHA_ONE"), Detection("UNKNOWN") }, out var m1);
-        metrics.AddFrame("clip1", "f2", 2, new[] { Detection("ALPHA_0NE"), Detection("ZZZZZZZZ") }, out var m2);   // fuzzy, wrong
-        metrics.AddFrame("clip1", "f3", 3, Array.Empty<NameplateDetection>(), out _);
-        metrics.AddFrame("clip1", "f4", 4, new[] { Detection("BRAVO-TWO"), Detection("ALPHA_ONE") }, out _);
-        metrics.AddFrame("other", "g1", 1, new[] { Detection("ALPHA_ONE") }, out var m3);                        // clip without labels
+        metrics.AddReads("clip1", "f1", 1, new[] { Detection("ALPHA_ONE"), Detection("UNKNOWN") }, out var m1);
+        metrics.AddReads("clip1", "f2", 2, new[] { Detection("ALPHA_0NE"), Detection("ZZZZZZZZ") }, out var m2);   // look-alike, wrong
+        metrics.AddReads("clip1", "f3", 3, Array.Empty<NameplateDetection>(), out _);
+        metrics.AddReads("clip1", "f4", 4, new[] { Detection("BRAVO-TWO"), Detection("PA-5968-XF") }, out _);    // a contact code is ignored by name
+        metrics.AddReads("other", "g1", 1, new[] { Detection("ALPHA_ONE") }, out var m3);                        // clip without labels
 
         var g = metrics.Groups["clip1"];
-        Assert.Equal(4, g.Frames);
         Assert.Equal(2, g.Labels);
-        Assert.Equal(6, g.Detections);
-        Assert.Equal(1, g.Excluded);
-        Assert.Equal(1, g.Wrong);
-        Assert.Equal(2, g.NamesExact);
-        Assert.Equal(2, g.NamesFuzzy);
-        Assert.Equal(3, g.ExactNameFrames);   // ALPHA_ONE in f1 and f4, BRAVO-TWO in f4
-        Assert.Equal(4, g.FuzzyNameFrames);   // plus ALPHA_0NE in f2
+        Assert.Equal(8, g.Reads);
+        Assert.Equal(2, g.ExcludedReads);
+        Assert.Equal(1, g.WrongReads);
+        Assert.Equal(2, g.ExactFrames.Count);
+        Assert.Equal(2, g.FuzzyFrames.Count);
+        Assert.Equal(new HashSet<int> { 1 }, g.ExactFrames["ALPHA_ONE"]);
+        Assert.Equal(new HashSet<int> { 1, 2 }, g.FuzzyFrames["ALPHA_ONE"]);
         Assert.Equal(("ALPHA_ONE", true), m1[0]);
         Assert.Equal(("ALPHA_ONE", false), m2[0]);
         Assert.Null(m2[1].Label);
         Assert.Empty(m3);
         Assert.DoesNotContain("other", metrics.Groups.Keys);
-        Assert.Contains("TOTAL", metrics.Format());
+    }
+
+    /// <summary>Runs reads through a real tracker (a track cannot be made by hand): one name per x position, a name for every frame it has reads for.</summary>
+    private static IReadOnlyList<NameplateTrack> Tracks(params (int X, string?[] Reads)[] plates)
+    {
+        var tracker = new NameplateTracker(NameplateTrackerSettings.Default with { ConfirmReads = 2, ConfirmSpanMs = 0 });
+        var frames = plates.Max(p => p.Reads.Length);
+        for (var frame = 0; frame < frames; frame++)
+        {
+            var candidates = new List<TrackCandidate>();
+            foreach (var (x, reads) in plates)
+            {
+                if (frame < reads.Length)
+                {
+                    var top = new OpenCvSharp.Rect(x, 500, 80, 12);
+                    candidates.Add(new TrackCandidate(top, new OpenCvSharp.Rect(x + 10, 524, 60, 12)));
+                }
+            }
+
+            var index = frame;
+            tracker.Update(frame, frame * 100.0, candidates, (top, _) =>
+            {
+                var plate = plates.First(p => p.X == top.X);
+                return new TrackEvaluation(true, index < plate.Reads.Length ? plate.Reads[index] : null);
+            });
+        }
+
+        return tracker.Finish();
     }
 
     [Fact]
-    public void Metrics_ListTheNamesNeverReadExactly()
+    public void Metrics_CountFoundNamesWrongConfirmedNamesAndTheKindsOfTracks()
     {
-        var labels = ClipLabels.ParseClipList("clip1: ALPHA_ONE, BRAVO-TWO, CHARLIE3\n");
-        var metrics = new ReplayMetrics(labels, Array.Empty<string>());
+        var labels = ClipLabels.ParseClipList("clip1: ALPHA_ONE, BRAVO-TWO\n");
+        var metrics = new ReplayMetrics(labels, new[] { "UNKNOWN" });
+        var tracks = Tracks(
+            (100, new string?[] { "ALPHA_ONE", "ALPHA_ONE", "ALPHA_ONE" }),   // found, exact, confirmed at frame 1
+            (400, new string?[] { "ZZZZZZZZ", "ZZZZZZZZ" }),                  // confirmed, and wrong
+            (700, new string?[] { "UNKNOWN", "UNKNOWN" }),                    // confirmed, but ignored by name
+            (1000, new string?[] { "ALPHA_O", null }),                        // a stage of the typing animation: one read, never confirmed
+            (1300, new string?[] { "QXQXQXQX", null }),                       // junk: one read, a name nobody knows
+            (1600, new string?[] { null, null }));                            // a nameplate that was never read surely
 
-        metrics.AddFrame("clip1", "f1", 1, new[] { Detection("BRAVO-TWO"), Detection("ALPHA_0NE") }, out _);
+        foreach (var track in tracks)
+            metrics.AddTrack("clip1", track);
+        for (var i = 0; i < 3; i++)
+            metrics.AddFrame("clip1", "f", 10.0 + i);
+
+        var g = metrics.Groups["clip1"];
+        var found = Assert.Single(g.Found);
+        Assert.Equal("ALPHA_ONE", found.Key);
+        Assert.True(found.Value.Exact);
+        Assert.Equal(1, found.Value.DelayFrames);
+        Assert.Equal(100.0, found.Value.DelayMs);
+        Assert.Equal(new[] { "ZZZZZZZZ" }, g.WrongConfirmed);
+        Assert.Equal(new[] { "UNKNOWN" }, g.FilteredConfirmed);
+        Assert.Equal(6, g.NameplateTracks);
+        Assert.Equal(1, g.AnimationTracks);
+        Assert.Equal(2, g.JunkTracks);   // QXQXQXQX and the track that confirmed ZZZZZZZZ
+        Assert.Equal(1, g.UnreadTracks);
+        Assert.Equal(1, g.FilteredTracks);
+        Assert.Equal(11.0, g.FrameMs.Count == 0 ? 0 : Program.Median(g.FrameMs));
 
         var text = metrics.Format();
-        Assert.Contains("Names never read exactly:", text);
-        Assert.Contains("clip1: ALPHA_ONE (close reads only), CHARLIE3", text);
-        Assert.DoesNotContain("BRAVO-TWO (", text);
+        Assert.Contains("TOTAL", text);
+        Assert.Contains("clip1: BRAVO-TWO", text);          // never confirmed
+        Assert.Contains("clip1: ZZZZZZZZ", text);           // listed as WRONG
+    }
+
+    [Fact]
+    public void Metrics_ALookAlikeConfirmation_IsFoundButNotExact()
+    {
+        var labels = ClipLabels.ParseClipList("clip1: ALPHA_ONE\n");
+        var metrics = new ReplayMetrics(labels, Array.Empty<string>());
+        foreach (var track in Tracks((100, new string?[] { "ALPHA_0NE", "ALPHA_0NE" })))
+            metrics.AddTrack("clip1", track);
+
+        var g = metrics.Groups["clip1"];
+        Assert.False(g.Found["ALPHA_ONE"].Exact);
+        Assert.Empty(g.WrongConfirmed);
     }
 
     [Fact]
@@ -169,12 +233,24 @@ public class ReplayToolTests
         var labels = ClipLabels.ParseScreenshotCsv("file,expected_players\nshot1.jpg,ALPHA_ONE\nshot2.jpg,\n");
         var metrics = new ReplayMetrics(labels, Array.Empty<string>());
 
-        metrics.AddFrame("Names", "shot1.jpg", 1, new[] { Detection("ALPHA_ONE") }, out _);
-        metrics.AddFrame("Names", "shot2.jpg", 2, new[] { Detection("ALPHA_ONE") }, out _);   // not expected there: wrong
+        metrics.AddFrame("Names", "shot1.jpg", 5.0);
+        metrics.AddReads("Names", "shot1.jpg", 1, new[] { Detection("ALPHA_ONE") }, out _);
+        metrics.AddFrame("Names", "shot2.jpg", 5.0);
+        metrics.AddReads("Names", "shot2.jpg", 2, new[] { Detection("ALPHA_ONE") }, out _);   // not expected there: wrong
 
-        Assert.Equal(1, metrics.Groups["shot1.jpg"].NamesExact);
-        Assert.Equal(1, metrics.Groups["shot2.jpg"].Wrong);
+        Assert.Single(metrics.Groups["shot1.jpg"].ExactFrames);
+        Assert.Equal(1, metrics.Groups["shot2.jpg"].WrongReads);
         Assert.Equal(0, metrics.Groups["shot2.jpg"].Labels);
+        Assert.Contains("TOTAL", metrics.Format());
+    }
+
+    [Theory]
+    [InlineData("ALPHA_ONE", "ALPHA_ONE", 0)]
+    [InlineData("ALPHA_ONE", "ALPHA_ONF", 1)]
+    [InlineData("", "ABC", 3)]
+    public void EditDistance_IsTheLevenshteinDistance(string a, string b, int expected)
+    {
+        Assert.Equal(expected, ReplayMetrics.EditDistance(a, b));
     }
 
     // ------------------------------------------------------------------------------------------------ files
@@ -230,8 +306,10 @@ public class ReplayToolTests
         Directory.CreateDirectory(frames);
         try
         {
-            foreach (var file in Directory.GetFiles(DetectorFixtures.Dir, "frame_*.png"))
-                File.Copy(file, Path.Combine(frames, Path.GetFileName(file)));
+            // the same frame three times (so that a track can read its name repeatedly), then a frame of stars only; numbered, 10 fps
+            for (var i = 1; i <= 3; i++)
+                File.Copy(Path.Combine(DetectorFixtures.Dir, "frame_a.png"), Path.Combine(frames, $"frame_a_{i}.png"));
+            File.Copy(Path.Combine(DetectorFixtures.Dir, "frame_d.png"), Path.Combine(frames, "frame_d_4.png"));
             var labels = Path.Combine(root, "clips.txt");
             File.WriteAllText(labels, "synthetic: SYNTH_ALPHA, SYNTH_BRAVO, DUMMY_DELTA, FIXTURE_ECHO\n");
 
@@ -241,7 +319,7 @@ public class ReplayToolTests
             Console.SetOut(console);
             try
             {
-                exit = Program.Main(new[] { frames, "--labels", labels, "--out", output, "--annotate" });
+                exit = Program.Main(new[] { frames, "--labels", labels, "--out", output, "--annotate", "--confirm-reads", "2", "--confirm-span", "0" });
             }
             finally
             {
@@ -250,15 +328,18 @@ public class ReplayToolTests
 
             Assert.Equal(0, exit);
             var lines = File.ReadAllLines(Path.Combine(output, "detections.csv"));
-            Assert.StartsWith("source,frame,name,score,", lines[0]);
-            Assert.Contains(lines, l => l.StartsWith("synthetic/frame_a.png,") && l.Contains(",SYNTH_ALPHA,"));
-            Assert.Contains(lines, l => l.StartsWith("synthetic/frame_b.png,") && l.Contains(",DUMMY_DELTA,"));
-            Assert.DoesNotContain(lines, l => l.StartsWith("synthetic/frame_d.png,")); // stars only
-            // the summary line: "ALL", then the number of frames replayed (the 4 synthetic frames)
-            Assert.Matches(new Regex(@"^ALL\s+4\s", RegexOptions.Multiline), console.ToString());
-            Assert.Contains("TOTAL", console.ToString());
-            Assert.True(File.Exists(Path.Combine(output, "annotated", "synthetic", "frame_a.png")));
-            Assert.False(File.Exists(Path.Combine(output, "annotated", "synthetic", "frame_d.png")));
+            Assert.StartsWith("source,frame,track,verdict,confirmed,name,score,", lines[0]);
+            Assert.Contains(lines, l => l.StartsWith("synthetic/frame_a_3.png,") && l.Contains(",SYNTH_ALPHA,"));
+            Assert.DoesNotContain(lines, l => l.StartsWith("synthetic/frame_d_4.png,")); // stars only
+            var tracks = File.ReadAllLines(Path.Combine(output, "tracks.csv"));
+            Assert.StartsWith("clip,track,", tracks[0]);
+            Assert.Contains(tracks, l => l.Contains(",SYNTH_ALPHA,SYNTH_ALPHA,"));   // best name, confirmed name
+            Assert.Contains(tracks, l => l.Contains(",DUMMY_DELTA,DUMMY_DELTA,"));
+            var text = console.ToString();
+            Assert.Matches(new Regex(@"^TOTAL\s+4\s", RegexOptions.Multiline), text);   // 4 frames replayed
+            Assert.Matches(new Regex(@"^TOTAL\s+4\s+4\s+4/4\s", RegexOptions.Multiline), text);   // 4 labels, all 4 confirmed
+            Assert.True(File.Exists(Path.Combine(output, "annotated", "synthetic", "frame_a_2.png")));
+            Assert.False(File.Exists(Path.Combine(output, "annotated", "synthetic", "frame_d_4.png")));
         }
         finally
         {

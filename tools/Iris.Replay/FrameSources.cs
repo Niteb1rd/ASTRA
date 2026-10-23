@@ -7,7 +7,9 @@ namespace Iris.Replay;
 /// <param name="Clip">The clip (video file name, or folder name) the frame belongs to.</param>
 /// <param name="Number">Frame number: the video frame (counted from 1), or the number in the image file name (f00041.jpg is 41; without digits: its position).</param>
 /// <param name="Name">What to call the frame: the image file name, or clip#number for a video frame.</param>
-public readonly record struct SourceFrame(string Clip, int Number, string Name, Mat Image);
+/// <param name="TimeMs">Where the frame is in the clip, in milliseconds: from the video's frame rate, or for image files from the
+/// frame number and the rate given to <see cref="FrameSources.Frames"/> (the tracker needs time, not only order).</param>
+public readonly record struct SourceFrame(string Clip, int Number, string Name, Mat Image, double TimeMs = 0.0);
 
 /// <summary>A clip to replay: a video file, or a list of image files in order.</summary>
 public sealed record ClipInput(string Clip, string? VideoPath, IReadOnlyList<string> Images);
@@ -80,9 +82,10 @@ public static class FrameSources
     /// The frames of a clip, every <paramref name="every"/>th one. Every frame of a video is decoded: <c>Grab()</c> runs the FFmpeg
     /// decoder, and only the conversion to an image (<c>Retrieve</c>) is skipped for the frames in between, so <c>--every</c> saves
     /// detection time, not decoding time. Throws InvalidOperationException when a video cannot be opened. Images that cannot be
-    /// read are skipped and reported to <paramref name="unreadable"/> (with the path).
+    /// read are skipped and reported to <paramref name="unreadable"/> (with the path). <paramref name="imageFps"/> is the frame rate that the
+    /// numbers in image file names stand for (10 for the frames of the training kit).
     /// </summary>
-    public static IEnumerable<SourceFrame> Frames(ClipInput clip, int every, Action<string>? unreadable = null)
+    public static IEnumerable<SourceFrame> Frames(ClipInput clip, int every, Action<string>? unreadable = null, double imageFps = 10.0)
     {
         if (clip.VideoPath is not null)
         {
@@ -94,6 +97,9 @@ public static class FrameSources
                     "cut the video into frames first (ffmpeg -i clip.mp4 -vf fps=10 frames\\%05d.jpg) and give the folder.");
             }
 
+            var fps = capture.Get(VideoCaptureProperties.Fps);
+            if (!(fps > 0 && fps < 1000))
+                fps = 30.0; // the container does not say: the tracker only needs a plausible clock
             var number = 0;
             while (capture.Grab())
             {
@@ -107,7 +113,7 @@ public static class FrameSources
                     continue;
                 }
 
-                yield return new SourceFrame(clip.Clip, number, $"{clip.Clip}#{number}", frame);
+                yield return new SourceFrame(clip.Clip, number, $"{clip.Clip}#{number}", frame, (number - 1) * 1000.0 / fps);
             }
 
             yield break;
@@ -126,7 +132,8 @@ public static class FrameSources
             }
 
             var fileName = Path.GetFileName(path);
-            yield return new SourceFrame(clip.Clip, TrailingNumber(fileName) ?? index + 1, fileName, image);
+            var frameNumber = TrailingNumber(fileName) ?? index + 1;
+            yield return new SourceFrame(clip.Clip, frameNumber, fileName, image, (frameNumber - 1) * 1000.0 / imageFps);
         }
     }
 
