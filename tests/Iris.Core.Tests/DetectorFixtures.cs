@@ -4,9 +4,13 @@ using OpenCvSharp;
 namespace Iris.Core.Tests;
 
 /// <summary>What the Python reference detector found in one synthetic frame, for one set of settings.</summary>
-public sealed record ExpectedDetection(string Name, double Score, Rect NameBox, Rect DistanceBox, string DistanceText, bool Stacked);
+public sealed record ExpectedDetection(string Name, double Score, Rect NameBox, Rect DistanceBox, string DistanceText);
 
-public sealed record ExpectedScan(Rect[] Boxes, (int Top, int Bottom)[] Pairs, ExpectedDetection[] Detections);
+/// <summary>What evaluating one candidate pair gave in the reference: a nameplate or not, and the name when the read was sure enough.</summary>
+public sealed record ExpectedEvaluation(Rect Top, Rect Bottom, bool Strict, bool IsNameplate, string? Name, double Score, string DistanceText);
+
+public sealed record ExpectedScan(
+    Rect[] Boxes, (int Top, int Bottom)[] Pairs, (int Top, int Bottom)[] LoosePairs, ExpectedEvaluation[] Evaluations, ExpectedDetection[] Detections);
 
 public sealed record DetectorFixtureFrame(string File, int Width, int Height, ExpectedScan Default, ExpectedScan WholeFrame)
 {
@@ -46,11 +50,19 @@ public static class DetectorFixtures
     private static ExpectedScan ReadScan(JsonElement e) => new(
         e.GetProperty("boxes").EnumerateArray().Select(ReadRect).ToArray(),
         e.GetProperty("pairs").EnumerateArray().Select(p => (p[0].GetInt32(), p[1].GetInt32())).ToArray(),
+        e.GetProperty("loose").EnumerateArray().Select(p => (p[0].GetInt32(), p[1].GetInt32())).ToArray(),
+        e.GetProperty("evaluations").EnumerateArray().Select(v => new ExpectedEvaluation(
+            ReadRect(v.GetProperty("top")),
+            ReadRect(v.GetProperty("bottom")),
+            v.GetProperty("strict").GetBoolean(),
+            v.GetProperty("is_nameplate").GetBoolean(),
+            v.GetProperty("name").ValueKind == JsonValueKind.Null ? null : v.GetProperty("name").GetString(),
+            v.GetProperty("score").GetDouble(),
+            v.GetProperty("dist_text").GetString()!)).ToArray(),
         e.GetProperty("detections").EnumerateArray().Select(d => new ExpectedDetection(
             d.GetProperty("name").GetString()!,
             d.GetProperty("score").GetDouble(),
             ReadRect(d.GetProperty("name_box")),
             ReadRect(d.GetProperty("dist_box")),
-            d.GetProperty("dist_text").GetString()!,
-            d.GetProperty("stacked").GetBoolean())).ToArray());
+            d.GetProperty("dist_text").GetString()!)).ToArray());
 }
