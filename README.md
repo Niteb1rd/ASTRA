@@ -1,6 +1,6 @@
 # IRIS
 
-IRIS – Companion App for Star Citizen (formerly ASTRA). First feature: **Social Overlay**.
+IRIS – Companion App for Star Citizen. First feature: **Social Overlay**.
 
 Windows overlay that brackets the nameplates of players you care about, in colors you choose,
 and summarizes their orgs in a side panel. See the requirements doc for the full specification.
