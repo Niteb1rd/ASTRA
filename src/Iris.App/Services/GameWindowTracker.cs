@@ -27,7 +27,7 @@ public sealed record GameWindowSnapshot(GameWindowState State, PixelRect Bounds,
 /// Every 250 ms it asks Windows for the foreground window and which process owns it; the process name is remembered per process id,
 /// so nothing else happens while another program is in front (a "not the game" answer is kept for 5 seconds, a "game" answer for 60). Only when the game is in front are its rectangle, its monitor and its
 /// style read, and the game's Display Mode (<see cref="StarCitizenDisplaySettings"/>: the WindowMode line of the attributes.xml that belongs to the
-/// running exe; read only, re-read when its last-write time changes, looked at most once per second). <see cref="Changed"/> is raised (on the UI thread) when the snapshot differs from the previous one; state changes are logged. <see cref="Checked"/> is raised after every check.
+/// running exe; read only, read each time the game window comes to the front). <see cref="Changed"/> is raised (on the UI thread) when the snapshot differs from the previous one; state changes are logged. <see cref="Checked"/> is raised after every check.
 /// </summary>
 public sealed class GameWindowTracker : IDisposable
 {
@@ -47,9 +47,10 @@ public sealed class GameWindowTracker : IDisposable
     private readonly Dictionary<uint, (bool IsGame, long CheckedAtMs)> _processCache = new();
     private readonly Dictionary<uint, GameProcessInfo> _gameInfo = new();
 
-    // the display setting file is looked at most once per second per game process
-    private const long SettingsCheckIntervalMs = 1_000;
     private const int GameInfoMaxEntries = 16;
+
+    // The window that was in front at the previous check: the display setting file is read when the game's window comes to the front.
+    private IntPtr _lastForeground;
 
     public GameWindowTracker(ILog log, IClock clock)
     {
@@ -112,6 +113,8 @@ public sealed class GameWindowTracker : IDisposable
     private GameWindowSnapshot Evaluate()
     {
         var foreground = NativeMethods.GetForegroundWindow();
+        var cameToFront = foreground != _lastForeground;
+        _lastForeground = foreground;
         if (foreground == IntPtr.Zero)
             return GameWindowSnapshot.None;
         if (NativeMethods.GetWindowThreadProcessId(foreground, out var processId) == 0 || processId == 0)
@@ -126,7 +129,7 @@ public sealed class GameWindowTracker : IDisposable
             return GameWindowSnapshot.None;
 
         var style = NativeMethods.GetStyle(foreground);
-        var mode = ReadGameMode(processId);
+        var mode = ReadGameMode(processId, cameToFront);
         var state = GameWindowRules.Decide(true, window, monitor, style, mode);
         return new GameWindowSnapshot(state, window, (int)processId, foreground, style, monitor, mode);
     }
@@ -165,9 +168,7 @@ public sealed class GameWindowTracker : IDisposable
         public string? AttributesPath { get; set; }
         public bool NotFoundLogged { get; set; }
         public bool UnusableLogged { get; set; }
-        public bool HasRead { get; set; }
-        public DateTime LastWriteUtc { get; set; }
-        public long NextCheckMs { get; set; }
+        public bool NeedsRead { get; set; } = true;
         public WindowMode? Mode { get; set; }
         public WindowMode? LoggedMode { get; set; }
     }
@@ -189,17 +190,18 @@ public sealed class GameWindowTracker : IDisposable
 
     /// <summary>
     /// The game's Display Mode from its own attributes.xml (null = unknown: the window style check decides then). The file is found relative to the
-    /// running exe, read only when its last-write time changed, at most once per second; an unreadable file keeps the last known value.
+    /// running exe and read only when the game's window has just come to the front (tabbing in, or the game starting); in between, the value
+    /// read then is used. A read that fails (file locked or half written) is tried again at the next check until it succeeds.
     /// </summary>
-    private WindowMode? ReadGameMode(uint processId)
+    private WindowMode? ReadGameMode(uint processId, bool cameToFront)
     {
         if (!_gameInfo.TryGetValue(processId, out var info))
             info = RefreshGameInfo(processId);
 
-        var now = Environment.TickCount64;
-        if (now < info.NextCheckMs)
+        if (cameToFront)
+            info.NeedsRead = true;
+        if (!info.NeedsRead)
             return info.Mode;
-        info.NextCheckMs = now + SettingsCheckIntervalMs;
 
         if (info.AttributesPath is null)
         {
@@ -207,6 +209,7 @@ public sealed class GameWindowTracker : IDisposable
                 info.AttributesPath = StarCitizenDisplaySettings.AttributesPathFor(info.ExePath, File.Exists, FindAttributesCandidates);
             if (info.AttributesPath is null)
             {
+                info.NeedsRead = false; // looked again at the next tab-in
                 if (!info.NotFoundLogged)
                 {
                     info.NotFoundLogged = true;
@@ -217,26 +220,14 @@ public sealed class GameWindowTracker : IDisposable
             _log.Write(_clock.UtcNow, $"Star Citizen display settings file: {info.AttributesPath}");
         }
 
-        DateTime stamp;
-        try
-        {
-            stamp = File.GetLastWriteTimeUtc(info.AttributesPath);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return info.Mode; // keep the last known value
-        }
-        if (info.HasRead && stamp == info.LastWriteUtc)
-            return info.Mode;
-
         var text = TryReadText(info.AttributesPath);
         if (text is null)
-            return info.Mode; // locked or gone for the moment: keep the last known value, try again in a second
+            return info.Mode; // locked or gone for the moment: keep the last known value, try again at the next check
 
         var parsed = StarCitizenDisplaySettings.ParseWindowMode(text);
         if (parsed is null && info.Mode is not null)
         {
-            // possibly a half-written file: keep the last known value and look again next time (the time stamp is not remembered)
+            // possibly a half-written file: keep the last known value and try again at the next check
             if (!info.UnusableLogged)
             {
                 info.UnusableLogged = true;
@@ -245,8 +236,7 @@ public sealed class GameWindowTracker : IDisposable
             return info.Mode;
         }
 
-        info.HasRead = true;
-        info.LastWriteUtc = stamp;
+        info.NeedsRead = false;
         info.Mode = parsed;
         if (parsed is not null)
         {
