@@ -444,6 +444,37 @@ public class GameWindowRulesTests
     }
 
     [Fact]
+    public void BorderlessNotice_AlreadyNotBorderlessAtTheFirstCheck_IsShown()
+    {
+        var tracker = new BorderlessNoticeTracker();
+
+        // IRIS was started while the game was already in front and not borderless: no transition happened, the very first check says NotBorderless
+        Assert.True(tracker.ShouldShow(GameWindowState.NotBorderless, overlayDisabled: false, otherPopUpOpen: false));
+    }
+
+    [Fact]
+    public void BorderlessNotice_SkippedCheckIsAskedAgainOnTheNextCheck()
+    {
+        var tracker = new BorderlessNoticeTracker();
+
+        // another pop-up is open, then the overlay is disabled: nothing is used up, the state itself never changes
+        Assert.False(tracker.ShouldShow(GameWindowState.NotBorderless, overlayDisabled: false, otherPopUpOpen: true));
+        Assert.False(tracker.ShouldShow(GameWindowState.NotBorderless, overlayDisabled: true, otherPopUpOpen: false));
+        Assert.True(tracker.ShouldShow(GameWindowState.NotBorderless, overlayDisabled: false, otherPopUpOpen: false));
+
+        tracker.MarkShown();
+        Assert.False(tracker.ShouldShow(GameWindowState.NotBorderless, overlayDisabled: false, otherPopUpOpen: false));
+    }
+
+    [Theory]
+    [InlineData(GameWindowState.GameNotActive)]
+    [InlineData(GameWindowState.Ready)]
+    public void BorderlessNotice_OnlyForNotBorderless(GameWindowState state)
+    {
+        Assert.False(new BorderlessNoticeTracker().ShouldShow(state, overlayDisabled: false, otherPopUpOpen: false));
+    }
+
+    [Fact]
     public void BorderlessNotice_TextNamesTheIrisOverlay()
     {
         Assert.Equal(

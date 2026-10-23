@@ -17,8 +17,8 @@ namespace Iris.App.Services;
 /// - the live model (<see cref="SetLiveModel"/>; Phase 3 will put real detections here), shown only while Star Citizen is in front and
 ///   borderless (<see cref="GameWindowTracker"/>), the overlay is not disabled, and there is something to draw;
 /// - the test overlay (<see cref="StartTest"/>), shown for 15 seconds whatever is in front.
-/// "Disable Overlay" (<see cref="IsOverlayDisabled"/>) and "Disable Info Panel" (the <c>panel_enabled</c> setting) are toggled from the tray and the
-/// Settings tab (<see cref="ToggleFromTray"/>) and from the global hotkeys (<see cref="Hotkeys"/>); the hotkeys also show a short on-screen
+/// "Disable Overlay" (<see cref="IsOverlayDisabled"/>) and "Disable Info Panel" (the <c>panel_enabled</c> setting) are toggled from the tray
+/// (<see cref="ToggleFromTray"/>) and from the global hotkeys (<see cref="Hotkeys"/>); the hotkeys also show a short on-screen
 /// confirmation (just above the panel) while the game is in front and borderless, even when the overlay is disabled (then only that text is drawn).
 /// The window is created the first time it is needed and afterwards only hidden. While the game is not in front the only work is the
 /// tracker's 250 ms foreground check.
@@ -54,6 +54,7 @@ public sealed class OverlayController : IDisposable
         _imports = imports;
         _tracker = new GameWindowTracker(services.Log, services.Clock);
         _tracker.Changed += OnGameWindowChanged;
+        _tracker.Checked += OnGameWindowChecked;
         _testTimer.Tick += OnTestTick;
         _toastTimer.Tick += OnToastTick;
         services.SettingsApplied += OnSettingsApplied;
@@ -112,7 +113,7 @@ public sealed class OverlayController : IDisposable
     // Disable Overlay / Disable Info Panel
     // ---------------------------------------------------------------------------------------
 
-    /// <summary>A tray item or the Settings tab's "Disable Overlay" checkbox was used: flips the setting (no on-screen text).</summary>
+    /// <summary>A tray item was used: flips the setting (no on-screen text).</summary>
     public void ToggleFromTray(HotkeyAction action) => Toggle(action, announce: false);
 
     private void OnHotkeyPressed(object? sender, HotkeyAction action) => Toggle(action, announce: true);
@@ -190,8 +191,8 @@ public sealed class OverlayController : IDisposable
 
     /// <summary>
     /// Shows the sample overlay for 15 seconds, built from the saved lists, over the Star Citizen window if the game is running (even when it is
-    /// not in front), otherwise over the monitor <paramref name="anchor"/> is on. The panel follows <paramref name="settings"/>, which may be
-    /// unsaved values from the Settings tab. Returns a short phrase saying where it is shown ("over the Star Citizen window").
+    /// not in front), otherwise over the monitor <paramref name="anchor"/> is on. The sizes follow <paramref name="settings"/>, which may be
+    /// unsaved values from the Settings tab; the panel itself follows the saved panel switch (the tray state). Returns a short phrase saying where it is shown ("over the Star Citizen window").
     /// </summary>
     public string StartTest(AppSettings settings, Window anchor)
     {
@@ -268,41 +269,33 @@ public sealed class OverlayController : IDisposable
     // Showing and hiding
     // ---------------------------------------------------------------------------------------
 
-    private void OnGameWindowChanged(object? sender, GameWindowSnapshot snapshot)
-    {
-        Evaluate();
+    private void OnGameWindowChanged(object? sender, GameWindowSnapshot snapshot) => Evaluate();
 
-        // No notice while the overlay is disabled (the user switched it off on purpose); it is not used up then, so it can still come later.
-        if (snapshot.State == GameWindowState.NotBorderless && !_services.IsOverlayDisabled && _notice.ShouldNotify())
+    // After EVERY check of the game window, not only when something changed: the notice must not depend on a transition (the game may
+    // already have been in front and not borderless when IRIS started, and a check that had to say "not now" must be repeated).
+    private void OnGameWindowChecked(object? sender, GameWindowSnapshot snapshot)
+    {
+        if (_disposed || _imports.IsQuitting)
+            return;
+        if (_notice.ShouldShow(snapshot.State, _services.IsOverlayDisabled, PromptDialog.IsAnyOpen))
             ShowBorderlessNotice();
     }
 
     /// <summary>
-    /// The "not in borderless mode" pop-up, at most once per run of IRIS. Skipped (and tried again at the next state change) while another IRIS
-    /// question or pop-up is open. It follows the pop-up policy: with the game in front it is not activated and waits in the taskbar; there is
-    /// no tray balloon.
+    /// The "not in borderless mode" pop-up, at most once per run of IRIS. Not shown while the overlay is disabled or another IRIS pop-up is open
+    /// (the next check asks again). It is not an IRIS question: it is not counted by <see cref="ImportCoordinator.IsBusy"/>, so Settings and
+    /// Quit work while it is open (Quit closes it, see <see cref="CloseBorderlessNotice"/>). It follows the pop-up policy: with the game in front
+    /// it is not activated and waits in the taskbar; there is no tray balloon.
     /// </summary>
     private void ShowBorderlessNotice()
     {
-        if (_disposed || _imports.IsQuitting || PromptDialog.IsAnyOpen)
-            return;
-        var host = _imports.Host;
-        if (host is not null && !host.IsIdleForPrompt)
-            return;
-        if (!_imports.TryBeginQuestion())
-            return; // an import or another question is open
-
-        try
-        {
-            _notice.MarkShown(); // before the dialog opens: its modal loop keeps the timers running and must not open a second one
-            _services.Log.Write(_services.Clock.UtcNow, "Told the user that Star Citizen is not in borderless windowed mode");
-            PromptDialog.TellWithClose(BorderlessNoticeTracker.Text, host?.DialogOwner);
-        }
-        finally
-        {
-            _imports.EndQuestion();
-        }
+        _notice.MarkShown(); // first: this check must not open a second one, whatever happens below
+        _services.Log.Write(_services.Clock.UtcNow, "Told the user that Star Citizen is not in borderless windowed mode");
+        PromptDialog.ShowNotice(BorderlessNoticeTracker.Text);
     }
+
+    /// <summary>Closes the "not in borderless mode" pop-up if it is open (IRIS is quitting). Safe to call at any time.</summary>
+    public void CloseBorderlessNotice() => PromptDialog.CloseNotice();
 
     private void OnSettingsApplied(object? sender, EventArgs e)
     {
@@ -319,6 +312,9 @@ public sealed class OverlayController : IDisposable
         if (_disposed)
             return;
         Hotkeys.Apply(_services.Settings);
+        // the test overlay's panel follows the saved panel switch (tray state / hotkey), also when that was just flipped
+        if (_testSettings is not null)
+            _testSettings = _testSettings with { PanelEnabled = _services.Settings.PanelEnabled };
         Evaluate();
     }
 
@@ -377,6 +373,8 @@ public sealed class OverlayController : IDisposable
         _toastTimer.Stop();
         _toastTimer.Tick -= OnToastTick;
         _tracker.Changed -= OnGameWindowChanged;
+        _tracker.Checked -= OnGameWindowChecked;
+        PromptDialog.CloseNotice();
         _tracker.Dispose();
         _testTimer.Stop();
         _testTimer.Tick -= OnTestTick;

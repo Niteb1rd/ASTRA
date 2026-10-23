@@ -324,6 +324,7 @@ public partial class App : Application
         _shuttingDown = true;
         if (_imports is not null)
             _imports.IsQuitting = true; // no new import question from here on
+        _overlay?.CloseBorderlessNotice(); // the notice is not an IRIS question and may be open: close it before the app ends
         _hostedChecker?.Stop();
         _services?.RequestShutdown(); // a running cache refresh (no question open) stops cleanly: its RSI requests are cancelled
         _updater?.StopFillMissing(TimeSpan.FromMilliseconds(500)); // give the background fill a moment to stop before the database is disposed

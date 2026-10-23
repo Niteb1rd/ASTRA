@@ -437,12 +437,6 @@
 
                         <!-- Overlay -->
                         <TextBlock Text="Overlay" FontWeight="SemiBold" Margin="0,16,0,4" />
-                        <CheckBox x:Name="OverlayDisabledCheck" Content="Disable Overlay" Margin="0,0,0,6"
-                                  Checked="OnOverlayDisabledCheckChanged" Unchecked="OnOverlayDisabledCheckChanged"
-                                  ToolTip="Hides the whole overlay and stops screen reading (the same switch as the tray item Disable Overlay and its hotkey). It takes effect at once; it is not part of Save." />
-                        <CheckBox x:Name="PanelDisabledCheck" Content="Disable Info Panel" Margin="0,0,0,6"
-                                  Checked="OnOverlayCheckChanged" Unchecked="OnOverlayCheckChanged"
-                                  ToolTip="Hides the right-hand panel (the same switch as the tray item Disable Info Panel). The brackets around nameplates stay." />
                         <Grid Margin="0,0,0,6">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="190" />

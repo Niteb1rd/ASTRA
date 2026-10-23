@@ -23,7 +23,7 @@ public sealed record GameWindowSnapshot(GameWindowState State, PixelRect Bounds,
 /// Watches whether Star Citizen is the window in front and whether it is borderless (<see cref="GameWindowRules"/>).
 /// Every 250 ms it asks Windows for the foreground window and which process owns it; the process name is remembered per process id,
 /// so nothing else happens while another program is in front (a "not the game" answer is kept for 5 seconds, a "game" answer for 60). Only when the game is in front are its rectangle, its monitor and its
-/// style read. <see cref="Changed"/> is raised (on the UI thread) when the snapshot differs from the previous one; state changes are logged.
+/// style read. <see cref="Changed"/> is raised (on the UI thread) when the snapshot differs from the previous one; state changes are logged. <see cref="Checked"/> is raised after every check.
 /// </summary>
 public sealed class GameWindowTracker : IDisposable
 {
@@ -56,6 +56,12 @@ public sealed class GameWindowTracker : IDisposable
     /// <summary>Raised when the state, the game's rectangle or the game's process changed.</summary>
     public event EventHandler<GameWindowSnapshot>? Changed;
 
+    /// <summary>
+    /// Raised (on the UI thread) after EVERY check, whether or not anything changed. For decisions that must not depend on a change happening
+    /// (the "not borderless" notice: the game may already have been in that state when IRIS started).
+    /// </summary>
+    public event EventHandler<GameWindowSnapshot>? Checked;
+
     public void Start()
     {
         if (!_timer.IsEnabled)
@@ -83,13 +89,15 @@ public sealed class GameWindowTracker : IDisposable
         }
 
         var previous = Current;
-        if (snapshot == previous)
-            return;
+        if (snapshot != previous)
+        {
+            Current = snapshot;
+            if (previous.State != snapshot.State)
+                LogChange(previous, snapshot);
+            Changed?.Invoke(this, snapshot);
+        }
 
-        Current = snapshot;
-        if (previous.State != snapshot.State)
-            LogChange(previous, snapshot);
-        Changed?.Invoke(this, snapshot);
+        Checked?.Invoke(this, Current); // every check, changed or not
     }
 
     private GameWindowSnapshot Evaluate()

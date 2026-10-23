@@ -96,21 +96,22 @@ IRIS now has the overlay window. It is driven by **test data only**; Phase 3 wil
 title bar or frame and exactly covers its monitor, because only then do window and screen coordinates line up. In the game, set
 *Graphics > Windowed mode* to **Borderless**. If the game is in front but not borderless, the overlay stays off and IRIS shows a small pop-up with a single **Close** button:
 "Star Citizen is not in borderless windowed mode, so the IRIS overlay is turned off. Switch to Borderless in the game's graphics settings." It is shown at most once per run of IRIS (not once per game session),
-never while Disable Overlay is on, and not while another IRIS question or pop-up is open (IRIS then tries again at the next change of the game window state). Like IRIS's other pop-ups it does not take the focus from the game: it waits in the taskbar, and there is no tray balloon.
+never while Disable Overlay is on, and not while another IRIS pop-up is open. IRIS looks at every 250 ms check, not only when the window state changes, so a game that was already running in a non-borderless mode when IRIS started gets the notice too, and a skipped moment is tried again at the next check. Like IRIS's other pop-ups it does not take the focus from the game: it waits in the taskbar, and there is no tray balloon. It is not a question that IRIS waits for: the tray's Settings and Quit work while it is open (Quit closes it).
 **Disable Overlay** (tray) hides it, see "Disable Overlay, Disable Info Panel and hotkeys" below. The overlay window is created the first time it is needed and afterwards only hidden. While the game is not in front, the only work IRIS does is
 a check of the foreground window every 250 ms. State changes (game in front, borderless or not) are written to the log.
 
 **Test overlay.** Settings tab > Overlay > **Show test overlay (15 s)** shows a sample for 15 seconds: up to 3 players from your player list, 2 org-list
 examples (an org SID from your list with a made-up handle), 1 org-attribute example (if you have a rule) and 2 No Match examples (`TestPilot01`, `TestPilot02`, "Orgs: not looked up").
 It appears over the Star Citizen window if the game is running (even when it is not in front or not borderless), otherwise over the screen the settings window is on. It ignores the
-borderless/foreground rules. The button turns into a countdown ("Stop test overlay (12 s)"); press it again to stop. The panel uses the values currently shown in the
-Settings tab, saved or not, and follows them while you move the sliders, so you can tune and preview before pressing Save.
+borderless/foreground rules. The button turns into a countdown ("Stop test overlay (12 s)"); press it again to stop. The sizes and gaps use the values currently shown in the
+Settings tab, saved or not, and follow them while you move the sliders, so you can tune and preview before pressing Save. Whether the panel is drawn at all follows the saved
+*Disable Info Panel* state (the tray check mark and its hotkey).
 
 **Overlay settings** (Settings tab, in `settings.toml` as the `panel_*` keys above):
 
 | Setting | Default | Range | Meaning |
 | --- | --- | --- | --- |
-| Disable Info Panel | off | on/off | Hides the right panel; the brackets stay. Stored as `panel_enabled` (true = panel shown) |
+| Disable Info Panel (tray / hotkey only) | off | on/off | Hides the right panel; the brackets stay. Stored as `panel_enabled` (true = panel shown). Not a Settings tab control |
 | Panel width | 16 % | 8 to 40 | Of the game window width |
 | Text size | 18 px | 10 to 40 | Pixels at 1440p; scales linearly with the window height (27 px at 2160p) |
 | Right gap | 10 % | 0 to 40 | Panel right edge = width minus this share of the width |
@@ -120,17 +121,14 @@ IRIS is per-monitor DPI aware (`app.manifest`, PerMonitorV2), so the overlay lin
 
 ### Disable Overlay, Disable Info Panel and hotkeys
 
-The tray menu has two check-mark items, and the same two switches exist as hotkeys and as check boxes in the Settings tab (Overlay section). They always agree: all of them
-change the same saved setting.
+The tray menu has two check-mark items, and the same two switches exist as hotkeys (set in the Settings tab's Hotkeys section). There are no check boxes for them in the Settings
+tab. They always agree: the tray and the hotkeys change the same saved setting.
 
 - **Disable Overlay** (`overlay_disabled`): hides everything **and stops all screen reading (OCR)**. Only the 250 ms "is Star Citizen in front?" check keeps running.
   The future capture loop must check `AppServices.IsOverlayDisabled` before each capture (event: `OverlayDisabledChanged`). Kept across restarts.
-  The test overlay ignores this switch. The Settings tab has the check box with the same name (above *Disable Info Panel*); like the tray item it acts at once and is not part of
-  the unsaved changes that **Save** writes.
-- **Disable Info Panel** (`panel_enabled = false`): hides only the right panel; the brackets stay. The Settings tab's Overlay section has the checkbox with the
-  same name. The test overlay follows the checkbox as it is shown on screen.
-- A tray click, a hotkey or the *Disable Overlay* check box saves just that one setting at once. If the settings window is open with other unsaved edits, they are kept; only the
-  check boxes of these two switches follow the change.
+  The test overlay ignores this switch.
+- **Disable Info Panel** (`panel_enabled = false`): hides only the right panel; the brackets stay. The test overlay follows the saved setting (the tray check mark).
+- A tray click or a hotkey saves just that one setting at once. If the settings window is open with other unsaved edits, they are kept.
 
 **Hotkeys** (Settings tab, top section, `hotkey_toggle_overlay` / `hotkey_toggle_panel`, empty by default): *Toggle Overlay* and *Toggle Info Panel*. No box has the focus when the window or the tab opens. **Click** a box (or Tab to it and press Enter or Space) to start recording, then
 press the hotkey; Esc cancels (Esc itself cannot be assigned), **Clear** removes it. Merely focusing a box does not start recording. A single key without any modifier is allowed (for example `F9` or `O`), because the key press
@@ -148,7 +146,7 @@ the two hotkeys are not the same combination: the boxes then show a red message,
 When a hotkey is pressed and Star Citizen is in front and borderless, the overlay shows a short confirmation ("Overlay off", "Overlay on", "Info panel off", "Info panel on")
 for about 2 seconds just above the top of the panel, white text with a dark edge on a dark translucent box. This also works while the overlay is disabled (only that text is drawn).
 A new press replaces a confirmation that is still showing. In any other case, including while the test overlay is running, the result is a tray balloon instead.
-Clicking the tray items or the check boxes shows no on-screen text.
+Clicking the tray items shows no on-screen text.
 
 ### Credits
 
