@@ -59,11 +59,12 @@ public class ExclusionListTests : IDisposable
 
         Assert.True(File.Exists(path));
         var expected = DefaultNames();
-        Assert.Equal(61, expected.Length);
-        Assert.Equal(61, list.Count);
+        Assert.Equal(62, expected.Length);
+        Assert.Equal(62, list.Count);
         Assert.Equal(expected.OrderBy(n => n, StringComparer.OrdinalIgnoreCase), list.Names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
         Assert.True(list.IsExcluded("Stanton"));
         Assert.True(list.IsExcluded("stanton"));
+        Assert.True(list.IsExcluded("AMMUNITON")); // a label of the game that the nameplate detector reads as a name (one letter off the word)
     }
 
     [Fact]
