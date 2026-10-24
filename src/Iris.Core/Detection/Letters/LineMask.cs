@@ -22,6 +22,27 @@ public sealed class LineMask
     /// <summary>Row-major pixels, 0 or 1.</summary>
     public byte[] Data { get; }
 
+    /// <summary>
+    /// Where the mask came from (<c>geom=True</c> of <c>line_mask_info</c> in the Python reference): the frame pixel of the top left corner of the crop the mask was cut from
+    /// (the line's box minus its padding, limited to the image). The mask pixel (x, y) is the frame position
+    /// <c>(OriginX + (ColumnOffset + x) / 4, OriginY + (RowOffset + y) / 4)</c>. Zero for a mask that was not made from an image.
+    /// </summary>
+    public int OriginX { get; init; }
+
+    public int OriginY { get; init; }
+
+    /// <summary>The column of the 4x enlarged crop where the (trimmed) mask starts (c0 of the reference).</summary>
+    public int ColumnOffset { get; init; }
+
+    /// <summary>The row of the 4x enlarged crop where the (trimmed) mask starts (r0 of the reference).</summary>
+    public int RowOffset { get; init; }
+
+    /// <summary>
+    /// The colour of every ink pixel (mask value 1) in row-major order, 3 bytes (B, G, R) per pixel, taken from the 4x enlarged crop the mask was cut from;
+    /// null unless the mask was made with <c>keepColors</c>. The plate colour is measured on these (<see cref="PlateColors"/>).
+    /// </summary>
+    public byte[]? InkColors { get; init; }
+
     /// <summary>Pixel at (x, y); 0 or 1.</summary>
     public byte this[int y, int x] => Data[y * Width + x];
 

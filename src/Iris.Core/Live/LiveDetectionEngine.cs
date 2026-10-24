@@ -23,15 +23,16 @@ public sealed record StepResult(StepStatus Status, LiveSnapshot Snapshot, string
 
 /// <summary>
 /// One read of the detection loop, without any threads, timers or windows (those are the app's): capture a picture from an <see cref="IFrameSource"/>, run the
-/// <see cref="NameplateDetector"/> and the <see cref="NameplateTracker"/> over it (the pipeline shape of the replay tool), feed the
-/// <see cref="DuplicateNameTracker"/>, ask for lookups of org-list members, and build the <see cref="LiveSnapshot"/> that the overlay shows
-/// (<see cref="LiveSnapshotBuilder"/>). Not thread safe: ONE thread calls <see cref="Step"/>; the snapshot it returns is immutable and may be read from others.
+/// <see cref="NameplateDetector"/> and the <see cref="NameplateTracker"/> over it (the pipeline shape of the replay tool), apply the duplicate rule (a name on
+/// 2+ white plates is excluded for the session, see <see cref="SessionExclusions"/>; a name on one of the user's lists never is), ask for lookups of org-list members, and build the
+/// <see cref="LiveSnapshot"/> that the overlay shows (<see cref="LiveSnapshotBuilder"/>). Not thread safe: ONE thread calls <see cref="Step"/>; the snapshot it returns is immutable and may be read from others.
 /// </summary>
 public sealed class LiveDetectionEngine : IDisposable
 {
     private readonly NameplateReader _reader;
     private readonly Func<string, IReadOnlyList<OrgMembership>?> _lookupOrgs;
-    private readonly DuplicateNameTracker? _duplicates;
+    private readonly SessionExclusions _session;
+    private readonly Func<string, string, bool>? _isOrgMember;
     private readonly OrgMemberLookupQueue? _lookups;
     private readonly ILog _log;
     private readonly IClock _clock;
@@ -39,6 +40,7 @@ public sealed class LiveDetectionEngine : IDisposable
     private readonly NameplateDetectorSettings _baseDetectorSettings;
     private readonly NameplateTrackerSettings _trackerSettings;
     private readonly LiveSnapshotBuilder _builder;
+    private readonly PlateSeedBuilder _seedBuilder;
     private readonly Dictionary<string, (double AtMs, IReadOnlyList<OrgMembership>? Orgs)> _orgMemo = new(StringComparer.OrdinalIgnoreCase);
 
     private NameplateDetector? _detector;
@@ -52,19 +54,22 @@ public sealed class LiveDetectionEngine : IDisposable
     /// <param name="reader">The letter reader (it may be shared; the model is read only).</param>
     /// <param name="exclusions">The exclusion list.</param>
     /// <param name="lookupOrgs">Orgs of a handle from the cache, null when never looked up. The engine remembers answers for <see cref="LiveSettings.OrgCacheMs"/>.</param>
-    /// <param name="duplicates">Counts names seen on two separate plates at once (auto exclusion), or null for none.</param>
+    /// <param name="sessionExclusions">The names the duplicate rule excluded for this run of IRIS. The app owns it and passes the same instance for the whole run:
+    /// <see cref="Reset"/> (alt-tab) forgets the tracks but NOT this list. Null: the engine keeps one of its own.</param>
     /// <param name="lookups">Queues lookups of org-list members, or null for none.</param>
+    /// <param name="isOrgMember">Tells whether a handle is a cached member of the org with the given SID (the org's member list); such a name counts as listed even before its player page was looked up. Null: none.</param>
     public LiveDetectionEngine(
         NameplateReader reader,
         ExclusionList exclusions,
         Func<string, IReadOnlyList<OrgMembership>?> lookupOrgs,
-        DuplicateNameTracker? duplicates = null,
+        SessionExclusions? sessionExclusions = null,
         OrgMemberLookupQueue? lookups = null,
         LiveSettings? settings = null,
         NameplateDetectorSettings? detectorSettings = null,
         NameplateTrackerSettings? trackerSettings = null,
         ILog? log = null,
-        IClock? clock = null)
+        IClock? clock = null,
+        Func<string, string, bool>? isOrgMember = null)
     {
         _settings = settings ?? LiveSettings.Default;
         var problem = _settings.Validate();
@@ -72,18 +77,23 @@ public sealed class LiveDetectionEngine : IDisposable
             throw new ArgumentException(problem, nameof(settings));
         _reader = reader;
         _lookupOrgs = lookupOrgs;
-        _duplicates = duplicates;
+        _session = sessionExclusions ?? new SessionExclusions();
+        _isOrgMember = isOrgMember;
         _lookups = lookups;
         _log = log ?? NullLog.Instance;
         _clock = clock ?? SystemClock.Instance;
         _baseDetectorSettings = detectorSettings ?? NameplateDetectorSettings.Default;
         _trackerSettings = trackerSettings ?? NameplateTrackerSettings.Default;
         _builder = new LiveSnapshotBuilder(exclusions, MemoizedOrgs, _settings);
-        _tracker = new NameplateTracker(_trackerSettings);
+        _seedBuilder = new PlateSeedBuilder(_baseDetectorSettings);
+        _tracker = new NameplateTracker(_trackerSettings, _session);
     }
 
     /// <summary>The tracker (for tests and diagnostics).</summary>
     public NameplateTracker Tracker => _tracker;
+
+    /// <summary>The names excluded for this session by the duplicate rule.</summary>
+    public SessionExclusions SessionExclusions => _session;
 
     /// <summary>The geometry of the current game window size; null before the first step.</summary>
     public ScanGeometry? Geometry => _geometry;
@@ -99,7 +109,6 @@ public sealed class LiveDetectionEngine : IDisposable
     public StepResult Step(IFrameSource source, PixelRect window, SocialConfig config, double nowMs)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        _memoNowMs = nowMs;
 
         var width = (int)Math.Round(window.Width);
         var height = (int)Math.Round(window.Height);
@@ -114,40 +123,97 @@ public sealed class LiveDetectionEngine : IDisposable
         var grab = source.Grab(region);
         if (grab.Status == GrabStatus.Unavailable || grab.Image is null)
             return new StepResult(StepStatus.Skipped, _snapshot, grab.Message ?? "no picture");
-        var image = grab.Image;
+
+        var result = Process(grab.Image, window, config, nowMs, out var problem, buildSeeds: false);
+        return result is null
+            ? new StepResult(StepStatus.Skipped, _snapshot, problem)
+            : new StepResult(StepStatus.Read, result.Snapshot);
+    }
+
+    /// <summary>
+    /// The geometry (what to copy, and the detector settings for the copy) for a game window of this size, or false when the window is too small. It does not
+    /// depend on anything the engine has seen, so the capture loop can ask for it before the first read.
+    /// </summary>
+    public bool TryGetGeometry(int windowWidth, int windowHeight, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ScanGeometry? geometry) =>
+        ScanGeometry.TryCreate(windowWidth, windowHeight, _baseDetectorSettings, out geometry);
+
+    /// <summary>
+    /// One read of a picture that is already there: <paramref name="image"/> is the scan region's crop of the game window (<see cref="ScanGeometry.Capture"/>,
+    /// the size <see cref="TryGetGeometry"/> gives), taken at <paramref name="captureMs"/> on the loop's monotonic clock (the tracker's time base: it must not go back
+    /// between reads). The detector, the tracker, the duplicate-name check and the snapshot as in <see cref="Step"/>; and, with <paramref name="buildSeeds"/>, the
+    /// <see cref="PlateSeed"/> of every confirmed plate this picture showed (its template cut out of <paramref name="image"/>), for the template tracking.
+    /// Returns null, and says why in <paramref name="problem"/>, when the picture cannot be used (a window too small to scan, a picture of the wrong size).
+    /// The caller owns the result (dispose it, or hand it to <see cref="PlateTemplateTracker.ApplyDetection"/>, which takes over its seeds).
+    /// </summary>
+    public DetectionResult? Process(Mat image, PixelRect window, SocialConfig config, double captureMs, out string? problem, bool buildSeeds = true, int epoch = 0)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        problem = null;
+        _memoNowMs = captureMs;
+
+        var width = (int)Math.Round(window.Width);
+        var height = (int)Math.Round(window.Height);
+        if (_geometry is null || !_geometry.Matches(width, height))
+        {
+            if (!SetGeometry(width, height))
+            {
+                problem = $"the game window ({width}x{height}) is too small to scan";
+                return null;
+            }
+        }
+
+        var geometry = _geometry!;
         if (image.Width != geometry.Capture.Width || image.Height != geometry.Capture.Height)
-            return new StepResult(StepStatus.Skipped, _snapshot, $"the picture is {image.Width}x{image.Height}, expected {geometry.Capture.Width}x{geometry.Capture.Height}");
+        {
+            problem = $"the picture is {image.Width}x{image.Height}, expected {geometry.Capture.Width}x{geometry.Capture.Height}";
+            return null;
+        }
 
         _frame++;
         var detector = _detector!;
         var candidates = detector.FindCandidates(image);
         var evaluator = detector.CreateEvaluator(image, candidates);
-        var evaluated = new Dictionary<Rect, PairEvaluation>();
-        _tracker.Update(_frame, nowMs, evaluator.TrackCandidates(), (top, bottom) =>
+        var update = _tracker.Update(_frame, captureMs, evaluator.TrackCandidates(), (top, bottom) =>
         {
             var evaluation = evaluator.Evaluate(top, bottom);
-            evaluated[top] = evaluation;
-            return new TrackEvaluation(evaluation.IsNameplate, evaluation.Detection?.Name);
-        }, geometry.WindowHeight);
+            var detection = evaluation.Detection;
+            return new TrackEvaluation(evaluation.IsNameplate, detection?.Name, detection?.NameRows, detection?.Color);
+        }, geometry.WindowHeight, name => IsListed(name, config));
 
-        CountDuplicates(config, nowMs, evaluated);
-        _snapshot = _builder.Build(_tracker.Tracks, config, geometry.Capture.X, geometry.Capture.Y, nowMs, _snapshot);
+        foreach (var name in update.Excluded)
+            _log.Write(_clock.UtcNow, $"Session exclusion: {name} (seen on 2+ white nameplates)");
+
+        // a session-excluded name gets no bracket, no panel entry and no lookup (a name on one of the user's lists is never excluded)
+        IReadOnlyList<NameplateTrack> visible = _tracker.Tracks;
+        if (_session.Count > 0)
+            visible = _tracker.Tracks.Where(t => t.ConfirmedName is not { } confirmed || !_session.Contains(confirmed) || IsListed(confirmed, config)).ToList();
+        _snapshot = _builder.Build(visible, config, geometry.Capture.X, geometry.Capture.Y, captureMs, _snapshot);
         if (_lookups is not null)
         {
             foreach (var bracket in _snapshot.Brackets)
-                _lookups.Consider(bracket.Handle, config, nowMs);
+                _lookups.Consider(bracket.Handle, config, captureMs);
         }
 
-        return new StepResult(StepStatus.Read, _snapshot);
+        IReadOnlyList<PlateSeed> seeds = Array.Empty<PlateSeed>();
+        if (buildSeeds && _snapshot.Brackets.Count > 0)
+        {
+            var shown = new HashSet<int>(_snapshot.Brackets.Select(b => b.TrackId));
+            seeds = _seedBuilder.Build(
+                _tracker.Tracks, shown, image, geometry.Capture.X, geometry.Capture.Y, geometry.WindowHeight, captureMs,
+                _settings.MaxPredictionMs, _settings.MaxTrackedPlates);
+        }
+
+        return new DetectionResult(_snapshot, seeds, captureMs, width, height, epoch);
     }
 
     /// <summary>
     /// Forgets everything seen so far: the tracks, the snapshot, the remembered orgs and the waiting lookups. Called when detection stops (the game left the front,
-    /// the overlay was disabled): what was on screen then is not what is on screen later.
+    /// the overlay was disabled): what was on screen then is not what is on screen later. The session exclusions (<see cref="SessionExclusions"/>) are kept: they
+    /// last until IRIS closes.
     /// </summary>
     public void Reset()
     {
-        _tracker = new NameplateTracker(_trackerSettings);
+        _tracker = new NameplateTracker(_trackerSettings, _session);
         _snapshot = LiveSnapshot.Empty;
         _orgMemo.Clear();
         _lookups?.Clear();
@@ -160,6 +226,7 @@ public sealed class LiveDetectionEngine : IDisposable
         _disposed = true;
         _detector?.Dispose();
         _detector = null;
+        _seedBuilder.Dispose();
     }
 
     private bool SetGeometry(int width, int height)
@@ -174,38 +241,26 @@ public sealed class LiveDetectionEngine : IDisposable
     }
 
     /// <summary>
-    /// The duplicate name rule: a name on two separate plates in one frame counts that frame (three frames: the name goes on the exclusion list). The plates are the
-    /// Nameplate tracks seen in this frame, with their confirmed name, or the name read in this frame while the track is not confirmed yet.
+    /// True when the name is on one of the user's lists: the player list, or a member of an org on the org list (through the orgs in the cache, or as a cached member of a
+    /// listed org whose page has not been looked up yet). Org attribute rules (No Org, Redacted, archetype, activity) do not count. Such a name is always shown and never
+    /// excluded by the duplicate rule.
     /// </summary>
-    private void CountDuplicates(SocialConfig config, double nowMs, Dictionary<Rect, PairEvaluation> evaluated)
+    private bool IsListed(string name, SocialConfig config)
     {
-        if (_duplicates is null)
-            return;
-        List<DetectedNameplate>? plates = null;
-        foreach (var track in _tracker.Tracks)
-        {
-            if (track.Verdict != TrackVerdict.Nameplate || track.LastSeenMs != nowMs)
-                continue;
-            var name = track.ConfirmedName;
-            if (name is null && evaluated.TryGetValue(track.Top, out var evaluation))
-                name = evaluation.Detection?.Name;
-            if (name is null)
-                continue;
-            var box = LiveSnapshotBuilder.WindowBox(track, 0, 0);
-            (plates ??= new List<DetectedNameplate>()).Add(new DetectedNameplate(name, (int)box.X, (int)box.Y, (int)box.Width, (int)box.Height));
-        }
-
-        if (plates is null || plates.Count < 2)
-            return;
+        if (NameFilter.IsOnPlayerList(name, config))
+            return true;
+        var orgs = MemoizedOrgs(name);
+        if (orgs is not null && ColorResolver.Resolve(name, orgs, config).Kind is MatchKind.PlayerList or MatchKind.OrgList)
+            return true;
+        if (_isOrgMember is null)
+            return false;
         try
         {
-            var added = _duplicates.Process(_frame, plates, config);
-            foreach (var name in added)
-                _log.Write(_clock.UtcNow, $"live: {name} was seen on 2+ separate nameplates in {DuplicateNameTracker.FramesNeeded} frames and was added to the exclusion list");
+            return config.Orgs.Any(org => _isOrgMember(org.Sid, name));
         }
         catch (Exception ex) when (ex is DbException or InvalidOperationException or InvalidDataException)
         {
-            _log.Write(_clock.UtcNow, "live: the duplicate name check failed: " + ex.Message);
+            return false;
         }
     }
 

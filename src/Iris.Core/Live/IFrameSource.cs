@@ -31,8 +31,21 @@ public readonly record struct GrabResult(GrabStatus Status, Mat? Image, string? 
 }
 
 /// <summary>
-/// Where the detection loop gets its pictures from. IRIS's own implementation (in the Windows app) copies a rectangle of the screen with DXGI Desktop
-/// Duplication; the tests give it images. Not thread safe: one thread grabs.
+/// The result of one <see cref="IFrameSource.GrabRegions"/>: one image per requested region, in the order of the request, all copied out of ONE acquired
+/// screen frame. The images belong to the frame source, as <see cref="GrabResult.Image"/> does (valid until the next grab, release or dispose; the caller
+/// must not dispose or keep them). An entry is null when there is no picture for that region: with <see cref="GrabStatus.NoNewFrame"/> that is a region
+/// whose place changed since the last grab (the screen did not change, so the previous picture of that place is not there; "unchanged" is the answer),
+/// with <see cref="GrabStatus.Unavailable"/> it is every entry. <paramref name="FrameMs"/> is the time of the frame on the live clock
+/// (<see cref="StopwatchClock.Shared"/>), taken right after the screen frame was acquired; NaN when the source has no such time (then the caller uses its own clock).
+/// </summary>
+public readonly record struct GrabRegionsResult(GrabStatus Status, IReadOnlyList<Mat?> Images, string? Message = null, double FrameMs = double.NaN)
+{
+    public static GrabRegionsResult Unavailable(string message) => new(GrabStatus.Unavailable, Array.Empty<Mat?>(), message);
+}
+
+/// <summary>
+/// Where the detection loop gets its pictures from. IRIS's own implementation (in the Windows app) copies rectangles of the screen with DXGI Desktop
+/// Duplication; the tests give it images. Not thread safe: one thread grabs (the capture loop is the only owner of the screen duplication).
 /// </summary>
 public interface IFrameSource : IDisposable
 {
@@ -41,6 +54,14 @@ public interface IFrameSource : IDisposable
     /// 8 bit BGR image of exactly that size. A region that is not completely on one screen is <see cref="GrabStatus.Unavailable"/>.
     /// </summary>
     GrabResult Grab(Rect screenRegion);
+
+    /// <summary>
+    /// Copies several rectangles (<paramref name="screenRegions"/>, the same coordinates as <see cref="Grab"/>) out of ONE acquired screen frame: the capture
+    /// loop reads the small search patches of the tracking and, now and then, the detection scan region from the very same picture, at the cost of one
+    /// frame acquisition. Every returned image is a reusable 8 bit BGR image of exactly its region's size. Regions that are not completely on one screen
+    /// make the whole call <see cref="GrabStatus.Unavailable"/>.
+    /// </summary>
+    GrabRegionsResult GrabRegions(IReadOnlyList<Rect> screenRegions);
 
     /// <summary>
     /// Lets go of whatever the source holds while nothing is being captured (GPU objects, the operating system's duplication of the screen).

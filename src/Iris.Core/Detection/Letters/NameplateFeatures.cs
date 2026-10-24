@@ -39,9 +39,10 @@ public static class NameplateFeatures
     /// <summary>
     /// Text mask of the nameplate line inside <paramref name="box"/> of a BGR (8 bit, 3 channel) image (<c>line_mask</c>).
     /// Returns null when the crop has no text. <paramref name="threshold"/> null picks the contrast threshold per crop
-    /// (Otsu's method, limited to 25..90).
+    /// (Otsu's method, limited to 25..90). <paramref name="keepColors"/> also keeps the colour of every ink pixel (<see cref="LineMask.InkColors"/>,
+    /// for the plate colour); the mask itself is the same.
     /// </summary>
-    public static LineMask? CreateMask(Mat bgr, Rect box, double? threshold = null, int pad = 2)
+    public static LineMask? CreateMask(Mat bgr, Rect box, double? threshold = null, int pad = 2, bool keepColors = false)
     {
         if (bgr.Empty() || bgr.Depth() != MatType.CV_8U || bgr.Channels() != 3)
             throw new ArgumentException("Expected a non-empty 8 bit BGR image.", nameof(bgr));
@@ -54,14 +55,14 @@ public static class NameplateFeatures
             return null;
 
         using var crop = new Mat(bgr, new Rect(x0, y0, x1 - x0, y1 - y0));
-        return CreateMaskFromCrop(crop, threshold);
+        return CreateMaskFromCrop(crop, threshold, x0, y0, keepColors);
     }
 
     /// <summary>
-    /// Same as <see cref="CreateMask(Mat, Rect, double?, int)"/> for a pixel buffer: 3 bytes per pixel (B, G, R), rows
+    /// Same as <see cref="CreateMask(Mat, Rect, double?, int, bool)"/> for a pixel buffer: 3 bytes per pixel (B, G, R), rows
     /// <paramref name="stride"/> bytes apart. Only the box (plus padding) is copied.
     /// </summary>
-    public static LineMask? CreateMask(byte[] bgr, int width, int height, int stride, Rect box, double? threshold = null, int pad = 2)
+    public static LineMask? CreateMask(byte[] bgr, int width, int height, int stride, Rect box, double? threshold = null, int pad = 2, bool keepColors = false)
     {
         if (width <= 0 || height <= 0 || stride < width * 3 || bgr.Length < (height - 1) * stride + width * 3)
             throw new ArgumentException("The buffer is smaller than width, height and stride say.", nameof(bgr));
@@ -78,10 +79,10 @@ public static class NameplateFeatures
         using var crop = new Mat(h, w, MatType.CV_8UC3); // freshly allocated Mats have no row padding
         for (var y = 0; y < h; y++)
             Marshal.Copy(bgr, (y0 + y) * stride + x0 * 3, crop.Data + y * w * 3, w * 3);
-        return CreateMaskFromCrop(crop, threshold);
+        return CreateMaskFromCrop(crop, threshold, x0, y0, keepColors);
     }
 
-    private static LineMask? CreateMaskFromCrop(Mat crop, double? threshold)
+    private static LineMask? CreateMaskFromCrop(Mat crop, double? threshold, int originX, int originY, bool keepColors)
     {
         using var big = new Mat();
         Cv2.Resize(crop, big, new Size(0, 0), Scale, Scale, InterpolationFlags.Cubic);
@@ -143,11 +144,31 @@ public static class NameplateFeatures
             Marshal.Copy(copy.Data, data, 0, data.Length);
         }
 
-        return TrimToText(data, h, w);
+        byte[]? colors = null;
+        if (keepColors)
+        {
+            colors = new byte[checked(big.Rows * big.Cols * 3)];
+            if (big.IsContinuous())
+            {
+                Marshal.Copy(big.Data, colors, 0, colors.Length);
+            }
+            else
+            {
+                using var copy = big.Clone();
+                Marshal.Copy(copy.Data, colors, 0, colors.Length);
+            }
+        }
+
+        return TrimToText(data, h, w, originX, originY, colors);
     }
 
-    /// <summary>Keeps the rows with ink (more than 2% of the width), then the columns with ink (second half of <c>line_mask</c>).</summary>
-    internal static LineMask? TrimToText(byte[] data, int h, int w)
+    /// <summary>
+    /// Keeps the rows with ink (more than 2% of the width), then the columns with ink (second half of <c>line_mask</c>).
+    /// <paramref name="originX"/> and <paramref name="originY"/> are the frame position of the crop (see <see cref="LineMask.OriginX"/>);
+    /// <paramref name="colors4x"/>, when given, is the BGR picture the mask was made from (3 bytes per pixel, <paramref name="w"/> pixels per row):
+    /// the colours of the ink pixels are kept in <see cref="LineMask.InkColors"/>.
+    /// </summary>
+    internal static LineMask? TrimToText(byte[] data, int h, int w, int originX = 0, int originY = 0, byte[]? colors4x = null)
     {
         var rowLimit = 0.02 * w;
         int firstRow = -1, lastRow = -1;
@@ -189,7 +210,37 @@ public static class NameplateFeatures
         var result = new byte[outH * outW];
         for (var y = 0; y < outH; y++)
             Buffer.BlockCopy(data, (firstRow + y) * w + firstCol, result, y * outW, outW);
-        return new LineMask(outH, outW, result);
+
+        byte[]? ink = null;
+        if (colors4x is not null)
+        {
+            var count = 0;
+            foreach (var v in result)
+                count += v;
+            ink = new byte[count * 3];
+            var at = 0;
+            for (var y = 0; y < outH; y++)
+            {
+                for (var x = 0; x < outW; x++)
+                {
+                    if (result[y * outW + x] == 0)
+                        continue;
+                    var source = ((firstRow + y) * w + firstCol + x) * 3;
+                    ink[at++] = colors4x[source];
+                    ink[at++] = colors4x[source + 1];
+                    ink[at++] = colors4x[source + 2];
+                }
+            }
+        }
+
+        return new LineMask(outH, outW, result)
+        {
+            OriginX = originX,
+            OriginY = originY,
+            ColumnOffset = firstCol,
+            RowOffset = firstRow,
+            InkColors = ink,
+        };
     }
 
     /// <summary>

@@ -85,6 +85,42 @@ public class LiveEngineTests : IDisposable
         Assert.Equal(30, missing.Settings.NameplateTrackingFps);
     }
 
+    // ----- overlay_visible_in_capture -----
+
+    [Fact]
+    public void OverlayVisibleInCapture_DefaultsToFalse()
+    {
+        Assert.False(new AppSettings().OverlayVisibleInCapture);
+        Assert.False(AppSettingsToml.Read("format_version = 1\n").Settings.OverlayVisibleInCapture);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void OverlayVisibleInCapture_SaveThenLoadRoundTrips(bool value)
+    {
+        var path = _dir.File("settings.toml");
+        var saved = AppSettingsToml.Save(path, new AppSettings { OverlayVisibleInCapture = value });
+        var loaded = AppSettingsToml.Load(path);
+
+        Assert.True(saved.Success, saved.Error);
+        Assert.Empty(loaded.Warnings);
+        Assert.Equal(value, loaded.Settings.OverlayVisibleInCapture);
+        Assert.Contains("overlay_visible_in_capture = " + (value ? "true" : "false"), File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void OverlayVisibleInCapture_AWrongTypeBecomesFalseWithAWarning_AndTheKeyIsKnown()
+    {
+        var known = AppSettingsToml.Read("overlay_visible_in_capture = true\n");
+        var wrong = AppSettingsToml.Read("format_version = 1\noverlay_visible_in_capture = \"yes\"\n");
+
+        Assert.Empty(known.Warnings);
+        Assert.True(known.Settings.OverlayVisibleInCapture);
+        Assert.StartsWith("overlay_visible_in_capture", Assert.Single(wrong.Warnings));
+        Assert.False(wrong.Settings.OverlayVisibleInCapture);
+    }
+
     // ----- CacheDatabase.IsOrgMember -----
 
     [Fact]
@@ -246,9 +282,37 @@ public class LiveEngineTests : IDisposable
             return new GrabResult(GrabStatus.Ok, _last);
         }
 
+        public int RegionGrabs { get; private set; }
+        private readonly List<Mat> _regionImages = new();
+
+        public GrabRegionsResult GrabRegions(IReadOnlyList<Rect> screenRegions)
+        {
+            RegionGrabs++;
+            if (Unavailable)
+                return GrabRegionsResult.Unavailable("test: no picture");
+            foreach (var old in _regionImages)
+                old.Dispose();
+            _regionImages.Clear();
+            var images = new List<Mat?>(screenRegions.Count);
+            foreach (var region in screenRegions)
+            {
+                var crop = new Rect(region.X - Origin.X, region.Y - Origin.Y, region.Width, region.Height);
+                var image = new Mat(_window, crop).Clone();
+                _regionImages.Add(image);
+                images.Add(image);
+            }
+
+            return new GrabRegionsResult(GrabStatus.Ok, images);
+        }
+
         public void Release() => Releases++;
 
-        public void Dispose() => _last?.Dispose();
+        public void Dispose()
+        {
+            _last?.Dispose();
+            foreach (var image in _regionImages)
+                image.Dispose();
+        }
     }
 
     private const int WindowX = 100;
@@ -256,11 +320,11 @@ public class LiveEngineTests : IDisposable
 
     private static DetectorFixtureFrame Frame(string file) => DetectorFixtures.Load().Single(f => f.File == file);
 
-    private LiveDetectionEngine NewEngine(out ExclusionList exclusions, Func<string, IReadOnlyList<OrgMembership>?>? orgs = null, IClock? clock = null)
+    private LiveDetectionEngine NewEngine(out ExclusionList exclusions, Func<string, IReadOnlyList<OrgMembership>?>? orgs = null, IClock? clock = null, SessionExclusions? session = null, ILog? log = null)
     {
         var testClock = clock ?? new FakeClock();
         exclusions = ExclusionList.LoadOrCreate(_dir.File("exclusions.txt"), testClock, new ListLog());
-        return new LiveDetectionEngine(new NameplateReader(LetterModel.LoadEmbedded()), exclusions, orgs ?? (_ => null));
+        return new LiveDetectionEngine(new NameplateReader(LetterModel.LoadEmbedded()), exclusions, orgs ?? (_ => null), session, log: log, clock: testClock);
     }
 
     private static PixelRect Window(DetectorFixtureFrame frame) => new(WindowX, WindowY, frame.Width, frame.Height);
@@ -304,6 +368,51 @@ public class LiveEngineTests : IDisposable
     }
 
     [OpenCvFact]
+    public void Process_AConfirmedPlateGetsASeedWithATemplateOfItsNameAndTheTrackerFollowsIt()
+    {
+        var frame = Frame("frame_c.png");
+        var expected = Assert.Single(frame.Default.Detections);
+        using var image = Cv2.ImRead(frame.ImagePath, ImreadModes.Color);
+        using var source = new ImageFrameSource(image, WindowX, WindowY);
+        using var engine = NewEngine(out _);
+        var config = new SocialConfig();
+        Assert.True(engine.TryGetGeometry(frame.Width, frame.Height, out var geometry));
+
+        DetectionResult? result = null;
+        for (var i = 0; i < 3; i++) // three reads confirm the name
+        {
+            result?.Dispose();
+            var grab = source.GrabRegions(new[] { geometry!.ToScreen(WindowX, WindowY) });
+            result = engine.Process(grab.Images[0]!, Window(frame), config, 1000 + 200.0 * i, out var problem);
+            Assert.Null(problem);
+        }
+
+        Assert.NotNull(result);
+        var seed = Assert.Single(result!.Seeds);
+        Assert.Equal(expected.Name, Assert.Single(result.Snapshot.Brackets).Handle);
+        Assert.NotNull(seed.Template);
+        Assert.Equal((int)seed.NameBox.Width, seed.Template!.Width);
+        Assert.Equal((int)seed.NameBox.Height, seed.Template.Height);
+        Assert.True(seed.PlateBox.Height >= seed.NameBox.Height); // the distance line is part of the plate, not of the template
+        Assert.Equal(1400, seed.AtMs);
+
+        // the tracker takes it over and finds the plate again in the same picture (the screen did not move)
+        using var tracker = new PlateTemplateTracker();
+        tracker.ApplyDetection(result, 1400);
+        var plan = tracker.Plan(1433, 33, frame.Width, frame.Height);
+        var patchPictures = plan.Select(p => (Mat?)new Mat(image, p.Patch).Clone()).ToList();
+        var tick = tracker.Update(1433, plan, patchPictures);
+        foreach (var picture in patchPictures)
+            picture!.Dispose();
+
+        Assert.Equal(1, tick.Attempts);
+        Assert.Equal(1, tick.Found);
+        var bracket = Assert.Single(tracker.Snapshot(1433).Brackets);
+        Assert.InRange(bracket.Box.X, seed.PlateBox.X - 1.0, seed.PlateBox.X + 1.0);
+        Assert.InRange(bracket.Box.Y, seed.PlateBox.Y - 1.0, seed.PlateBox.Y + 1.0);
+    }
+
+    [OpenCvFact]
     public void Pipeline_ThePlayerListColorsTheBracketAndACorrectionOfTheListSwitchesItAtOnce()
     {
         var frame = Frame("frame_c.png");
@@ -337,7 +446,8 @@ public class LiveEngineTests : IDisposable
         using var image = Cv2.ImRead(frame.ImagePath, ImreadModes.Color);
         using var source = new ImageFrameSource(image, WindowX, WindowY);
         using var engine = NewEngine(out var exclusions);
-        Assert.True(exclusions.AddAutomatic(name, "test"));
+        File.AppendAllText(_dir.File("exclusions.txt"), "\n" + name + "\n"); // an entry of the user's own list
+        Assert.True(exclusions.ReloadIfChanged());
         var config = new SocialConfig();
 
         engine.Step(source, Window(frame), config, 1000);
@@ -347,6 +457,50 @@ public class LiveEngineTests : IDisposable
         Assert.Empty(third.Snapshot.Brackets);
         Assert.Empty(third.Snapshot.Panel);
         Assert.Single(engine.Tracker.Tracks); // the plate is tracked, it is just not drawn
+    }
+
+    [OpenCvFact]
+    public void Pipeline_ASessionExcludedNameGetsNoBracketNoPanelEntryAndNoLookup_ButAListedNameStillDoes()
+    {
+        var frame = Frame("frame_c.png");
+        var name = Assert.Single(frame.Default.Detections).Name;
+        using var image = Cv2.ImRead(frame.ImagePath, ImreadModes.Color);
+        using var source = new ImageFrameSource(image, WindowX, WindowY);
+        var session = new SessionExclusions();
+        Assert.True(session.TryAdd(name));
+        using var engine = NewEngine(out var exclusions, session: session);
+        var config = new SocialConfig();
+
+        engine.Step(source, Window(frame), config, 1000);
+        engine.Step(source, Window(frame), config, 1200);
+        var third = engine.Step(source, Window(frame), config, 1400);
+
+        Assert.Empty(third.Snapshot.Brackets);
+        Assert.Empty(third.Snapshot.Panel);
+        Assert.DoesNotContain(name, exclusions.Names, StringComparer.OrdinalIgnoreCase); // nothing is written to the permanent list
+
+        // the user puts the player on the list: the list comes first, so the name is no longer filtered; the track needs a fresh confirmation
+        // (about 3 reads, 200 ms apart), so it shows on the third step after the change
+        config.Players.Add(new PlayerEntry(name, OverlayColor.Cyan));
+        engine.Step(source, Window(frame), config, 1600);
+        engine.Step(source, Window(frame), config, 1800);
+        var shown = engine.Step(source, Window(frame), config, 2000);
+        var bracket = Assert.Single(shown.Snapshot.Brackets);
+        Assert.Equal(MatchKind.PlayerList, bracket.Kind);
+    }
+
+    [Fact]
+    public void Reset_KeepsTheSessionExclusions_TheyLastUntilIrisCloses()
+    {
+        var session = new SessionExclusions();
+        using var engine = NewEngine(out _, session: session);
+        Assert.True(engine.SessionExclusions.TryAdd("SOME_NAME"));
+
+        engine.Reset();
+
+        Assert.Same(session, engine.SessionExclusions);
+        Assert.True(session.Contains("SOME_NAME"));
+        Assert.Same(session, engine.Tracker.SessionExclusions); // the new tracker uses the same list
     }
 
     [OpenCvFact]

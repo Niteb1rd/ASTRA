@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media;
 using Iris.App.Services;
+using Iris.Core.Live;
 using Iris.Core.Overlay;
 using Iris.Core.Settings;
 
@@ -12,24 +15,36 @@ namespace Iris.App.Views;
 /// The overlay: a transparent, always-on-top window that lies over the game window (or a monitor, for the test overlay).
 /// After the window exists it gets the extended styles "layered, transparent, tool window, no activate": mouse clicks go through it to the game,
 /// it never takes the keyboard focus and it is not listed in Alt+Tab. It is excluded from screen capture (<see cref="CaptureExclusion"/>), so IRIS's own capture,
-/// recorders and screenshots do not show it. It is created once and only hidden when not needed.
+/// recorders and screenshots do not show it (or, with the setting "Show overlay in screenshots and recordings", it is visible there and IRIS paints it out of its own
+/// captures instead: <see cref="SetVisibleInCapture"/> switches that at once). It is created once and only hidden when not needed.
 /// <see cref="Present"/> is cheap to call again and again: nothing is moved or redrawn unless the content, the size or the settings changed.
 ///
 /// The cost to keep in mind: a layered (transparent) window makes Windows composite and update its full surface on every redraw, however little changed in it,
 /// so the cost grows with the window's AREA (a window as big as a 2560x1440 or 3840x2160 game window is expensive at 30 to 120 redraws a second). The live overlay
 /// therefore uses TWO windows, each only as big as what it draws (<see cref="OverlayWindowFit"/>): a <see cref="OverlayLayer.Brackets"/> window around the brackets (it
-/// is the one that is redrawn at the tracking tickrate, and only when a bracket moved by a whole pixel), and a <see cref="OverlayLayer.Panel"/> window around the
+/// is the one that is redrawn at monitor refresh, and only when a bracket moved by a whole pixel), and a <see cref="OverlayLayer.Panel"/> window around the
 /// panel and the confirmation text (redrawn only when the entries or the settings change). The test overlay uses one window of the whole size (<see cref="OverlayLayer.All"/>).
+///
+/// Render at monitor refresh: while the brackets window is shown it hooks <see cref="CompositionTarget.Rendering"/> (once per frame WPF composes, i.e. at the refresh rate
+/// of the monitor) and asks <see cref="ModelProvider"/> for the model of THAT frame (the brackets moved from their last tracked position along their velocity to now, at most
+/// 50 ms ahead). Only when a bracket moved by a whole pixel is that a new model and the window redrawn. The hook is removed when the window hides. A line with the frames, the
+/// redraws and the average milliseconds per frame goes to the log once a minute. The panel window never hooks anything.
 /// </summary>
 public partial class OverlayWindow : Window
 {
     /// <summary>Room kept around what is drawn when the window is (re)sized: a bracket that moves a little does not move the window.</summary>
     private const double RoomAround = 64.0;
 
+    private const double RenderLogEveryMs = 60_000.0;
+
     private readonly OverlayLayer _layer;
-    private readonly Action<string>? _warn;
+    private readonly Action<string>? _warn;   // a line for the log (problems of the setup, the once-a-minute render statistics)
     private IntPtr _hwnd = IntPtr.Zero;
-    private bool _excluded = true;            // false when Windows could not exclude this window from capture (then the capture thread paints it out)
+    private bool _visibleInCapture;           // the setting "Show overlay in screenshots and recordings" (WDA_NONE, IRIS paints the window out of its own captures)
+    private bool _excluded = true;            // false when this window is not excluded from capture by Windows (then the capture thread paints it out)
+    private bool _hooked;                     // CompositionTarget.Rendering is hooked (brackets layer, while shown)
+    private RenderStats? _stats;
+    private TimeSpan _lastRenderingTime = TimeSpan.MinValue;
     private PixelRect _bounds;                // the game window (or monitor), screen pixels
     private bool _hasBounds;
     private PixelRect _fit;                   // the part of it this window covers, game-window pixels
@@ -44,13 +59,21 @@ public partial class OverlayWindow : Window
 
     /// <param name="layer">What this window draws.</param>
     /// <param name="warn">Receives a line for the log when something about the window's setup did not work (can be called on the UI thread).</param>
-    public OverlayWindow(OverlayLayer layer, Action<string>? warn = null)
+    /// <param name="visibleInCapture">The setting "Show overlay in screenshots and recordings" at the time the window is made.</param>
+    public OverlayWindow(OverlayLayer layer, Action<string>? warn = null, bool visibleInCapture = false)
     {
         _layer = layer;
         _warn = warn;
+        _visibleInCapture = visibleInCapture;
         InitializeComponent();
         Surface.Layer = layer;
     }
+
+    /// <summary>
+    /// The brackets layer only: the model for the frame that is being rendered now (the argument is the model this window shows; the same instance comes back when
+    /// nothing moved by a whole pixel). Set by the controller; without it the window draws what <see cref="Present"/> gives it and hooks nothing.
+    /// </summary>
+    public Func<OverlayModel, OverlayModel>? ModelProvider { get; set; }
 
     protected override void OnSourceInitialized(EventArgs e)
     {
@@ -62,8 +85,8 @@ public partial class OverlayWindow : Window
         NativeMethods.SetWindowLongPtr(_hwnd, NativeMethods.GwlExStyle, new IntPtr(style));
 
         // IRIS's own screen capture must not see this window (brackets and panel colors would reach the detector). Also hides it from recorders and screenshots.
-        _excluded = CaptureExclusion.Apply(_hwnd, _layer == OverlayLayer.Brackets, _warn);
-        if (!_excluded)
+        _excluded = CaptureExclusion.Apply(_hwnd, _layer == OverlayLayer.Brackets, _visibleInCapture, _warn);
+        if (!_excluded && !_visibleInCapture)
         {
             _warn?.Invoke(_layer == OverlayLayer.Brackets
                 ? "The Brackets overlay window could not be excluded from screen capture (needs Windows 10 version 2004 or later); IRIS paints only the bracket outlines black in its own captures instead"
@@ -76,8 +99,79 @@ public partial class OverlayWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        StopRenderHook();
         CaptureExclusion.Remove(_hwnd);
         base.OnClosed(e);
+    }
+
+    /// <summary>
+    /// The setting "Show overlay in screenshots and recordings" changed: on = the window is part of screenshots and recordings (WDA_NONE) and IRIS paints it out of its own
+    /// captures; off = Windows leaves it out of every capture (WDA_EXCLUDEFROMCAPTURE). Applies at once, also while the window is shown; a window that does not exist yet
+    /// is made the right way. Call it on the UI thread.
+    /// </summary>
+    public void SetVisibleInCapture(bool visible)
+    {
+        if (visible == _visibleInCapture)
+            return;
+        _visibleInCapture = visible;
+        if (_hwnd == IntPtr.Zero)
+            return; // not created yet: OnSourceInitialized uses the flag
+
+        _excluded = CaptureExclusion.Apply(_hwnd, _layer == OverlayLayer.Brackets, _visibleInCapture, _warn);
+        if (!_excluded && !_visibleInCapture)
+            _warn?.Invoke($"The {_layer} overlay window could not be excluded from screen capture (needs Windows 10 version 2004 or later); IRIS paints it black in its own captures instead");
+        PublishBracketMasks();
+    }
+
+    // ----- render at monitor refresh -----
+
+    private void StartRenderHook()
+    {
+        if (_hooked || _layer != OverlayLayer.Brackets || ModelProvider is null)
+            return;
+        _hooked = true;
+        _stats = new RenderStats(StopwatchClock.Shared.NowMs);
+        _lastRenderingTime = TimeSpan.MinValue;
+        CompositionTarget.Rendering += OnRendering;
+    }
+
+    private void StopRenderHook()
+    {
+        if (!_hooked)
+            return;
+        _hooked = false;
+        CompositionTarget.Rendering -= OnRendering;
+        if (_stats is { Frames: > 0 })
+            _warn?.Invoke(_stats.TakeSummary(StopwatchClock.Shared.NowMs));
+        _stats = null;
+    }
+
+    /// <summary>One monitor frame: the brackets move to where they are now; the window is redrawn only if a bracket moved by a whole pixel (a new model instance).</summary>
+    private void OnRendering(object? sender, EventArgs e)
+    {
+        var provider = ModelProvider;
+        if (!IsVisible || !_hasBounds || _settings is null || _model is null || provider is null)
+            return;
+        // WPF can raise the event more than once for one frame: the model of a frame is made once
+        if (e is RenderingEventArgs args)
+        {
+            if (args.RenderingTime == _lastRenderingTime)
+                return;
+            _lastRenderingTime = args.RenderingTime;
+        }
+
+        var started = Stopwatch.GetTimestamp();
+        var stats = _stats;
+        var model = provider(_model);
+        var redrew = !ReferenceEquals(model, _model);
+        if (redrew)
+            Present(model, _bounds, _settings); // may hide the window (no brackets left), which removes the hook
+        if (stats is null)
+            return;
+        stats.AddFrame((Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency, redrew);
+        var now = StopwatchClock.Shared.NowMs;
+        if (_hooked && stats.IsDue(now, RenderLogEveryMs))
+            _warn?.Invoke(stats.TakeSummary(now));
     }
 
     /// <summary>
@@ -96,11 +190,12 @@ public partial class OverlayWindow : Window
 
         var dx = Math.Round(_bounds.X + _fit.X) - _fit.X;
         var dy = Math.Round(_bounds.Y + _fit.Y) - _fit.Y;
+        var publishedMs = StopwatchClock.Shared.NowMs;
         var masks = new CaptureExclusion.BracketMask[_model.Brackets.Count];
         for (var i = 0; i < masks.Length; i++)
         {
             var item = _model.Brackets[i];
-            masks[i] = new CaptureExclusion.BracketMask(new PixelRect(item.Box.X + dx, item.Box.Y + dy, item.Box.Width, item.Box.Height), item.Kind);
+            masks[i] = new CaptureExclusion.BracketMask(new PixelRect(item.Box.X + dx, item.Box.Y + dy, item.Box.Width, item.Box.Height), item.Kind, _bounds.Height, publishedMs);
         }
 
         CaptureExclusion.PublishBrackets(masks); // a new array each time; never changed after this
@@ -152,7 +247,7 @@ public partial class OverlayWindow : Window
         if (boundsChanged || fitChanged)
             ApplyBounds();
 
-        Surface.SetContent(model, layout, toastLayout, toastLayout is null ? null : toast, fit);
+        Surface.SetContent(model, layout, toastLayout, toastLayout is null ? null : toast, fit, bounds.Height);
 
         if (!IsVisible)
         {
@@ -160,12 +255,14 @@ public partial class OverlayWindow : Window
             ApplyBounds(); // and puts it on top again after a hide
         }
 
+        StartRenderHook(); // brackets layer: from now on every monitor frame asks for the model of that frame
         PublishBracketMasks(); // after Show: the first Show is what runs OnSourceInitialized and decides whether masking is needed
     }
 
     /// <summary>Hides the window (it is kept for the next time).</summary>
     public void HideOverlay()
     {
+        StopRenderHook();
         if (IsVisible)
             Hide();
         PublishBracketMasks();
@@ -189,7 +286,7 @@ public partial class OverlayWindow : Window
         if (_layer == OverlayLayer.Brackets)
         {
             foreach (var item in model.Brackets)
-                parts.Add(BracketMetrics.ExtentOf(item.Box));
+                parts.Add(BracketMetrics.ExtentOf(item.Box, bounds.Height));
         }
         else
         {

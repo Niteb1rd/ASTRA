@@ -3,17 +3,17 @@ using Iris.Core.Overlay;
 namespace Iris.Core.Live;
 
 /// <summary>
-/// The "tracking tick": the overlay model for a moment between two reads. Every bracket of the snapshot is moved from the place where its plate was last seen along
-/// the speed the plate was seen moving at (constant velocity), for the time since it was seen, at most <see cref="LiveSettings.MaxPredictionMs"/>.
-/// This is arithmetic on a handful of numbers: no capture, no OCR, no allocation worth mentioning, so it can run 15 to 120 times a second. It is a
-/// prediction, not a measurement: a plate that changes direction or speed between two reads is wrong by what it moved differently, and the next read puts the bracket right.
+/// The "render tick": the overlay model for the moment a frame is drawn (monitor refresh). The snapshot's brackets stand where their plates were last TRACKED
+/// (the tracking ticks, <see cref="PlateTemplateTracker"/>, or a detection); every bracket is moved from there along its tracked velocity (constant velocity)
+/// to "now", for the time since that position, but at most <see cref="LiveSettings.RenderExtrapolationMs"/> (50 ms) ahead. This is arithmetic on a handful
+/// of numbers: no capture, no image work, so it can run at any refresh rate. It is a prediction, not a measurement: the next tracking tick puts the bracket right.
 /// </summary>
 public static class LivePredictor
 {
     /// <summary>
     /// The model at <paramref name="nowMs"/> (the loop's monotonic clock). Gives back <paramref name="previous"/> itself when nothing changed, so the window can skip the redraw:
     /// same brackets at the same whole pixels and the same panel instance. Brackets are placed on whole pixels.
-    /// An empty snapshot, or one that no read has refreshed for <see cref="LiveSettings.StaleHideMs"/>, gives <see cref="OverlayModel.Empty"/>.
+    /// An empty snapshot, or one that nothing has refreshed for <see cref="LiveSettings.StaleHideMs"/>, gives <see cref="OverlayModel.Empty"/>.
     /// </summary>
     public static OverlayModel ModelAt(LiveSnapshot snapshot, double nowMs, LiveSettings settings, OverlayModel? previous = null)
     {
@@ -33,10 +33,13 @@ public static class LivePredictor
         return new OverlayModel(items, snapshot.Panel);
     }
 
-    /// <summary>How far the bracket has moved from where its plate was last seen at <paramref name="nowMs"/>, in pixels.</summary>
+    /// <summary>
+    /// How far the bracket has moved from its last tracked position at <paramref name="nowMs"/>, in pixels: velocity times the time since that position, the
+    /// time capped at <see cref="LiveSettings.RenderExtrapolationMs"/> and the distance at <see cref="LiveSettings.MaxShiftBoxHeights"/> box heights.
+    /// </summary>
     public static (double X, double Y) Shift(LiveBracket bracket, double nowMs, LiveSettings settings)
     {
-        var dt = Math.Min(Math.Max(0.0, nowMs - bracket.ReferenceMs), settings.MaxPredictionMs);
+        var dt = Math.Min(Math.Max(0.0, nowMs - bracket.ReferenceMs), settings.RenderExtrapolationMs);
         var speed = Math.Sqrt(bracket.VxPerMs * bracket.VxPerMs + bracket.VyPerMs * bracket.VyPerMs);
         if (dt <= 0 || speed < settings.MinSpeedPxPerMs)
             return (0.0, 0.0);
