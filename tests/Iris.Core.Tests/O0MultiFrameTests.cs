@@ -6,17 +6,12 @@ using Xunit;
 namespace Iris.Core.Tests;
 
 /// <summary>
-/// O/0 evidence across frames (<see cref="NameplateTrackerSettings.O0MultiFrame"/>, tracker_ref.o0_llr / o0_resolve) and the O/0-folded exclusions
-/// (<see cref="NameplateTrackerSettings.ExclusionFoldsO0"/>). Pure logic: sequences of P(O) values and fake evaluations, no images. The sequences are the twelve of the training kit's
+/// O/0 evidence across frames (<see cref="NameplateTrackerSettings.O0MultiFrame"/>, on by default, tracker_ref.o0_llr / o0_resolve); exclusion matching stays exact. Pure logic: sequences of P(O) values and fake evaluations, no images. The sequences are the twelve of the training kit's
 /// <c>fixtures-o0mf/sequences.json</c> (reads and probabilities only), except that the read of "flipping_reads_one_vote", which in the kit is the test character's own handle, is replaced
 /// here by a made-up name with its O/0 flips at the same positions (the totals and the decisions do not depend on the other characters).
 /// </summary>
-public class O0MultiFrameTests : IDisposable
+public class O0MultiFrameTests
 {
-    private readonly TempDir _dir = new();
-
-    public void Dispose() => _dir.Dispose();
-
     // ------------------------------------------------------------------------------------------------ the sequences of the reference
 
     private sealed record Frame(string Read, (int, double)[] P);
@@ -213,16 +208,15 @@ public class O0MultiFrameTests : IDisposable
         new(true, frame % 2 == 0 ? "SYNTH_PL0T" : "SYNTH_PLOT", null, null, new[] { new O0Glyph(8, p) });
 
     [Fact]
-    public void TheNewSettings_AreOffByDefault()
+    public void O0MultiFrame_IsOnByDefault()
     {
-        Assert.False(NameplateTrackerSettings.Default.O0MultiFrame);
-        Assert.False(NameplateTrackerSettings.Default.ExclusionFoldsO0);
+        Assert.True(NameplateTrackerSettings.Default.O0MultiFrame);
     }
 
     [Fact]
     public void AlternatingReads_VoteForOneName_WhenO0MultiFrameIsOn()
     {
-        var d = new Driver(Fast with { O0MultiFrame = true });
+        var d = new Driver(Fast);
 
         for (var i = 0; i < 6; i++)
             d.Next(Alternating(i, 0.02)); // P(O) 0.02: log odds -3.9, sure it is a zero in one frame
@@ -239,7 +233,7 @@ public class O0MultiFrameTests : IDisposable
     [Fact]
     public void TheSameReads_SplitTheirVotes_WhenO0MultiFrameIsOff()
     {
-        var d = new Driver(Fast); // the default: no evidence is kept
+        var d = new Driver(Fast with { O0MultiFrame = false });
 
         for (var i = 0; i < 6; i++)
             d.Next(Alternating(i, 0.02));
@@ -253,7 +247,7 @@ public class O0MultiFrameTests : IDisposable
     [Fact]
     public void UnsureFrames_KeepTheReadsCharacterUntilTheTotalsDecide()
     {
-        var d = new Driver(Fast with { O0MultiFrame = true });
+        var d = new Driver(Fast);
 
         for (var i = 0; i < 6; i++)
             d.Next(Alternating(i, 0.2)); // log odds -1.39 per frame: totals -1.39 (frame 0) and -2.77 (frame 1) are undecided, from frame 2 (-4.16) the position is a 0
@@ -268,7 +262,7 @@ public class O0MultiFrameTests : IDisposable
     [Fact]
     public void EvidenceIsKeptPerTrack_AnotherPlatesFramesDoNotDecideThisOne()
     {
-        var tracker = new NameplateTracker(Fast with { O0MultiFrame = true });
+        var tracker = new NameplateTracker(Fast);
         var sure = new Rect(1000, 500, 80, 12);
         var unsure = new Rect(1400, 500, 80, 12);
         TrackCandidate At(Rect top) => new(top, new Rect(top.X + 10, top.Y + 24, top.Width - 20, top.Height));
@@ -284,7 +278,7 @@ public class O0MultiFrameTests : IDisposable
     [Fact]
     public void TheResolvedName_IsUsedForTheSessionExclusionCheck_WithAnExactComparison()
     {
-        var d = new Driver(Fast with { O0MultiFrame = true });
+        var d = new Driver(Fast);
         d.Session.TryAdd("SYNTH_PL0T"); // excluded for the session, spelled with the zero
 
         for (var i = 0; i < 4; i++)
@@ -299,7 +293,7 @@ public class O0MultiFrameTests : IDisposable
     [Fact]
     public void ANameWithoutEvidenceOrWithoutO0_IsVotedAsRead()
     {
-        var d = new Driver(Fast with { O0MultiFrame = true });
+        var d = new Driver(Fast);
 
         d.Next(new TrackEvaluation(true, "SYNTH_ALPHA"));
         d.Next(new TrackEvaluation(true, "SYNTH_ALPHA", null, null, new[] { new O0Glyph(3, 0.001) })); // a glyph on a T: ignored
@@ -312,7 +306,7 @@ public class O0MultiFrameTests : IDisposable
     [Fact]
     public void ANameThatMayNotStartOrEndWithAHyphen_AddsNoEvidence()
     {
-        var d = new Driver(Fast with { O0MultiFrame = true });
+        var d = new Driver(Fast);
 
         d.Next(new TrackEvaluation(true, "-SYNTH_PL0T", null, null, new[] { new O0Glyph(9, 0.001) })); // an edge hyphen: no vote, and the check comes before the evidence
 
@@ -321,123 +315,16 @@ public class O0MultiFrameTests : IDisposable
         Assert.Equal(TrackVerdict.Nameplate, track.Verdict);
     }
 
-    // ------------------------------------------------------------------------------------------------ the folded exclusions
+    // ------------------------------------------------------------------------------------------------ exclusions stay exact
 
     [Fact]
-    public void SessionExclusions_CompareWithZeroAsO_OnlyWhenAsked()
+    public void SessionExclusions_MatchExactly_AMisreadOfAnExcludedNameIsNotExcluded()
     {
         var session = new SessionExclusions();
-
-        Assert.True(session.TryAdd("UNKNOWN", foldO0: true));
-        Assert.True(session.Contains("UNKNOWN"));
-        Assert.True(session.Contains("unknown"));
-        Assert.False(session.Contains("UNKN0WN"));                 // exact by default
-        Assert.True(session.Contains("UNKN0WN", foldO0: true));
-        Assert.True(session.Contains(" unkn0wn ", foldO0: true));
-        Assert.False(session.Contains("UNKNOWM", foldO0: true));
-
-        Assert.False(session.TryAdd("UNKN0WN", foldO0: true));     // the same name once folded: not new
-        Assert.True(session.TryAdd("OTHER_B0X"));                  // exact: new
-        Assert.True(session.Contains("OTHER_BOX", foldO0: true));  // the folded set is kept up to date even without the flag
-        Assert.False(session.Contains("OTHER_BOX"));
-        Assert.True(session.TryAdd("OTHER_BOX"));                  // exact: a different name, so new, and then it is there exactly
-        Assert.True(session.Contains("OTHER_BOX"));
-    }
-
-    [Fact]
-    public void ExclusionFoldsO0_MakesAMisreadOfAnExcludedNameGetNoVotes()
-    {
-        var folded = new Driver(Fast with { ExclusionFoldsO0 = true });
-        folded.Session.TryAdd("UNKNOWN", foldO0: true);
-        var exact = new Driver(Fast);
-        exact.Session.TryAdd("UNKNOWN");
-
-        for (var i = 0; i < 4; i++)
-        {
-            folded.Next(new TrackEvaluation(true, "UNKN0WN"));
-            exact.Next(new TrackEvaluation(true, "UNKN0WN"));
-        }
-
-        var silenced = Assert.Single(folded.Tracker.Tracks);
-        Assert.Empty(silenced.Reads);
-        Assert.Null(silenced.ConfirmedName);
-        Assert.True(silenced.DuplicateExcluded);
-        Assert.Equal("UNKN0WN", Assert.Single(exact.Tracker.Tracks).ConfirmedName); // without the fold the misread is a name of its own
-    }
-
-    [Fact]
-    public void ANameOnAList_IsStillNeverExcluded_WithTheFold()
-    {
-        var d = new Driver(Fast with { ExclusionFoldsO0 = true });
-        d.Session.TryAdd("UNKNOWN", foldO0: true);
-
-        for (var i = 0; i < 3; i++)
-            d.Tracker.Update(i, i * Step, new[] { Pair() }, (_, _) => new TrackEvaluation(true, "UNKN0WN"), 0, name => name == "UNKN0WN");
-
-        Assert.Equal("UNKN0WN", Assert.Single(d.Tracker.Tracks).ConfirmedName);
-    }
-
-    /// <summary>
-    /// A third white plate has read "DUP_BOX" (letter O) once; then two other white plates read "DUP_B0X" (zero) in the same update, which excludes that name.
-    /// Returns the third plate's track, the update and the session list.
-    /// </summary>
-    private static (NameplateTrack Third, TrackerUpdate Update, SessionExclusions Session) DuplicateScenario(bool foldO0)
-    {
-        var session = new SessionExclusions();
-        var tracker = new NameplateTracker(Fast with { ExclusionFoldsO0 = foldO0 }, session);
-        var first = new Rect(1000, 500, 80, 12);
-        var second = new Rect(1400, 500, 80, 12);
-        var third = new Rect(1800, 500, 80, 12);
-        TrackCandidate At(Rect top) => new(top, new Rect(top.X + 10, top.Y + 24, top.Width - 20, top.Height));
-        TrackEvaluation Read(Rect top) => new(true, top.X == third.X ? "DUP_BOX" : "DUP_B0X", null, PlateColor.White);
-
-        tracker.Update(0, 0, new[] { At(third) }, (top, _) => Read(top));
-        var update = tracker.Update(1, Step, new[] { At(first), At(second) }, (top, _) => Read(top)); // the third plate is not looked at again: only the marking of its track can tell
-        return (tracker.Tracks.Single(t => t.Top.X == third.X), update, session);
-    }
-
-    [Fact]
-    public void ExclusionFoldsO0_TheDuplicateRuleExcludesTheFoldedName_AndMarksTheTracksThatReadAnySpelling()
-    {
-        var (third, update, session) = DuplicateScenario(foldO0: true);
-
-        Assert.Equal(new[] { "DUP_B0X" }, update.Excluded);
-        Assert.True(session.Contains("DUP_B0X", foldO0: true));
-        Assert.True(session.Contains("DUP_BOX", foldO0: true)); // the other spelling is excluded too
-        Assert.False(session.Contains("DUP_BOX"));
-        Assert.True(third.DuplicateExcluded);                    // it had read "DUP_BOX": the same name once folded
-    }
-
-    [Fact]
-    public void WithoutTheFold_TheDuplicateRuleMarksOnlyTheTracksThatReadTheExactName()
-    {
-        var (third, update, _) = DuplicateScenario(foldO0: false);
-
-        Assert.Equal(new[] { "DUP_B0X" }, update.Excluded);
-        Assert.False(third.DuplicateExcluded);
-    }
-
-    [Fact]
-    public void ExclusionList_AndTheNameFilter_CompareWithZeroAsO_OnlyWhenAsked()
-    {
-        var path = _dir.File("exclusions.txt");
-        File.WriteAllText(path, "UNKNOWN\nHURST0N\n");
-        var list = ExclusionList.LoadOrCreate(path, new FakeClock(), new ListLog());
-        var config = CacheEnv.ConfigWith(Array.Empty<string>(), Array.Empty<string>());
-
-        Assert.True(list.IsExcluded("UNKNOWN"));
-        Assert.False(list.IsExcluded("UNKN0WN"));                       // exact by default (the accuracy list of LookAlikes is still empty)
-        Assert.True(list.IsExcluded("UNKN0WN", foldO0: true));
-        Assert.True(list.IsExcluded("unkn0wn", foldO0: true));
-        Assert.True(list.IsExcluded("HURSTON", foldO0: true));          // a zero in the list also matches the letter
-        Assert.False(list.IsExcluded("HURSTON"));
-        Assert.False(list.IsExcluded("HURSTQN", foldO0: true));
-
-        Assert.False(NameFilter.ShouldIgnore("UNKN0WN", list, config));
-        Assert.True(NameFilter.ShouldIgnore("UNKN0WN", list, config, foldO0: true));
-        var player = CacheEnv.ConfigWith(new[] { "UNKNOWN" }, Array.Empty<string>());
-        Assert.False(NameFilter.ShouldIgnore("UNKNOWN", list, player, foldO0: true));  // the player list still wins, and still matches exactly
-        Assert.True(NameFilter.ShouldIgnore("UNKN0WN", list, player, foldO0: true));
+        Assert.True(session.TryAdd("UNKNOWN"));
+        Assert.True(session.Contains(" unknown "));
+        Assert.False(session.Contains("UNKN0WN")); // looked up like any name; the white duplicate rule still catches simultaneous misreads
+        Assert.True(session.TryAdd("UNKN0WN"));
     }
 
     // ------------------------------------------------------------------------------------------------ the reader's evidence (with the native OpenCV library)

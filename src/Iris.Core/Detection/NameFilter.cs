@@ -16,15 +16,11 @@ public static class NameFilter
     /// Names are compared exactly, ignoring only upper/lower case (the look-alike list of <see cref="LookAlikes"/> is empty).
     /// Org-list members and hotkey lookups have no such override; they simply follow the exclusion list.
     /// </summary>
-    /// <remarks>
-    /// <paramref name="foldO0"/> (<see cref="NameplateTrackerSettings.ExclusionFoldsO0"/>, off by default): the exclusion list compares with 0 and O taken as the same character.
-    /// The player list never does.
-    /// </remarks>
-    public static bool ShouldIgnore(string handle, ExclusionList exclusions, SocialConfig config, bool foldO0 = false)
+    public static bool ShouldIgnore(string handle, ExclusionList exclusions, SocialConfig config)
     {
         if (!RsiNames.IsValidHandle(handle))
             return true;
-        if (!exclusions.IsExcluded(handle, foldO0) && !ContactCode.IsContactCode(handle))
+        if (!exclusions.IsExcluded(handle) &&!ContactCode.IsContactCode(handle))
             return false;
         return !IsOnPlayerList(handle, config);
     }

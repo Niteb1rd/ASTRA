@@ -502,15 +502,15 @@ outer width to height and of the hole width to height decide with a two-feature 
 `NameplateDetectorSettings.SubPixelO0Rule` is **on by default, on purpose**; the Python reference flag `o0_rule` defaults to off only so that old results can be reproduced. Setting it to false switches the check off. `O0RuleTests` use synthetic glyphs; the test `O0LocalParityTests` compares with real crops from your machine and only runs when the environment variable
 `IRIS_O0_FIXTURES` points to the folder (those crops are not in the repository).
 
-*O/0 across frames (off by default, the decision is yours).* The check above judges one frame at a time, and on small plates it is often unsure or flips from frame to frame, which splits the votes of one plate over several spellings
+*O/0 across frames (on by default).* The check above judges one frame at a time, and on small plates it is often unsure or flips from frame to frame, which splits the votes of one plate over several spellings
 (`PL0T` and `PLOT`). The reader therefore also reports, for every O or 0 it measured, its place in the name and P(O) before the verdict (`NameplateDetection.O0Evidence`, `TrackEvaluation.O0Evidence`; rows of a multi-row name
-are counted in the joined name). With `NameplateTrackerSettings.O0MultiFrame` on (`O0EvidenceTable`), the tracker adds up the log odds of P(O) per position over the frames of a track (per name with `0` read as `O`; a frame counts at most
+are counted in the joined name). With `NameplateTrackerSettings.O0MultiFrame` on, the default (`O0EvidenceTable`; `false` switches it off), the tracker adds up the log odds of P(O) per position over the frames of a track (per name with `0` read as `O`; a frame counts at most
 +/-4, at most 16 names per track) and votes for the spelling the sum decides once the odds reach 19 to 1 (a total of at least ln 19 = 2.944, positive: `O`, negative: `0`); undecided positions keep the character of the read. It sits right
 after the check for a name that may not start or end with `-` and before the exclusion checks, so the resolved name is what is excluded, counted and voted for. On the 19 training clips it raised the share of exactly spelled votes of the test
 character from 72 % to 95 %, removed one wrong confirmed name and confirmed one plate a frame earlier, but it added one wrong confirmed name (`UNKN0WN`, a misread of the game's placeholder `UNKNOWN` on a small plate, where P(O) is over-confident and the
-frames of one plate are not independent). The counterpart is `NameplateTrackerSettings.ExclusionFoldsO0` (also off by default): the exclusion list and the session exclusions then compare names with `0` read as `O`, so `UNKN0WN` is the excluded
-`UNKNOWN`. The player list and the org lists always match exactly. Turn both on together; neither changes what a single frame reads, and the screenshot exams do not see them. Tests: `O0MultiFrameTests` (the twelve evidence sequences
-of the reference as synthetic probabilities, the tracker with alternating reads of one plate, the folded exclusions).
+frames of one plate are not independent). That is accepted: exclusion matching does NOT change, names stay exact everywhere (exclusion list, session exclusions, player list, org lists), so such a misread is looked up like
+any name, negative-cached when it does not exist, and the white duplicate rule still session-excludes simultaneous misreads. It does not change what a single frame reads, and the screenshot exams do not see it. Tests: `O0MultiFrameTests` (the twelve evidence sequences
+of the reference as synthetic probabilities, the tracker with alternating reads of one plate, exact exclusions).
 
 **Underscore or hyphen.** The model now and then reads a low underscore as a hyphen (16 of 3396 underscores of the test character), and a hyphen at either end voids a vote. The two are told apart by where the bar sits in the line's capital band:
 for every `_` or `-` of a NAME (never a distance line) the reader takes the glyph's own mask columns (the same cut as the O/0 check), finds the bar's rows (the rows with at least a quarter of the ink of its busiest row), and divides the centre

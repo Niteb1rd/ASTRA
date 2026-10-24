@@ -84,7 +84,7 @@ public sealed class LiveDetectionEngine : IDisposable
         _clock = clock ?? SystemClock.Instance;
         _baseDetectorSettings = detectorSettings ?? NameplateDetectorSettings.Default;
         _trackerSettings = trackerSettings ?? NameplateTrackerSettings.Default;
-        _builder = new LiveSnapshotBuilder(exclusions, MemoizedOrgs, _settings, _trackerSettings.ExclusionFoldsO0);
+        _builder = new LiveSnapshotBuilder(exclusions, MemoizedOrgs, _settings);
         _seedBuilder = new PlateSeedBuilder(_baseDetectorSettings);
         _tracker = new NameplateTracker(_trackerSettings, _session);
     }
@@ -186,7 +186,7 @@ public sealed class LiveDetectionEngine : IDisposable
         // a session-excluded name gets no bracket, no panel entry and no lookup (a name on one of the user's lists is never excluded)
         IReadOnlyList<NameplateTrack> visible = _tracker.Tracks;
         if (_session.Count > 0)
-            visible = _tracker.Tracks.Where(t => t.ConfirmedName is not { } confirmed || !_session.Contains(confirmed, _trackerSettings.ExclusionFoldsO0) || IsListed(confirmed, config)).ToList();
+            visible = _tracker.Tracks.Where(t => t.ConfirmedName is not { } confirmed || !_session.Contains(confirmed) || IsListed(confirmed, config)).ToList();
         _snapshot = _builder.Build(visible, config, geometry.Capture.X, geometry.Capture.Y, captureMs, _snapshot);
         if (_lookups is not null)
         {

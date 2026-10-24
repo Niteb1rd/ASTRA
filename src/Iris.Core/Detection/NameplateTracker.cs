@@ -123,21 +123,15 @@ public sealed record NameplateTrackerSettings
     public int DuplicateUpdates { get; init; } = 3;
 
     /// <summary>
-    /// O/0 EVIDENCE ACROSS FRAMES (<see cref="O0EvidenceTable"/>, a port of <c>o0_multiframe</c> of <c>tracker_ref.py</c>). Off by default. The reader measures every O or 0 glyph of a read and
-    /// says how sure it is (<see cref="TrackEvaluation.O0Evidence"/>); with this on, the tracker adds up the log odds of P(O) per position over the frames of a track (per name with 0 folded to O)
+    /// O/0 EVIDENCE ACROSS FRAMES (<see cref="O0EvidenceTable"/>, a port of <c>o0_multiframe</c> of <c>tracker_ref.py</c>). On by default. The reader measures every O or 0 glyph of a read and
+    /// says how sure it is (<see cref="TrackEvaluation.O0Evidence"/>); the tracker adds up the log odds of P(O) per position over the frames of a track (per name with 0 folded to O)
     /// and votes for the spelling the totals decide (odds of 19 to 1), so a plate whose O/0 positions flip from frame to frame no longer splits its votes. On the 19 training clips it made
     /// 95 % instead of 72 % of the test character's votes exactly right and removed one wrong confirmation, but it added one: <c>UNKN0WN</c>, a misread of the game's placeholder <c>UNKNOWN</c>
-    /// on small plates, where the per-frame P is over-confident and the frames are not independent. Turn it on only together with <see cref="ExclusionFoldsO0"/>, which silences that name.
-    /// Reads without evidence (the O/0 rule off) and tracks with this off behave exactly as before.
+    /// on small plates, where the per-frame P is over-confident and the frames are not independent. That is accepted: names stay EXACT everywhere (the exclusion list, the session exclusions,
+    /// the player list), so such a misread is looked up like any name, negative-cached when it does not exist, and the white duplicate rule still session-excludes simultaneous misreads.
+    /// Reads without evidence (the O/0 rule off) behave as before; false switches the rule off.
     /// </summary>
-    public bool O0MultiFrame { get; init; }
-
-    /// <summary>
-    /// Off by default. When on, the exclusion list (<see cref="ExclusionList"/>, in the live engine's snapshot) and the session exclusions of the duplicate rule (<see cref="SessionExclusions"/>)
-    /// compare names with the digit 0 taken as the letter O (<see cref="LookAlikes.FoldO0"/>): <c>UNKN0WN</c> is then the excluded name <c>UNKNOWN</c>. The player list, the org lists and
-    /// everything else still match exactly. It is the other half of <see cref="O0MultiFrame"/> (the reference's "3b") and works without it.
-    /// </summary>
-    public bool ExclusionFoldsO0 { get; init; }
+    public bool O0MultiFrame { get; init; } = true;
 
     /// <summary>Returns a description of the first problem with the values, or null if they are usable.</summary>
     public string? Validate()
@@ -180,7 +174,7 @@ public readonly record struct TrackCandidate(Rect Top, Rect Bottom, bool Strict 
 /// <param name="Rows">The name rows of the read, top to bottom (see <see cref="NameplateDetection.Rows"/>); null when there was no read.</param>
 /// <param name="Color">The plate colour of the read (<see cref="NameplateDetection.Color"/>); null when unknown. The duplicate rule only looks at <see cref="PlateColor.White"/> plates.</param>
 /// <param name="O0Evidence">The O/0 glyphs the reader measured in <paramref name="Name"/> (index in the name, P(O) before the verdict); see <see cref="NameplateDetection.O0Evidence"/>. Only used when
-/// <see cref="NameplateTrackerSettings.O0MultiFrame"/> is on; null: none.</param>
+/// <see cref="NameplateTrackerSettings.O0MultiFrame"/> is on (the default); null: none.</param>
 public readonly record struct TrackEvaluation(bool IsNameplate, string? Name, IReadOnlyList<Rect>? Rows = null, PlateColor? Color = null, IReadOnlyList<O0Glyph>? O0Evidence = null)
 {
     public static TrackEvaluation No { get; } = new(false, null);
@@ -608,9 +602,9 @@ public sealed record TrackerUpdate(
 /// <see cref="NameplateTrackerSettings.DuplicateUpdates"/> updates, while both are WHITE plates (<see cref="TrackEvaluation.Color"/>) and their name lines do not overlap,
 /// is not a player: it goes on the <see cref="SessionExclusions"/> list and gets no more votes. A name that <c>isListed</c> says is on one of the user's lists is
 /// never excluded (the check comes first). Blue and green plates (the party members appear as both) are never counted.</item>
-/// <item>O/0 EVIDENCE (<see cref="NameplateTrackerSettings.O0MultiFrame"/>, off by default; a port of <c>o0_multiframe</c> of <c>tracker_ref.py</c>): right after the edge check of a read and before the exclusion check,
+/// <item>O/0 EVIDENCE (<see cref="NameplateTrackerSettings.O0MultiFrame"/>, on by default; a port of <c>o0_multiframe</c> of <c>tracker_ref.py</c>): right after the edge check of a read and before the exclusion check,
 /// the read's O and 0 positions are resolved with the evidence of the track's earlier frames (<see cref="O0EvidenceTable"/>); the resolved name is what every later step uses.
-/// <see cref="NameplateTrackerSettings.ExclusionFoldsO0"/> makes the session exclusions compare names with 0 taken as O.</item>
+/// Names are never compared folded: the exclusion lists stay exact.</item>
 /// </list>
 /// Not thread safe.
 /// </summary>
@@ -850,7 +844,7 @@ public sealed class NameplateTracker
             name = track.O0Table.Resolve(name, result.O0Evidence);
         }
 
-        if (_session.Contains(name, _settings.ExclusionFoldsO0) && !IsListed(name))
+        if (_session.Contains(name) && !IsListed(name))
         {
             track.ClearDispute(); // a name excluded for this session gets no votes
             track.DuplicateExcluded = true;
@@ -902,12 +896,11 @@ public sealed class NameplateTracker
                 continue;
             if (IsListed(name))
                 return false; // a listed name is never excluded
-            var fold = _settings.ExclusionFoldsO0;
-            if (_session.TryAdd(name, fold))
+            if (_session.TryAdd(name))
                 (_newlyExcluded ??= new List<string>()).Add(name);
             foreach (var t in _tracks.Concat(_closedHistory))
             {
-                if (SameExcludedName(t.ConfirmedName, name, fold) || t.Reads.Any(r => SameExcludedName(r.Name, name, fold)))
+                if (string.Equals(t.ConfirmedName, name, StringComparison.Ordinal) || t.Reads.Any(r => string.Equals(r.Name, name, StringComparison.Ordinal)))
                     t.DuplicateExcluded = true;
             }
 
@@ -916,10 +909,6 @@ public sealed class NameplateTracker
 
         return false;
     }
-
-    /// <summary>The names are the same (exact, or with 0 taken as O when <paramref name="fold"/>): which tracks an excluded name marks.</summary>
-    private static bool SameExcludedName(string? a, string b, bool fold) =>
-        a is not null && string.Equals(fold ? LookAlikes.FoldO0(a) : a, fold ? LookAlikes.FoldO0(b) : b, StringComparison.Ordinal);
 
     private static bool Overlap(Rect a, Rect b) => a.X < b.X + b.Width && b.X < a.X + a.Width && a.Y < b.Y + b.Height && b.Y < a.Y + a.Height;
 

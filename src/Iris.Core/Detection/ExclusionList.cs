@@ -34,9 +34,6 @@ public sealed class ExclusionList
     private readonly FileChangeDetector _detector;
     private HashSet<string> _names = new(StringComparer.OrdinalIgnoreCase);
 
-    // The same names with every 0 turned into O (for the O/0-folded comparison), replaced together with _names.
-    private HashSet<string> _foldedNames = new(StringComparer.OrdinalIgnoreCase);
-
     // True while a problem (locked or missing file) has already been logged, so we log it only once.
     private bool _problemLogged;
 
@@ -87,17 +84,13 @@ public sealed class ExclusionList
     /// True if the name is on the list. Ignores upper/lower case and spaces around the name; nothing else is tolerated: names match EXACTLY
     /// (the accuracy look-alike list of <see cref="LookAlikes"/> is empty), so a read <c>UNKN0WN</c> is not the excluded name <c>UNKNOWN</c>.
     /// </summary>
-    /// <remarks>
-    /// <paramref name="foldO0"/> (<see cref="NameplateTrackerSettings.ExclusionFoldsO0"/>, off by default): compare with the digit 0 and the letter O taken as the same character
-    /// (<see cref="LookAlikes.FoldO0"/>) on both sides, so a read <c>UNKN0WN</c> is the excluded name <c>UNKNOWN</c> (and an excluded <c>HURST0N</c> would exclude <c>HURSTON</c>).
-    /// </remarks>
-    public bool IsExcluded(string name, bool foldO0 = false)
+    public bool IsExcluded(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
             return false;
         var trimmed = name.Trim();
         lock (_gate)
-            return foldO0 ? _foldedNames.Contains(LookAlikes.FoldO0(trimmed)) : _names.Contains(trimmed);
+            return _names.Contains(trimmed);
     }
 
     /// <summary>A copy of the names on the list, as written in the file (no particular order).</summary>
@@ -166,7 +159,6 @@ public sealed class ExclusionList
     private void SetNames(HashSet<string> names)
     {
         _names = names;
-        _foldedNames = new HashSet<string>(names.Select(LookAlikes.FoldO0), StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>The names in the text of an exclusion file: one per line, trimmed; blank lines and # comments are skipped.</summary>
