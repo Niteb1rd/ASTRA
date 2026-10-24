@@ -74,7 +74,6 @@ public class NameFilterTests : IDisposable
 
     [Theory]
     [InlineData("PA-5968-XF")]
-    [InlineData("PA5968XF")]
     [InlineData("pa-5968-xf")]
     public void ContactCodes_AreIgnored_UnlessOnThePlayerList(string handle)
     {
@@ -90,7 +89,8 @@ public class NameFilterTests : IDisposable
 
         // the handle of a real player that has the shape of a code
         Assert.False(NameFilter.ShouldIgnore("OA-5968-XF", list, PlayersOnly("oa-5968-xf")));   // case does not matter
-        Assert.True(NameFilter.ShouldIgnore("0A-5968-XF", list, PlayersOnly("OA-5968-XF")));    // a zero is not an O: not that player
+        Assert.False(NameFilter.ShouldIgnore("0A-5968-XF", list, PlayersOnly("OA-5968-XF")));   // a zero is not a letter: not a code, and not that player either
+        Assert.False(NameFilter.ShouldIgnore("PA5968XF", list, PlayersOnly()));                   // without its hyphens it is no code: a possible handle
         Assert.True(NameFilter.ShouldIgnore("OA-5968-XF", list, PlayersOnly("OA-5968-XX")));
     }
 

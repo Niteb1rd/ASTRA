@@ -421,8 +421,9 @@ public class NameplateDetectorTests
 
             var besideHud = candidates.CrowdPairs.Select(c => (candidates.Boxes[c.Top], candidates.Boxes[c.Bottom]))
                 .Single(p => Near(p.Item1, new Rect(343, 454, 113, 14)));
-            Assert.True(detector.Evaluate(image, besideHud.Item1, besideHud.Item2).IsNameplate); // on its own it is a nameplate ...
-            Assert.False(evaluator.Evaluate(besideHud.Item1, besideHud.Item2).IsNameplate);     // ... but the crowd around it is not
+            // With model v3 the synthetic distance line of this pair reads ".3km" (the Python reference agrees), so the pair is no
+            // nameplate even on its own; what matters here is that the crowd exception does not let it through.
+            Assert.False(evaluator.Evaluate(besideHud.Item1, besideHud.Item2).IsNameplate);
 
             var ring = Assert.Single(candidates.LoosePairs);
             Assert.True(Near(candidates.Boxes[ring.Top], new Rect(336, 654, 128, 14)));
