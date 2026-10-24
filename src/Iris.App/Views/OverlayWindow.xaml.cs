@@ -24,7 +24,7 @@ namespace Iris.App.Views;
 public partial class OverlayWindow : Window
 {
     /// <summary>Room kept around what is drawn when the window is (re)sized: a bracket that moves a little does not move the window.</summary>
-    private const double Margin = 64.0;
+    private const double RoomAround = 64.0;
 
     private readonly OverlayLayer _layer;
     private readonly Action<string>? _warn;
@@ -205,7 +205,7 @@ public partial class OverlayWindow : Window
         if (needed is null)
             return default;
         // the panel does not move: it gets just a little air (for the antialiased edges); the brackets get room to move in
-        var margin = _layer == OverlayLayer.Panel ? 4.0 : Margin;
+        var margin = _layer == OverlayLayer.Panel ? 4.0 : RoomAround;
         return OverlayWindowFit.Choose(_fit.IsEmpty ? null : _fit, needed.Value, whole, margin);
     }
 

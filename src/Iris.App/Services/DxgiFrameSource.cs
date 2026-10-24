@@ -150,7 +150,7 @@ public sealed class DxgiFrameSource : IFrameSource
     private string? Duplicate(Vx.IDXGIAdapter1 adapter, Vx.IDXGIOutput output, IntPtr monitor, PixelRect bounds)
     {
         var levels = new[] { Vc.FeatureLevel.Level_11_1, Vc.FeatureLevel.Level_11_0, Vc.FeatureLevel.Level_10_1, Vc.FeatureLevel.Level_10_0 };
-        if (Vd.D3D11.D3D11CreateDevice(adapter, Vc.DriverType.Unknown, Vd.DeviceCreationFlags.BgraSupport, levels, out Vd.ID3D11Device device).Failure || device is null)
+        if (Vd.D3D11.D3D11CreateDevice(adapter, Vc.DriverType.Unknown, Vd.DeviceCreationFlags.BgraSupport, levels, out Vd.ID3D11Device? device).Failure || device is null)
             return "a Direct3D 11 device could not be created on the graphics adapter of the game's monitor";
         _device = device;
         _context = device.ImmediateContext;
@@ -219,8 +219,8 @@ public sealed class DxgiFrameSource : IFrameSource
             EnsureStaging(region.Width, region.Height, description.Format);
             var left = region.X - (int)outputBounds.X;
             var top = region.Y - (int)outputBounds.Y;
-            // Vd.Box most likely takes int in Vortice 3.6.2 (no casts). If the build says the constructor needs uint, add the (uint) casts back on all six arguments.
-            var box = new Vd.Box(left, top, 0, left + region.Width, top + region.Height, 1);
+            // Vortice 3.x keeps Box in Vortice.Mathematics (int fields), not in Vortice.Direct3D11.
+            var box = new Vortice.Mathematics.Box(left, top, 0, left + region.Width, top + region.Height, 1);
             _context!.CopySubresourceRegion(_staging!, 0, 0, 0, 0, frame, 0, box);
         }
         finally

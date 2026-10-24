@@ -285,10 +285,11 @@ public class LiveEngineTests : IDisposable
         var bracket = Assert.Single(third.Snapshot.Brackets);
         Assert.Equal(expected.Name, bracket.Handle);
         Assert.Equal(MatchKind.NoMatch, bracket.Kind);
-        var left = Math.Min(expected.NameBox.X, expected.DistanceBox.X) + WindowX;
-        var top = Math.Min(expected.NameBox.Y, expected.DistanceBox.Y) + WindowY;
-        var right = Math.Max(expected.NameBox.Right, expected.DistanceBox.Right) + WindowX;
-        var bottom = Math.Max(expected.NameBox.Bottom, expected.DistanceBox.Bottom) + WindowY;
+        // brackets are in game-window pixels (LiveBracket), so the window's screen position is NOT added
+        var left = Math.Min(expected.NameBox.X, expected.DistanceBox.X);
+        var top = Math.Min(expected.NameBox.Y, expected.DistanceBox.Y);
+        var right = Math.Max(expected.NameBox.Right, expected.DistanceBox.Right);
+        var bottom = Math.Max(expected.NameBox.Bottom, expected.DistanceBox.Bottom);
         Assert.InRange(bracket.Box.X, left - 2, left + 2);
         Assert.InRange(bracket.Box.Y, top - 2, top + 2);
         Assert.InRange(bracket.Box.Right, right - 2, right + 2);
