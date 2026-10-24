@@ -107,7 +107,7 @@ public class SocialListStoreTests : IDisposable
         var first = File.ReadAllText(path);
 
         var changed = Sample();
-        changed.Players.Add(new PlayerEntry("TORIN_DEMPSEY", OverlayColor.Green));
+        changed.Players.Add(new PlayerEntry("MARA_QUILLON", OverlayColor.Green));
         SocialListStore.Save(path, changed);
         var second = File.ReadAllText(path);
 

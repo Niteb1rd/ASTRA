@@ -10,12 +10,18 @@
   "name_min": 4,
   "name_max": 25,
   "min_name_score": -0.2,
-  "partial_name_score": -0.15,
-  "partial_min_len": 6,
+  "min_dist_score": -0.35,
   "max_dist_gap": 4.0,
-  "max_glued_after_unit": 6,
+  "max_dist_value": 1000,
+  "dist_end_score": -1.0,
   "word_gap": 0.33,
-  "narrow_first": 0.3
+  "clear_caps": 3.0,
+  "speck_area": 4.0,
+  "center_tol": 5.0,
+  "left_tol": 2.0,
+  "left_width_diff": 8.0,
+  "dist_min_ink": 0.003,
+  "crowd_exception": true
  },
  "frames": [
   {
@@ -91,10 +97,22 @@
       14
      ],
      [
-      388,
-      631,
-      124,
-      17
+      423,
+      632,
+      54,
+      13
+     ],
+     [
+      298,
+      704,
+      90,
+      13
+     ],
+     [
+      298,
+      732,
+      80,
+      13
      ],
      [
       714,
@@ -103,32 +121,50 @@
       14
      ],
      [
-      747,
+      752,
       812,
-      29,
+      55,
       13
      ],
      [
-      772,
-      812,
-      40,
+      847,
+      844,
+      104,
       13
      ],
      [
-      459,
-      884,
-      110,
+      872,
+      872,
+      55,
+      13
+     ],
+     [
+      583,
+      904,
+      113,
+      13
+     ],
+     [
+      615,
+      932,
+      50,
+      13
+     ],
+     [
+      231,
+      964,
+      137,
       14
      ],
      [
-      469,
-      912,
+      378,
+      964,
       102,
-      14
+      13
      ],
      [
-      492,
-      940,
+      272,
+      992,
       55,
       13
      ]
@@ -155,26 +191,211 @@
       11
      ],
      [
-      12,
-      13
-     ],
-     [
-      12,
-      14
-     ],
-     [
-      15,
-      16
+      14,
+      15
      ],
      [
       16,
       17
+     ],
+     [
+      18,
+      19
      ]
+    ],
+    "loose": [
+     [
+      20,
+      22
+     ]
+    ],
+    "crowd": [],
+    "evaluations": [
+     {
+      "top": [
+       454,
+       254,
+       131,
+       14
+      ],
+      "bottom": [
+       492,
+       282,
+       55,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "SYNTH_ALPHA",
+      "score": -0.19528714814043283,
+      "dist_text": "9.0km"
+     },
+     {
+      "top": [
+       826,
+       304,
+       108,
+       13
+      ],
+      "bottom": [
+       802,
+       330,
+       152,
+       17
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": false,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       734,
+       424,
+       131,
+       14
+      ],
+      "bottom": [
+       765,
+       452,
+       68,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "SYNTH_BRAVO",
+      "score": -0.1627348378339592,
+      "dist_text": "835.5m"
+     },
+     {
+      "top": [
+       919,
+       564,
+       62,
+       13
+      ],
+      "bottom": [
+       923,
+       592,
+       53,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": false,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       382,
+       604,
+       136,
+       14
+      ],
+      "bottom": [
+       423,
+       632,
+       54,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "DUMMY_DELTA",
+      "score": -0.08312095680855223,
+      "dist_text": "1.9km"
+     },
+     {
+      "top": [
+       714,
+       784,
+       132,
+       14
+      ],
+      "bottom": [
+       752,
+       812,
+       55,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "FIXTURE_ECHO",
+      "score": -0.40188059591319575,
+      "dist_text": "8.1km"
+     },
+     {
+      "top": [
+       847,
+       844,
+       104,
+       13
+      ],
+      "bottom": [
+       872,
+       872,
+       55,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": false,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       583,
+       904,
+       113,
+       13
+      ],
+      "bottom": [
+       615,
+       932,
+       50,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": false,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       231,
+       964,
+       137,
+       14
+      ],
+      "bottom": [
+       272,
+       992,
+       55,
+       13
+      ],
+      "kind": "loose",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "NEIGHBOR_ONE",
+      "score": -0.7886170734497601,
+      "dist_text": "4.5km"
+     }
     ],
     "detections": [
      {
       "name": "SYNTH_ALPHA",
-      "score": -0.11446712300315501,
+      "score": -0.19528714814043283,
       "name_box": [
        454,
        254,
@@ -187,12 +408,11 @@
        55,
        13
       ],
-      "dist_text": "9--K-",
-      "stacked": false
+      "dist_text": "9.0km"
      },
      {
       "name": "SYNTH_BRAVO",
-      "score": -0.13662094978946598,
+      "score": -0.1627348378339592,
       "name_box": [
        734,
        424,
@@ -205,12 +425,11 @@
        68,
        13
       ],
-      "dist_text": "835-5-",
-      "stacked": false
+      "dist_text": "835.5m"
      },
      {
       "name": "DUMMY_DELTA",
-      "score": -0.12235227473332039,
+      "score": -0.08312095680855223,
       "name_box": [
        382,
        604,
@@ -218,17 +437,16 @@
        14
       ],
       "dist_box": [
-       388,
-       631,
-       124,
-       17
+       423,
+       632,
+       54,
+       13
       ],
-      "dist_text": "1-9K-615-M_3",
-      "stacked": false
+      "dist_text": "1.9km"
      },
      {
       "name": "FIXTURE_ECHO",
-      "score": -0.34557259396179446,
+      "score": -0.40188059591319575,
       "name_box": [
        714,
        784,
@@ -236,49 +454,12 @@
        14
       ],
       "dist_box": [
-       747,
+       752,
        812,
-       29,
-       13
-      ],
-      "dist_text": "12-3",
-      "stacked": false
-     },
-     {
-      "name": "MIKE_ECHO",
-      "score": -0.4604544999553089,
-      "name_box": [
-       469,
-       912,
-       102,
-       14
-      ],
-      "dist_box": [
-       492,
-       940,
        55,
        13
       ],
-      "dist_text": "3-2K-",
-      "stacked": false
-     },
-     {
-      "name": "SAMPLE_ONE",
-      "score": -0.3816832281456595,
-      "name_box": [
-       459,
-       884,
-       110,
-       14
-      ],
-      "dist_box": [
-       469,
-       912,
-       102,
-       14
-      ],
-      "dist_text": "",
-      "stacked": true
+      "dist_text": "8.1km"
      }
     ]
    },
@@ -363,10 +544,22 @@
       14
      ],
      [
-      388,
-      631,
-      124,
-      17
+      423,
+      632,
+      54,
+      13
+     ],
+     [
+      298,
+      704,
+      90,
+      13
+     ],
+     [
+      298,
+      732,
+      80,
+      13
      ],
      [
       714,
@@ -375,32 +568,50 @@
       14
      ],
      [
-      747,
+      752,
       812,
-      29,
+      55,
       13
      ],
      [
-      772,
-      812,
-      40,
+      847,
+      844,
+      104,
       13
      ],
      [
-      459,
-      884,
-      110,
+      872,
+      872,
+      55,
+      13
+     ],
+     [
+      583,
+      904,
+      113,
+      13
+     ],
+     [
+      615,
+      932,
+      50,
+      13
+     ],
+     [
+      231,
+      964,
+      137,
       14
      ],
      [
-      469,
-      912,
+      378,
+      964,
       102,
-      14
+      13
      ],
      [
-      492,
-      940,
+      272,
+      992,
       55,
       13
      ]
@@ -431,26 +642,231 @@
       13
      ],
      [
-      14,
-      15
-     ],
-     [
-      14,
-      16
-     ],
-     [
-      17,
-      18
+      16,
+      17
      ],
      [
       18,
       19
+     ],
+     [
+      20,
+      21
      ]
+    ],
+    "loose": [
+     [
+      22,
+      24
+     ]
+    ],
+    "crowd": [],
+    "evaluations": [
+     {
+      "top": [
+       454,
+       254,
+       131,
+       14
+      ],
+      "bottom": [
+       492,
+       282,
+       55,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "SYNTH_ALPHA",
+      "score": -0.19528714814043283,
+      "dist_text": "9.0km"
+     },
+     {
+      "top": [
+       826,
+       304,
+       108,
+       13
+      ],
+      "bottom": [
+       802,
+       330,
+       152,
+       17
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": false,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       44,
+       404,
+       111,
+       13
+      ],
+      "bottom": [
+       72,
+       432,
+       55,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "TESTPLATE1",
+      "score": -0.06387466192577235,
+      "dist_text": "4.4km"
+     },
+     {
+      "top": [
+       734,
+       424,
+       131,
+       14
+      ],
+      "bottom": [
+       765,
+       452,
+       68,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "SYNTH_BRAVO",
+      "score": -0.1627348378339592,
+      "dist_text": "835.5m"
+     },
+     {
+      "top": [
+       919,
+       564,
+       62,
+       13
+      ],
+      "bottom": [
+       923,
+       592,
+       53,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": false,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       382,
+       604,
+       136,
+       14
+      ],
+      "bottom": [
+       423,
+       632,
+       54,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "DUMMY_DELTA",
+      "score": -0.08312095680855223,
+      "dist_text": "1.9km"
+     },
+     {
+      "top": [
+       714,
+       784,
+       132,
+       14
+      ],
+      "bottom": [
+       752,
+       812,
+       55,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "FIXTURE_ECHO",
+      "score": -0.40188059591319575,
+      "dist_text": "8.1km"
+     },
+     {
+      "top": [
+       847,
+       844,
+       104,
+       13
+      ],
+      "bottom": [
+       872,
+       872,
+       55,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": false,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       583,
+       904,
+       113,
+       13
+      ],
+      "bottom": [
+       615,
+       932,
+       50,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": false,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       231,
+       964,
+       137,
+       14
+      ],
+      "bottom": [
+       272,
+       992,
+       55,
+       13
+      ],
+      "kind": "loose",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "NEIGHBOR_ONE",
+      "score": -0.7886170734497601,
+      "dist_text": "4.5km"
+     }
     ],
     "detections": [
      {
       "name": "SYNTH_ALPHA",
-      "score": -0.11446712300315501,
+      "score": -0.19528714814043283,
       "name_box": [
        454,
        254,
@@ -463,12 +879,11 @@
        55,
        13
       ],
-      "dist_text": "9--K-",
-      "stacked": false
+      "dist_text": "9.0km"
      },
      {
       "name": "TESTPLATE1",
-      "score": -0.06308173969287878,
+      "score": -0.06387466192577235,
       "name_box": [
        44,
        404,
@@ -481,12 +896,11 @@
        55,
        13
       ],
-      "dist_text": "4-4K-",
-      "stacked": false
+      "dist_text": "4.4km"
      },
      {
       "name": "SYNTH_BRAVO",
-      "score": -0.13662094978946598,
+      "score": -0.1627348378339592,
       "name_box": [
        734,
        424,
@@ -499,12 +913,11 @@
        68,
        13
       ],
-      "dist_text": "835-5-",
-      "stacked": false
+      "dist_text": "835.5m"
      },
      {
       "name": "DUMMY_DELTA",
-      "score": -0.12235227473332039,
+      "score": -0.08312095680855223,
       "name_box": [
        382,
        604,
@@ -512,17 +925,16 @@
        14
       ],
       "dist_box": [
-       388,
-       631,
-       124,
-       17
+       423,
+       632,
+       54,
+       13
       ],
-      "dist_text": "1-9K-615-M_3",
-      "stacked": false
+      "dist_text": "1.9km"
      },
      {
       "name": "FIXTURE_ECHO",
-      "score": -0.34557259396179446,
+      "score": -0.40188059591319575,
       "name_box": [
        714,
        784,
@@ -530,49 +942,12 @@
        14
       ],
       "dist_box": [
-       747,
+       752,
        812,
-       29,
-       13
-      ],
-      "dist_text": "12-3",
-      "stacked": false
-     },
-     {
-      "name": "MIKE_ECHO",
-      "score": -0.4604544999553089,
-      "name_box": [
-       469,
-       912,
-       102,
-       14
-      ],
-      "dist_box": [
-       492,
-       940,
        55,
        13
       ],
-      "dist_text": "3-2K-",
-      "stacked": false
-     },
-     {
-      "name": "SAMPLE_ONE",
-      "score": -0.3816832281456595,
-      "name_box": [
-       459,
-       884,
-       110,
-       14
-      ],
-      "dist_box": [
-       469,
-       912,
-       102,
-       14
-      ],
-      "dist_text": "",
-      "stacked": true
+      "dist_text": "8.1km"
      }
     ]
    }
@@ -620,13 +995,7 @@
       12
      ],
      [
-      354,
-      505,
-      56,
-      14
-     ],
-     [
-      310,
+      338,
       506,
       43,
       11
@@ -656,20 +1025,76 @@
      [
       5,
       6
-     ],
-     [
-      5,
-      7
-     ],
-     [
-      8,
-      9
      ]
+    ],
+    "loose": [],
+    "crowd": [],
+    "evaluations": [
+     {
+      "top": [
+       346,
+       203,
+       107,
+       12
+      ],
+      "bottom": [
+       378,
+       226,
+       43,
+       11
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "SYNTH_ALPHA",
+      "score": -0.15195071820689418,
+      "dist_text": "9.0km"
+     },
+     {
+      "top": [
+       546,
+       343,
+       107,
+       12
+      ],
+      "bottom": [
+       572,
+       366,
+       54,
+       11
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "SYNTH_BRAVO",
+      "score": -0.16213126650521809,
+      "dist_text": "855.5m"
+     },
+     {
+      "top": [
+       305,
+       483,
+       110,
+       12
+      ],
+      "bottom": [
+       338,
+       506,
+       43,
+       11
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "DUMMY_DELTA",
+      "score": -0.0662424557860949,
+      "dist_text": "1.9km"
+     }
     ],
     "detections": [
      {
       "name": "SYNTH_ALPHA",
-      "score": -0.0958525655633684,
+      "score": -0.15195071820689418,
       "name_box": [
        346,
        203,
@@ -682,12 +1107,11 @@
        43,
        11
       ],
-      "dist_text": "9--K-",
-      "stacked": false
+      "dist_text": "9.0km"
      },
      {
       "name": "SYNTH_BRAVO",
-      "score": -0.1309803481340819,
+      "score": -0.16213126650521809,
       "name_box": [
        546,
        343,
@@ -700,12 +1124,11 @@
        54,
        11
       ],
-      "dist_text": "835-5-",
-      "stacked": false
+      "dist_text": "855.5m"
      },
      {
       "name": "DUMMY_DELTA",
-      "score": -0.17348445058123832,
+      "score": -0.0662424557860949,
       "name_box": [
        305,
        483,
@@ -713,13 +1136,12 @@
        12
       ],
       "dist_box": [
-       354,
-       505,
-       56,
-       14
+       338,
+       506,
+       43,
+       11
       ],
-      "dist_text": "615-7-",
-      "stacked": false
+      "dist_text": "1.9km"
      }
     ]
    },
@@ -762,13 +1184,7 @@
       12
      ],
      [
-      354,
-      505,
-      56,
-      14
-     ],
-     [
-      310,
+      338,
       506,
       43,
       11
@@ -798,20 +1214,76 @@
      [
       5,
       6
-     ],
-     [
-      5,
-      7
-     ],
-     [
-      8,
-      9
      ]
+    ],
+    "loose": [],
+    "crowd": [],
+    "evaluations": [
+     {
+      "top": [
+       346,
+       203,
+       107,
+       12
+      ],
+      "bottom": [
+       378,
+       226,
+       43,
+       11
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "SYNTH_ALPHA",
+      "score": -0.15195071820689418,
+      "dist_text": "9.0km"
+     },
+     {
+      "top": [
+       546,
+       343,
+       107,
+       12
+      ],
+      "bottom": [
+       572,
+       366,
+       54,
+       11
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "SYNTH_BRAVO",
+      "score": -0.16213126650521809,
+      "dist_text": "855.5m"
+     },
+     {
+      "top": [
+       305,
+       483,
+       110,
+       12
+      ],
+      "bottom": [
+       338,
+       506,
+       43,
+       11
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "DUMMY_DELTA",
+      "score": -0.0662424557860949,
+      "dist_text": "1.9km"
+     }
     ],
     "detections": [
      {
       "name": "SYNTH_ALPHA",
-      "score": -0.0958525655633684,
+      "score": -0.15195071820689418,
       "name_box": [
        346,
        203,
@@ -824,12 +1296,11 @@
        43,
        11
       ],
-      "dist_text": "9--K-",
-      "stacked": false
+      "dist_text": "9.0km"
      },
      {
       "name": "SYNTH_BRAVO",
-      "score": -0.1309803481340819,
+      "score": -0.16213126650521809,
       "name_box": [
        546,
        343,
@@ -842,12 +1313,11 @@
        54,
        11
       ],
-      "dist_text": "835-5-",
-      "stacked": false
+      "dist_text": "855.5m"
      },
      {
       "name": "DUMMY_DELTA",
-      "score": -0.17348445058123832,
+      "score": -0.0662424557860949,
       "name_box": [
        305,
        483,
@@ -855,13 +1325,12 @@
        12
       ],
       "dist_box": [
-       354,
-       505,
-       56,
-       14
+       338,
+       506,
+       43,
+       11
       ],
-      "dist_text": "615-7-",
-      "stacked": false
+      "dist_text": "1.9km"
      }
     ]
    }
@@ -891,10 +1360,34 @@
       1
      ]
     ],
+    "loose": [],
+    "crowd": [],
+    "evaluations": [
+     {
+      "top": [
+       572,
+       404,
+       136,
+       14
+      ],
+      "bottom": [
+       612,
+       432,
+       55,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "DUMMY_DELTA",
+      "score": -0.3732806550351536,
+      "dist_text": "7.7km"
+     }
+    ],
     "detections": [
      {
       "name": "DUMMY_DELTA",
-      "score": -0.1709045589759735,
+      "score": -0.3732806550351536,
       "name_box": [
        572,
        404,
@@ -907,8 +1400,7 @@
        55,
        13
       ],
-      "dist_text": "7-7K-",
-      "stacked": false
+      "dist_text": "7.7km"
      }
     ]
    },
@@ -933,10 +1425,34 @@
       1
      ]
     ],
+    "loose": [],
+    "crowd": [],
+    "evaluations": [
+     {
+      "top": [
+       572,
+       404,
+       136,
+       14
+      ],
+      "bottom": [
+       612,
+       432,
+       55,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "DUMMY_DELTA",
+      "score": -0.3732806550351536,
+      "dist_text": "7.7km"
+     }
+    ],
     "detections": [
      {
       "name": "DUMMY_DELTA",
-      "score": -0.1709045589759735,
+      "score": -0.3732806550351536,
       "name_box": [
        572,
        404,
@@ -949,8 +1465,7 @@
        55,
        13
       ],
-      "dist_text": "7-7K-",
-      "stacked": false
+      "dist_text": "7.7km"
      }
     ]
    }
@@ -962,12 +1477,609 @@
    "default": {
     "boxes": [],
     "pairs": [],
+    "loose": [],
+    "crowd": [],
+    "evaluations": [],
     "detections": []
    },
    "whole": {
     "boxes": [],
     "pairs": [],
+    "loose": [],
+    "crowd": [],
+    "evaluations": [],
     "detections": []
+   }
+  },
+  {
+   "file": "frame_e.png",
+   "width": 1280,
+   "height": 1440,
+   "default": {
+    "boxes": [
+     [
+      340,
+      254,
+      120,
+      14
+     ],
+     [
+      482,
+      254,
+      128,
+      14
+     ],
+     [
+      372,
+      282,
+      55,
+      13
+     ],
+     [
+      518,
+      282,
+      55,
+      13
+     ],
+     [
+      343,
+      454,
+      113,
+      14
+     ],
+     [
+      479,
+      454,
+      99,
+      13
+     ],
+     [
+      372,
+      482,
+      55,
+      13
+     ],
+     [
+      502,
+      482,
+      53,
+      13
+     ],
+     [
+      336,
+      654,
+      128,
+      14
+     ],
+     [
+      372,
+      682,
+      55,
+      13
+     ],
+     [
+      642,
+      854,
+      115,
+      14
+     ],
+     [
+      672,
+      882,
+      55,
+      13
+     ]
+    ],
+    "pairs": [
+     [
+      10,
+      11
+     ]
+    ],
+    "loose": [
+     [
+      8,
+      9
+     ]
+    ],
+    "crowd": [
+     [
+      0,
+      2,
+      [
+       1
+      ]
+     ],
+     [
+      1,
+      3,
+      [
+       0
+      ]
+     ],
+     [
+      4,
+      6,
+      [
+       5
+      ]
+     ],
+     [
+      5,
+      7,
+      [
+       4
+      ]
+     ]
+    ],
+    "evaluations": [
+     {
+      "top": [
+       642,
+       854,
+       115,
+       14
+      ],
+      "bottom": [
+       672,
+       882,
+       55,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "LONE_PLATE",
+      "score": -0.3151281126863273,
+      "dist_text": "8.8km"
+     },
+     {
+      "top": [
+       340,
+       254,
+       120,
+       14
+      ],
+      "bottom": [
+       372,
+       282,
+       55,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "CROWD_LEFT",
+      "score": -0.3746478165506259,
+      "dist_text": "6.1km"
+     },
+     {
+      "top": [
+       482,
+       254,
+       128,
+       14
+      ],
+      "bottom": [
+       518,
+       282,
+       55,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "CROWD_RIGHT",
+      "score": -0.9829433583951718,
+      "dist_text": "6.3km"
+     },
+     {
+      "top": [
+       343,
+       454,
+       113,
+       14
+      ],
+      "bottom": [
+       372,
+       482,
+       55,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": true,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       479,
+       454,
+       99,
+       13
+      ],
+      "bottom": [
+       502,
+       482,
+       53,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": false,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       336,
+       654,
+       128,
+       14
+      ],
+      "bottom": [
+       372,
+       682,
+       55,
+       13
+      ],
+      "kind": "loose",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "RINGSIDE_ONE",
+      "score": -1.0183480831340386,
+      "dist_text": "2.2km"
+     }
+    ],
+    "detections": [
+     {
+      "name": "LONE_PLATE",
+      "score": -0.3151281126863273,
+      "name_box": [
+       642,
+       854,
+       115,
+       14
+      ],
+      "dist_box": [
+       672,
+       882,
+       55,
+       13
+      ],
+      "dist_text": "8.8km"
+     },
+     {
+      "name": "CROWD_LEFT",
+      "score": -0.3746478165506259,
+      "name_box": [
+       340,
+       254,
+       120,
+       14
+      ],
+      "dist_box": [
+       372,
+       282,
+       55,
+       13
+      ],
+      "dist_text": "6.1km"
+     },
+     {
+      "name": "CROWD_RIGHT",
+      "score": -0.9829433583951718,
+      "name_box": [
+       482,
+       254,
+       128,
+       14
+      ],
+      "dist_box": [
+       518,
+       282,
+       55,
+       13
+      ],
+      "dist_text": "6.3km"
+     }
+    ]
+   },
+   "whole": {
+    "boxes": [
+     [
+      340,
+      254,
+      120,
+      14
+     ],
+     [
+      482,
+      254,
+      128,
+      14
+     ],
+     [
+      372,
+      282,
+      55,
+      13
+     ],
+     [
+      518,
+      282,
+      55,
+      13
+     ],
+     [
+      343,
+      454,
+      113,
+      14
+     ],
+     [
+      479,
+      454,
+      99,
+      13
+     ],
+     [
+      372,
+      482,
+      55,
+      13
+     ],
+     [
+      502,
+      482,
+      53,
+      13
+     ],
+     [
+      336,
+      654,
+      128,
+      14
+     ],
+     [
+      372,
+      682,
+      55,
+      13
+     ],
+     [
+      642,
+      854,
+      115,
+      14
+     ],
+     [
+      672,
+      882,
+      55,
+      13
+     ]
+    ],
+    "pairs": [
+     [
+      10,
+      11
+     ]
+    ],
+    "loose": [
+     [
+      8,
+      9
+     ]
+    ],
+    "crowd": [
+     [
+      0,
+      2,
+      [
+       1
+      ]
+     ],
+     [
+      1,
+      3,
+      [
+       0
+      ]
+     ],
+     [
+      4,
+      6,
+      [
+       5
+      ]
+     ],
+     [
+      5,
+      7,
+      [
+       4
+      ]
+     ]
+    ],
+    "evaluations": [
+     {
+      "top": [
+       642,
+       854,
+       115,
+       14
+      ],
+      "bottom": [
+       672,
+       882,
+       55,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "LONE_PLATE",
+      "score": -0.3151281126863273,
+      "dist_text": "8.8km"
+     },
+     {
+      "top": [
+       340,
+       254,
+       120,
+       14
+      ],
+      "bottom": [
+       372,
+       282,
+       55,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "CROWD_LEFT",
+      "score": -0.3746478165506259,
+      "dist_text": "6.1km"
+     },
+     {
+      "top": [
+       482,
+       254,
+       128,
+       14
+      ],
+      "bottom": [
+       518,
+       282,
+       55,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "CROWD_RIGHT",
+      "score": -0.9829433583951718,
+      "dist_text": "6.3km"
+     },
+     {
+      "top": [
+       343,
+       454,
+       113,
+       14
+      ],
+      "bottom": [
+       372,
+       482,
+       55,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": true,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       479,
+       454,
+       99,
+       13
+      ],
+      "bottom": [
+       502,
+       482,
+       53,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": false,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       336,
+       654,
+       128,
+       14
+      ],
+      "bottom": [
+       372,
+       682,
+       55,
+       13
+      ],
+      "kind": "loose",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "RINGSIDE_ONE",
+      "score": -1.0183480831340386,
+      "dist_text": "2.2km"
+     }
+    ],
+    "detections": [
+     {
+      "name": "LONE_PLATE",
+      "score": -0.3151281126863273,
+      "name_box": [
+       642,
+       854,
+       115,
+       14
+      ],
+      "dist_box": [
+       672,
+       882,
+       55,
+       13
+      ],
+      "dist_text": "8.8km"
+     },
+     {
+      "name": "CROWD_LEFT",
+      "score": -0.3746478165506259,
+      "name_box": [
+       340,
+       254,
+       120,
+       14
+      ],
+      "dist_box": [
+       372,
+       282,
+       55,
+       13
+      ],
+      "dist_text": "6.1km"
+     },
+     {
+      "name": "CROWD_RIGHT",
+      "score": -0.9829433583951718,
+      "name_box": [
+       482,
+       254,
+       128,
+       14
+      ],
+      "dist_box": [
+       518,
+       282,
+       55,
+       13
+      ],
+      "dist_text": "6.3km"
+     }
+    ]
    }
   }
  ]

@@ -32,6 +32,9 @@ public sealed class ClipLabels
     /// <summary>The names of a clip (ByClip) or of an image file (ByFile); null when the label file does not mention it.</summary>
     public IReadOnlyList<string>? NamesFor(string key) => _names.TryGetValue(key, out var list) ? list : null;
 
+    /// <summary>Every labeled name of every clip or image.</summary>
+    public IEnumerable<string> AllNames() => _names.Values.SelectMany(v => v).Distinct(StringComparer.Ordinal);
+
     public static ClipLabels Load(string path)
     {
         var text = File.ReadAllText(path, Encoding.UTF8);

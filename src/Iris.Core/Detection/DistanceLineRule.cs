@@ -2,148 +2,105 @@ using Iris.Core.Detection.Letters;
 
 namespace Iris.Core.Detection;
 
-/// <summary>The verdict of <see cref="DistanceLineRule"/> on a line below a name.</summary>
-public enum DistanceVerdict
-{
-    /// <summary>Not a distance line.</summary>
-    Reject,
-
-    /// <summary>A number followed by a unit ("9.0km", "835.5m").</summary>
-    Full,
-
-    /// <summary>A number, but the unit could not be recognized. Only good enough together with a very sure, long name.</summary>
-    Partial,
-}
+/// <summary>A distance line that passed <see cref="DistanceLineRule"/>: "835.5m", "9.0km".</summary>
+/// <param name="Text">The line as read, look-alike letters already turned into digits: <c>835.5m</c>.</param>
+/// <param name="Value">The number in front of the unit: 835.5, 9.0.</param>
+/// <param name="Kilometers">True for <c>km</c>, false for <c>m</c>.</param>
+public readonly record struct DistanceReading(string Text, double Value, bool Kilometers);
 
 /// <summary>
-/// Decides from the model's restricted read of the line below a name whether it is the distance line of a nameplate. Tesseract is
-/// not available to IRIS, and the letter model has two blind spots on this line: the game writes "9.0km" in lower case, which the
-/// model never saw, so the unit comes out as K, M, "-", or a digit or two; and the decimal point is a tiny speck that is read as
-/// "-" or "_" or dropped as noise. So the rule looks at the SHAPE of the read, not at its exact characters:
-/// <list type="number">
-/// <item>every piece of the read becomes a class: D (digit), P ("-" or "_", a dot or a lost unit), K, M; a gap wider than a
-/// word gap before a piece is remembered;</item>
-/// <item>a narrow first piece is a digit (a thin "1");</item>
-/// <item>the line must start with a number: an optional P (".4"), 1 to 4 D, then a decimal part of one D, with or without a P in front;</item>
-/// <item>the read must not have bent the model too far: the mean of (best log probability over all characters minus best
-/// over the allowed ones) of the first 6 pieces must be at most <see cref="NameplateDetectorSettings.MaxDistanceGap"/>;</item>
-/// <item>nothing after the number: <see cref="DistanceVerdict.Partial"/>; after it, K (+ optional P, M, K), M (+ optional P, M)
-/// or P is the unit: <see cref="DistanceVerdict.Full"/> if at most <see cref="NameplateDetectorSettings.MaxGluedAfterUnit"/>
-/// characters follow without a space (more means "209m/s (9.05km)": a speed line); any other character after the number: Partial.</item>
+/// The distance ANCHOR rule: decides from the model's restricted read of a line whether it is the distance line of a nameplate.
+/// The line must read as exactly <c>number . digit unit</c>:
+/// <list type="bullet">
+/// <item>number: 1 to 4 digits, at most <see cref="NameplateDetectorSettings.MaxDistanceValue"/> (0 to 1000);</item>
+/// <item>a period, then exactly one digit (distances without a decimal are ignored);</item>
+/// <item>the unit, lower case <c>m</c> or <c>km</c>, and nothing after it;</item>
+/// <item>no gap wider than a word gap (<see cref="NameplateDetectorSettings.WordGap"/> capital heights) between two pieces of the line;</item>
+/// <item>the read must be sure: mean log probability per character at least <see cref="NameplateDetectorSettings.MinDistanceScore"/>, and the
+/// model's own opinion (best over all characters) may not be too far from the restricted read (mean gap at most
+/// <see cref="NameplateDetectorSettings.MaxDistanceGap"/> over the first 6 pieces).</item>
 /// </list>
-/// Port of <c>distance_status</c> in the Python reference. One instance reuses its work lists: not thread safe.
+/// The line is read with the characters <c>0-9 . k m</c> and the digit look-alikes <c>O Q D I S B G Z</c> (the efficiency list of
+/// <see cref="LookAlikes"/>); a look-alike letter counts as the digit it stands for. Port of <c>Reader.read_distance</c> of the Python reference.
 /// </summary>
-public sealed class DistanceLineRule
+public static class DistanceLineRule
 {
-    private readonly NameplateDetectorSettings _settings;
-    private readonly List<char> _classes = new();
-    private readonly List<bool> _gapBefore = new();
+    /// <summary>The characters the distance line is read with: digits, ".", "k", "m" and the efficiency look-alike letters.</summary>
+    public static string Alphabet { get; } = "0123456789.km" + LookAlikes.EfficiencyLetters;
 
-    public DistanceLineRule(NameplateDetectorSettings settings)
-    {
-        _settings = settings;
-    }
-
-    /// <summary>The characters the distance line is read with: digits, K, M, "-" and "_".</summary>
-    public const string Alphabet = "0123456789KM-_";
-
-    public DistanceVerdict Evaluate(PieceRead? read)
+    /// <summary>Evaluates a read; null when the line is not a distance anchor.</summary>
+    public static DistanceReading? Evaluate(PieceRead? read, NameplateDetectorSettings settings)
     {
         if (read is null || read.Pieces.Count == 0)
-            return DistanceVerdict.Reject;
-        return Evaluate(read.Pieces, read.CapHeight);
-    }
+            return null;
+        var pieces = read.Pieces;
+        var cap = read.CapHeight;
 
-    public DistanceVerdict Evaluate(IReadOnlyList<ReadPiece> pieces, int capHeight)
-    {
-        if (pieces.Count == 0)
-            return DistanceVerdict.Reject;
+        // a first or last piece the model is unsure about is a speck (noise next to the line), not part of it
+        var first = 0;
+        var last = pieces.Count - 1;
+        while (last > first && pieces[last].Score < settings.DistanceEndScore)
+            last--;
+        while (first < last && pieces[first].Score < settings.DistanceEndScore)
+            first++;
+        if (first != 0 || last != pieces.Count - 1)
+            pieces = pieces.Skip(first).Take(last - first + 1).ToList();
 
-        _classes.Clear();
-        _gapBefore.Clear();
-        var previousEnd = -1;
+        var text = new System.Text.StringBuilder();
+        var chars = 0;
+        var total = 0.0;
         foreach (var piece in pieces)
         {
-            var first = true;
             foreach (var ch in piece.Text)
-            {
-                _classes.Add(ch is >= '0' and <= '9' ? 'D' : ch is '-' or '_' ? 'P' : ch);
-                _gapBefore.Add(previousEnd >= 0 && first && piece.Start - previousEnd > _settings.WordGap * capHeight);
-                first = false;
-            }
-
-            previousEnd = piece.End;
+                text.Append(LookAlikes.EfficiencyDigit(ch) ?? ch);
+            chars += piece.Text.Length;
+            total += piece.Score;
         }
 
-        var firstPiece = pieces[0];
-        if (firstPiece.End - firstPiece.Start < _settings.NarrowFirstPiece * capHeight)
-        {
-            _classes.RemoveRange(0, Math.Min(firstPiece.Text.Length, _classes.Count));
-            _gapBefore.RemoveRange(0, Math.Min(firstPiece.Text.Length, _gapBefore.Count));
-            _classes.Insert(0, 'D');
-            _gapBefore.Insert(0, false);
-        }
+        var mean = total / Math.Max(1, chars);
 
-        if (_classes.Count == 0)
-            return DistanceVerdict.Reject;
-
-        var n = _classes.Count;
-        var j = 0;
-        if (j < n && _classes[j] == 'P' && j + 1 < n && _classes[j + 1] == 'D')
-            j++;
-        var digits = 0;
-        while (j < n && _classes[j] == 'D' && digits < 4)
-        {
-            digits++;
-            j++;
-        }
-
-        if (digits == 0)
-            return DistanceVerdict.Reject;
-        if (j < n && _classes[j] == 'P' && j + 1 < n && _classes[j + 1] == 'D')
-            j += 2;
-        else if (j < n && _classes[j] == 'D')
-            j++;
-
-        var count = Math.Min(6, pieces.Count);
         var gapSum = 0.0;
+        var count = Math.Min(6, pieces.Count);
         for (var i = 0; i < count; i++)
             gapSum += (pieces[i].FreeScore - pieces[i].Score) / Math.Max(1, pieces[i].Text.Length);
-        if (gapSum / count > _settings.MaxDistanceGap)
-            return DistanceVerdict.Reject;
+        var gap = gapSum / count;
 
-        if (j >= n)
-            return DistanceVerdict.Partial;
+        for (var i = 0; i + 1 < pieces.Count; i++)
+            if (pieces[i + 1].Start - pieces[i].End > settings.WordGap * cap)
+                return null; // a space inside the line: not one distance
 
-        var c = _classes[j];
-        if (c == 'K')
-        {
-            j++;
-            if (j < n && (_classes[j] is 'P' or 'M' or 'K') && !_gapBefore[j])
-                j++;
-        }
-        else if (c == 'M')
-        {
-            j++;
-            if (j < n && (_classes[j] is 'P' or 'M') && !_gapBefore[j])
-                j++;
-        }
-        else if (c == 'P')
-        {
-            j++;
-        }
+        if (mean < settings.MinDistanceScore || gap > settings.MaxDistanceGap)
+            return null;
+
+        return Parse(text.ToString(), settings.MaxDistanceValue);
+    }
+
+    /// <summary>
+    /// The shape check alone: <c>[0-9]{1,4} . [0-9] (km|m)</c> with the number at most <paramref name="maxValue"/>. Null when the text
+    /// does not have that shape.
+    /// </summary>
+    public static DistanceReading? Parse(string text, int maxValue)
+    {
+        var at = 0;
+        while (at < text.Length && at < 4 && text[at] is >= '0' and <= '9')
+            at++;
+        if (at == 0 || at >= text.Length || text[at] != '.')
+            return null;
+        var whole = int.Parse(text.AsSpan(0, at), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture);
+        if (whole > maxValue)
+            return null;
+        var dot = at;
+        if (dot + 1 >= text.Length || text[dot + 1] is not (>= '0' and <= '9'))
+            return null;
+        var tenth = text[dot + 1] - '0';
+        var unit = text.AsSpan(dot + 2);
+        bool kilometers;
+        if (unit.SequenceEqual("km"))
+            kilometers = true;
+        else if (unit.SequenceEqual("m"))
+            kilometers = false;
         else
-        {
-            return DistanceVerdict.Partial;
-        }
-
-        var glued = 0;
-        while (j < n && !_gapBefore[j])
-        {
-            glued++;
-            j++;
-        }
-
-        return glued <= _settings.MaxGluedAfterUnit ? DistanceVerdict.Full : DistanceVerdict.Reject;
+            return null;
+        return new DistanceReading(text, whole + tenth / 10.0, kilometers);
     }
 }

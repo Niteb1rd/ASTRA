@@ -59,11 +59,12 @@ public class ExclusionListTests : IDisposable
 
         Assert.True(File.Exists(path));
         var expected = DefaultNames();
-        Assert.Equal(61, expected.Length);
-        Assert.Equal(61, list.Count);
+        Assert.Equal(62, expected.Length);
+        Assert.Equal(62, list.Count);
         Assert.Equal(expected.OrderBy(n => n, StringComparer.OrdinalIgnoreCase), list.Names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
         Assert.True(list.IsExcluded("Stanton"));
         Assert.True(list.IsExcluded("stanton"));
+        Assert.True(list.IsExcluded("AMMUNITON")); // a label of the game that the nameplate detector reads as a name (one letter off the word)
     }
 
     [Fact]
@@ -284,5 +285,33 @@ public class ExclusionListTests : IDisposable
         WriteRaw(path, "Gold\nCopper\n");
         Assert.True(list.ReloadIfChanged());
         Assert.False(list.ReloadIfChanged());
+    }
+
+    [Fact]
+    public void IsExcluded_ToleratesTheAccuracyLookAlikes_Only()
+    {
+        var path = PathOf();
+        WriteRaw(path, "Hurston\nLorville\n");
+        var list = Load(path);
+
+        Assert.True(list.IsExcluded("HURST0N"));
+        Assert.True(list.IsExcluded("hurst0n"));
+        Assert.True(list.IsExcluded("L0RV1LLE"));
+        Assert.True(list.IsExcluded("LORVILLE"));
+        Assert.False(list.IsExcluded("HURSTQN"));
+        Assert.False(list.IsExcluded("LORV1LLEX"));
+    }
+
+    [Fact]
+    public void AddAutomatic_DoesNotAddALookAlikeOfAListedName()
+    {
+        var path = PathOf();
+        WriteRaw(path, "Hurston\n");
+        var list = Load(path);
+        var before = list.Count;
+
+        list.AddAutomatic("HURST0N", "test");
+
+        Assert.Equal(before, list.Count);
     }
 }

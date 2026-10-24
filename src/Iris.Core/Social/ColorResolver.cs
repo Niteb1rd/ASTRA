@@ -1,4 +1,5 @@
 using Iris.Core.Config;
+using Iris.Core.Detection;
 
 namespace Iris.Core.Social;
 
@@ -33,7 +34,7 @@ public sealed record ColorMatch(MatchKind Kind, OverlayColor Color, string? Deci
 
 /// <summary>
 /// Applies the requirement's color rules, in order:
-/// 1. player list (no tiebreak needed);
+/// 1. player list (no tiebreak needed; the handle is compared like <see cref="NameFilter"/> does, ignoring case and the look-alikes 0/O and 1/I, so a read such as N1TEBIRD finds Nitebird);
 /// 2. org list: lowest priority number wins, ties go to the org listed first;
 /// 3. org-attribute rules: lowest priority number wins, ties go to the rule listed first;
 /// 4. nothing matches: the permanent No Match rule (<see cref="NoMatchRule"/>) gives the player its color (<see cref="MatchKind.NoMatch"/>), with the bracket &lt; &gt;
@@ -45,7 +46,7 @@ public static class ColorResolver
     public static ColorMatch Resolve(string handle, IReadOnlyList<OrgMembership> orgs, SocialConfig config)
     {
         // 1. player list
-        var player = config.Players.FirstOrDefault(p => string.Equals(p.Handle, handle, StringComparison.OrdinalIgnoreCase));
+        var player = config.Players.FirstOrDefault(p => LookAlikes.NamesEqual(p.Handle, handle));
         if (player is not null)
             return new ColorMatch(MatchKind.PlayerList, player.Color, null, null);
 
@@ -88,7 +89,7 @@ public static class ColorResolver
     /// </summary>
     public static ColorMatch ResolveUnknown(string handle, SocialConfig config)
     {
-        var player = config.Players.FirstOrDefault(p => string.Equals(p.Handle, handle, StringComparison.OrdinalIgnoreCase));
+        var player = config.Players.FirstOrDefault(p => LookAlikes.NamesEqual(p.Handle, handle));
         if (player is not null)
             return new ColorMatch(MatchKind.PlayerList, player.Color, null, null);
         var noMatch = NoMatchRule.Find(config);
