@@ -148,6 +148,12 @@ public sealed class OverlayController : IDisposable
     public void LiveChanged() => Evaluate();
 
     /// <summary>
+    /// Writes the brackets window's "Overlay render" log line (frames, redraws, average cost since the last call). The live detection service calls it (through the UI thread)
+    /// right after its once-a-minute "Live detection" line: that is the only time the line is written. Nothing is written when no frame was rendered since.
+    /// </summary>
+    public void LogRenderSummary() => _bracketWindow?.LogRenderSummary();
+
+    /// <summary>
     /// The model for the moment the frame will be SHOWN from the latest snapshot: the brackets moved along their tracked velocity from where they were last tracked to the
     /// expected display time (now plus one refresh period of the display, <see cref="DisplayTiming"/>), at most 50 ms ahead of their last tracked time.
     /// </summary>

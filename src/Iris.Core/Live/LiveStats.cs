@@ -186,6 +186,9 @@ public sealed class RenderStats
 
     public int Redraws => _redraws;
 
+    /// <summary>How many frames the summary taken last covered (0 when there was nothing to report: the caller then writes no line).</summary>
+    public int LastSummaryFrames { get; private set; }
+
     public void AddFrame(double milliseconds, bool redrew)
     {
         _frames++;
@@ -203,6 +206,7 @@ public sealed class RenderStats
         var average = _frames == 0 ? 0.0 : _totalMs / _frames;
         var line = string.Create(CultureInfo.InvariantCulture,
             $"Overlay render: {_frames} frames in {seconds:0} s, {_redraws} redraws, average {average:0.000} ms per frame");
+        LastSummaryFrames = _frames;
         _frames = 0;
         _redraws = 0;
         _totalMs = 0;

@@ -35,8 +35,6 @@ public partial class OverlayWindow : Window
     /// <summary>Room kept around what is drawn when the window is (re)sized: a bracket that moves a little does not move the window.</summary>
     private const double RoomAround = 64.0;
 
-    private const double RenderLogEveryMs = 60_000.0;
-
     private readonly OverlayLayer _layer;
     private readonly Action<string>? _warn;   // a line for the log (problems of the setup, the once-a-minute render statistics)
     private IntPtr _hwnd = IntPtr.Zero;
@@ -130,7 +128,9 @@ public partial class OverlayWindow : Window
         if (_hooked || _layer != OverlayLayer.Brackets || ModelProvider is null)
             return;
         _hooked = true;
-        _stats = new RenderStats(StopwatchClock.Shared.NowMs);
+        // The statistics live as long as the window, NOT as long as the hook: the brackets window hides and shows again every time the last bracket goes and the next one
+        // comes (every few seconds in play), and a line written at every hide was the "Overlay render" line every ~3 s. The line is written by LogRenderSummary, once a minute.
+        _stats ??= new RenderStats(StopwatchClock.Shared.NowMs);
         _lastRenderingTime = TimeSpan.MinValue;
         CompositionTarget.Rendering += OnRendering;
     }
@@ -141,9 +141,20 @@ public partial class OverlayWindow : Window
             return;
         _hooked = false;
         CompositionTarget.Rendering -= OnRendering;
-        if (_stats is { Frames: > 0 })
-            _warn?.Invoke(_stats.TakeSummary(StopwatchClock.Shared.NowMs));
-        _stats = null;
+    }
+
+    /// <summary>
+    /// Writes the "Overlay render: N frames in S s, R redraws, average X ms per frame" line for everything since the last call (nothing when no frame was rendered) and starts a
+    /// new window. The controller calls it right after the once-a-minute "Live detection" line; nothing else writes it. UI thread.
+    /// </summary>
+    public void LogRenderSummary()
+    {
+        var stats = _stats;
+        if (stats is null)
+            return;
+        var line = stats.TakeSummary(StopwatchClock.Shared.NowMs); // also starts the next window when there was nothing to report
+        if (stats.LastSummaryFrames > 0)
+            _warn?.Invoke(line);
     }
 
     /// <summary>One monitor frame: the brackets move to where they are now; the window is redrawn only if a bracket moved by a whole pixel (a new model instance).</summary>
@@ -169,9 +180,6 @@ public partial class OverlayWindow : Window
         if (stats is null)
             return;
         stats.AddFrame((Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency, redrew);
-        var now = StopwatchClock.Shared.NowMs;
-        if (_hooked && stats.IsDue(now, RenderLogEveryMs))
-            _warn?.Invoke(stats.TakeSummary(now));
     }
 
     /// <summary>

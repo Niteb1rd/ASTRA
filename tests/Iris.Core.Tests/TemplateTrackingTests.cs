@@ -740,5 +740,24 @@ public class TemplateTrackingTests
 
         Assert.Equal("Overlay render: 3 frames in 60 s, 2 redraws, average 0.400 ms per frame", line);
         Assert.Equal(0, stats.Frames);
+        Assert.Equal(3, stats.LastSummaryFrames);
+    }
+
+    [Fact]
+    public void RenderStats_AWindowWithoutFramesIsReportedAsEmpty_AndTheStatisticsKeepCountingAcrossHides()
+    {
+        var stats = new RenderStats(0);
+
+        // the brackets window hides and shows again between these frames; the statistics are not reset by that (only by a summary)
+        stats.AddFrame(0.5, redrew: true);
+        stats.AddFrame(0.5, redrew: true);
+        Assert.Equal(2, stats.Frames);
+
+        stats.TakeSummary(60_000);
+        Assert.Equal(2, stats.LastSummaryFrames);
+        stats.TakeSummary(120_000); // a quiet minute: nothing to write
+        Assert.Equal(0, stats.LastSummaryFrames);
+        Assert.False(stats.IsDue(150_000, 60_000));
+        Assert.True(stats.IsDue(180_000, 60_000));
     }
 }
