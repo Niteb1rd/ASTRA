@@ -360,7 +360,10 @@ public class NameplateDetectorTests
         Assert.True(Math.Abs(distancePart.X + distancePart.Width / 2.0 - nameCenter) > NameplateDetectorSettings.Default.CenterTolerance);
     }
 
-    /// <summary>With the brackets switched off (a bracket score nobody reaches) the speed lines are not anchors and nothing but the plain plates is found.</summary>
+    /// <summary>
+    /// With the brackets switched off (a bracket score nobody reaches) the speed lines are not anchors. Every plate of frame_f has a speed group (the
+    /// others are decoys), so no plate at all is found.
+    /// </summary>
     [OpenCvFact]
     public void WithoutTheBracketTest_SpeedLinesAreNotAnchors()
     {

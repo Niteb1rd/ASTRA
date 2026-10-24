@@ -155,18 +155,27 @@ public class DistanceLineRuleTests
     [Fact]
     public void DistancePartIsStillJudgedStrictly_WithASpeedGroup()
     {
-        // the distance pieces are unsure: judged on their own scores, the junk after the bracket does not matter either way
-        var pieces = new List<ReadPiece>
+        // The five distance pieces are unsure but not specks: their score (-0.5) is above DistanceEndScore (-1.0), so none is trimmed from the ends,
+        // and the 24 pixel gap before the "[" (a word gap is 0.33 * 48 = 15.8) opens the speed-group path: the line is cut after the "m" and judged
+        // on those five pieces alone. Their mean score, -0.5, is below MinDistanceScore (-0.35): rejected. (At -2.0 the pieces would be trimmed
+        // as specks before the bracket is ever looked at, and the test would not reach this path.)
+        static PieceRead Pieces(double score) => new(new List<ReadPiece>
         {
-            new(0, 30, "9", -2.0, -0.1),
-            new(36, 45, ".", -2.0, -0.1),
-            new(51, 81, "0", -2.0, -0.1),
-            new(87, 117, "k", -2.0, -0.1),
-            new(123, 153, "m", -2.0, -0.1),
+            new(0, 30, "9", score, -0.1),
+            new(36, 45, ".", score, -0.1),
+            new(51, 81, "0", score, -0.1),
+            new(87, 117, "k", score, -0.1),
+            new(123, 153, "m", score, -0.1),
             new(177, 187, "1", 0.0, 0.0),
-        };
+        }, Cap);
 
-        Assert.Null(DistanceLineRule.Evaluate(new PieceRead(pieces, Cap), Settings, BracketAt(177)));
+        Assert.Null(DistanceLineRule.Evaluate(Pieces(-0.5), Settings, BracketAt(177)));
+
+        // the same line with sure pieces (mean -0.2, free score only 0.1 above) is accepted through the very same path: the speed group is found
+        var reading = DistanceLineRule.Evaluate(Pieces(-0.2), Settings, BracketAt(177));
+        Assert.NotNull(reading);
+        Assert.True(reading!.Value.HasSpeedGroup);
+        Assert.Equal("9.0km", reading.Value.Text);
     }
 
     [Fact]

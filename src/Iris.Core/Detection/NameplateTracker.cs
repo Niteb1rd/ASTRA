@@ -48,11 +48,19 @@ public sealed record NameplateTrackerSettings
 
     /// <summary>
     /// CORRECTIONS: once a name is confirmed, only the votes of the last this-many milliseconds count. When another name meets the confirmation
-    /// rule there (enough identical reads of one box width, more reads than the confirmed name has in the window), the confirmed name switches
-    /// to it. A confirmed track whose latest read disagrees with its name is read at every frame (not only every
+    /// rule there (enough identical reads of one box width, spread over <see cref="ConfirmSpanMs"/>, and more votes in the window than ANY other name
+    /// has, the confirmed name included), the confirmed name switches to it. A confirmed track whose latest read disagrees with its name is read at every frame (not only every
     /// <see cref="ConfirmedRereadMs"/>) until it settles.
     /// </summary>
     public double CorrectionWindowMs { get; init; } = 4000.0;
+
+    /// <summary>
+    /// BEFORE the first confirmation only the votes of the last this-many milliseconds count: 4 times <see cref="ConfirmSpanMs"/>. A confirmation
+    /// needs identical reads that span <see cref="ConfirmSpanMs"/>, so a vote much older than that cannot be part of one, and without the cap a
+    /// plate that never confirms (two names that alternate, a flickering read) would keep every vote it ever got. Older votes are dropped (and no
+    /// longer count as rivals). With a <see cref="ConfirmSpanMs"/> of 0 there is no cap (infinity).
+    /// </summary>
+    public double PreConfirmationWindowMs => ConfirmSpanMs > 0 ? 4.0 * ConfirmSpanMs : double.PositiveInfinity;
 
     /// <summary>A track that no candidate matched for this long is closed.</summary>
     public double ExpireMs { get; init; } = 1000.0;
@@ -203,6 +211,12 @@ public sealed class NameplateTrack
 
     public int ReadCount { get; private set; }
 
+    /// <summary>
+    /// How many votes the track still holds for the confirmation rule: those inside <see cref="NameplateTrackerSettings.PreConfirmationWindowMs"/> (before
+    /// the first confirmation) or <see cref="NameplateTrackerSettings.CorrectionWindowMs"/> (afterwards) of the latest vote. <see cref="ReadCount"/> counts all.
+    /// </summary>
+    public int VoteWindowCount => _votes.Count;
+
     /// <summary>The name with the most votes (the first of them on a tie), or null when nothing was read.</summary>
     public string? BestName
     {
@@ -244,8 +258,13 @@ public sealed class NameplateTrack
     /// </summary>
     public IReadOnlyList<NameCorrection> Corrections => _corrections;
 
-    /// <summary>True when the latest vote disagrees with the confirmed name (the track is read at every frame until it settles).</summary>
+    /// <summary>
+    /// True when the latest vote disagrees with the confirmed name (the track is read at every frame until it settles). An evaluation that finds the
+    /// nameplate but gives no vote (the read was too unsure, or it starts or ends with <c>-</c>) clears it: the disagreement is no longer the latest word.
+    /// </summary>
     public bool IsDisputed { get; private set; }
+
+    internal void ClearDispute() => IsDisputed = false;
 
     /// <summary>Per name: the frame of its first vote.</summary>
     public IReadOnlyDictionary<string, long> FirstReadFrame => _firstReadFrame;
@@ -306,8 +325,9 @@ public sealed class NameplateTrack
 
         ReadCount++;
         _votes.Add(new NameVote(name, timeMs, width));
-        if (ConfirmedName is not null)
-            _votes.RemoveAll(v => v.Ms < timeMs - settings.CorrectionWindowMs); // older votes no longer count, now or later
+        // older votes no longer count, now or later: before the first confirmation only the last 4 x ConfirmSpanMs, afterwards the correction window
+        var window = ConfirmedName is null ? settings.PreConfirmationWindowMs : settings.CorrectionWindowMs;
+        _votes.RemoveAll(v => v.Ms < timeMs - window);
 
         var outcome = VoteOutcome.None;
         var trusted = Trusted(timeMs, settings, widthTolerance);
@@ -368,28 +388,66 @@ public sealed class NameplateTrack
 
     /// <summary>
     /// The largest set of reads (of one name, in time order) whose widths lie within plus or minus <paramref name="tolerance"/> of one of them (the
-    /// later set on a tie): its size and the times of its first and last read.
+    /// later set on a tie): its size and the times of its first and last read. O(n log n): the reads are sorted by width and a window of
+    /// +-<paramref name="tolerance"/> around each width slides over them, a pair of monotonic queues giving the earliest and the latest time inside it.
+    /// "Later" on a tie means: more reads, then the later last read, then the read that comes later in <paramref name="samples"/>. The times must not decrease.
     /// </summary>
     public static (int Count, double First, double Last) StableGroup(IReadOnlyList<(double Ms, int Width)> samples, double tolerance)
     {
-        var best = (Count: 0, First: 0.0, Last: 0.0);
-        foreach (var (_, anchor) in samples)
+        var n = samples.Count;
+        if (n == 0 || tolerance < 0)
+            return (0, 0.0, 0.0);
+
+        var order = new int[n]; // indices of samples, by width (equal widths: by position)
+        for (var i = 0; i < n; i++)
+            order[i] = i;
+        Array.Sort(order, (a, b) =>
         {
-            var count = 0;
-            var first = 0.0;
-            var last = 0.0;
-            foreach (var (ms, width) in samples)
+            var byWidth = samples[a].Width.CompareTo(samples[b].Width);
+            return byWidth != 0 ? byWidth : a.CompareTo(b);
+        });
+
+        // the window is order[lo .. added-1]: the reads whose width is within +-tolerance of the current one. Both ends only move forward.
+        // minQueue / maxQueue hold positions in `order` whose times are increasing / decreasing: the front is the earliest / latest time of the window.
+        var minQueue = new int[n];
+        var maxQueue = new int[n];
+        int minHead = 0, minTail = 0, maxHead = 0, maxTail = 0;
+        var lo = 0;
+        var added = 0;
+        var best = (Count: 0, First: 0.0, Last: 0.0);
+        var bestIndex = -1;
+        for (var k = 0; k < n; k++)
+        {
+            var anchor = samples[order[k]].Width;
+            while (anchor - samples[order[lo]].Width > tolerance)
+                lo++; // never passes k: the anchor is 0 away from itself
+            while (added < n && samples[order[added]].Width - anchor <= tolerance)
             {
-                if (Math.Abs(width - anchor) > tolerance)
-                    continue;
-                if (count == 0)
-                    first = ms;
-                last = ms;
-                count++;
+                var ms = samples[order[added]].Ms;
+                while (maxTail > maxHead && samples[order[maxQueue[maxTail - 1]]].Ms <= ms)
+                    maxTail--;
+                maxQueue[maxTail++] = added;
+                while (minTail > minHead && samples[order[minQueue[minTail - 1]]].Ms >= ms)
+                    minTail--;
+                minQueue[minTail++] = added;
+                added++;
             }
 
-            if (count > best.Count || (count == best.Count && last >= best.Last))
+            while (minQueue[minHead] < lo)
+                minHead++;
+            while (maxQueue[maxHead] < lo)
+                maxHead++;
+
+            var count = added - lo;
+            var first = samples[order[minQueue[minHead]]].Ms;
+            var last = samples[order[maxQueue[maxHead]]].Ms;
+            var index = order[k];
+            if (count > best.Count
+                || (count == best.Count && (last > best.Last || (last == best.Last && index > bestIndex))))
+            {
                 best = (count, first, last);
+                bestIndex = index;
+            }
         }
 
         return best;
@@ -437,7 +495,8 @@ public sealed record TrackerUpdate(IReadOnlyList<NameplateTrack> Confirmed, IRea
 /// <see cref="NameplateTrackerSettings.ConfirmedRereadMs"/> (every frame while its latest read disagrees with its name). Each evaluation that reads
 /// a name surely enough, and that does not start or end with -, is a vote. A name is confirmed when it has
 /// <see cref="NameplateTrackerSettings.ConfirmReads"/> votes at one box width (<see cref="NameplateTrackerSettings.StableWidthPx"/>), more than any
-/// other name of the track, spread over at least <see cref="NameplateTrackerSettings.ConfirmSpanMs"/>. A confirmed name is corrected, never
+/// other name of the track, spread over at least <see cref="NameplateTrackerSettings.ConfirmSpanMs"/> (before the first confirmation only the votes of the last
+/// <see cref="NameplateTrackerSettings.PreConfirmationWindowMs"/> count). A confirmed name is corrected, never
 /// withdrawn: when another name meets the rule over the last <see cref="NameplateTrackerSettings.CorrectionWindowMs"/> it replaces the confirmed one
 /// (<see cref="TrackerUpdate.Corrected"/>, <see cref="NameplateTrack.Corrections"/>).</item>
 /// <item>Several evaluations in a row that say "no nameplate" turn a Nameplate track back into NotNameplate.</item>
@@ -640,7 +699,11 @@ public sealed class NameplateTracker
         track.FailStreak = 0;
         track.LastReadMs = timeMs;
         if (result.Name is null || !NameShape.HasValidEdges(result.Name))
-            return; // a name may not start or end with -: the plate is a nameplate, the read is no vote
+        {
+            track.ClearDispute(); // a nameplate without a vote (too unsure, or a name may not start or end with -): no disagreement to chase
+            return;
+        }
+
         var outcome = track.Vote(result.Name, frame, timeMs, track.Top.Width, _settings, tolerance);
         if (outcome != VoteOutcome.None)
             confirmedNow.Add(track);
