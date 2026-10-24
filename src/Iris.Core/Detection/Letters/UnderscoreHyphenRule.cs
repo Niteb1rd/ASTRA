@@ -6,7 +6,9 @@ namespace Iris.Core.Detection.Letters;
 /// <param name="Frac">The centre of the bar's ink rows as a fraction of the capital band: 0 is the top edge of the band, 1 its bottom edge (an underscore sits at about 1 and below, a hyphen in the middle).</param>
 /// <param name="Thick">The thickness of the bar (its rows) in capital heights.</param>
 /// <param name="Length">The length of the bar (its ink columns) in capital heights. Measured, but the verdict does not use it.</param>
-public readonly record struct BarMeasurement(double Frac, double Thick, double Length);
+/// <param name="FirstRow">The first mask row of the bar (<c>r0</c>, inclusive); -1 when not measured (a value made by hand). Only the parity test looks at it.</param>
+/// <param name="LastRow">The last mask row of the bar (<c>r1</c>, inclusive); -1 when not measured.</param>
+public readonly record struct BarMeasurement(double Frac, double Thick, double Length, int FirstRow = -1, int LastRow = -1);
 
 /// <summary>
 /// The underscore / hyphen rule: the letter model confuses a low bar with a middle one now and then (an underscore read as a hyphen: 16 of 3396 underscores of the test character),
@@ -97,7 +99,7 @@ public static class UnderscoreHyphenRule
         var frac = ((r0 + r1 + 1) / 2.0 - band.Top) / cap;
         var thick = (r1 - r0 + 1) / cap;
         var length = c0 < 0 ? 0.0 : (c1 - c0 + 1) / cap; // c0 is never negative here (the busiest row has ink); kept for safety
-        return new BarMeasurement(frac, thick, length);
+        return new BarMeasurement(frac, thick, length, r0, r1);
     }
 
     /// <summary>'_' or '-' when the measurement is clean enough and clearly low or middle, otherwise null (keep the model's character) (<c>us_verdict</c>).</summary>

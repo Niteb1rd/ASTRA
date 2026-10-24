@@ -221,7 +221,7 @@ public static class TrackSimulation
         confirmation.Update(frame.Number, frame.TimeMs, list, (top, bottom) =>
         {
             var evaluation = evaluator.Evaluate(top, bottom);
-            return new TrackEvaluation(evaluation.IsNameplate, evaluation.Detection?.Name);
+            return new TrackEvaluation(evaluation.IsNameplate, evaluation.Detection?.Name, evaluation.Detection?.NameRows, evaluation.Detection?.Color, evaluation.Detection?.O0Evidence);
         }, image.Height);
         return seedBuilder.Build(confirmation.Tracks, null, image, 0, 0, image.Height, frame.TimeMs, live.MaxPredictionMs, live.MaxTrackedPlates);
     }

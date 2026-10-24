@@ -20,7 +20,7 @@ public static class NameFilter
     {
         if (!RsiNames.IsValidHandle(handle))
             return true;
-        if (!exclusions.IsExcluded(handle) &&!ContactCode.IsContactCode(handle))
+        if (!exclusions.IsExcluded(handle) && !ContactCode.IsContactCode(handle))
             return false;
         return !IsOnPlayerList(handle, config);
     }

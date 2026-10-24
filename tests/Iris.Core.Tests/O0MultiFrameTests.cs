@@ -21,8 +21,8 @@ public class O0MultiFrameTests
     private static readonly Case[] Cases =
     {
         new Case("one_confident_frame_decides",
-            new[] { new Frame("_O0D_", new (int, double)[] { (1, 0.99) }), new Frame("_O0D_", new (int, double)[] { (1, 0.5) }) },
-            new[] { "_O0D_", "_O0D_" },
+            new[] { new Frame("_OX7K_", new (int, double)[] { (1, 0.99) }), new Frame("_OX7K_", new (int, double)[] { (1, 0.5) }) },
+            new[] { "_OX7K_", "_OX7K_" },
             new (int, double)[] { (1, 4.0) }),
         new Case("two_moderate_frames",
             new[] { new Frame("AO1", new (int, double)[] { (1, 0.9) }), new Frame("A01", new (int, double)[] { (1, 0.9) }), new Frame("AO1", new (int, double)[] { (1, 0.9) }) },
@@ -288,6 +288,38 @@ public class O0MultiFrameTests
         Assert.Empty(track.Reads);
         Assert.Null(track.ConfirmedName);
         Assert.True(track.DuplicateExcluded);
+    }
+
+    /// <summary>A plate that jumped (400 px, more than the resting gate) and is read with the other O/0 spelling is still the same track: it keeps its evidence. Only this continuity match folds O/0.</summary>
+    private static NameplateTracker JumpWithOtherSpelling(NameplateTrackerSettings settings)
+    {
+        var tracker = new NameplateTracker(settings);
+        TrackCandidate At(int x) => new(new Rect(x, 500, 80, 12), new Rect(x + 10, 524, 60, 12));
+        var reads = new Queue<string>(new[] { "SYNTH_PL0T", "SYNTH_PLOT" });
+        Func<Rect, Rect, TrackEvaluation> evaluate = (_, _) => new TrackEvaluation(true, reads.Dequeue(), null, null, new[] { new O0Glyph(8, 0.02) });
+        tracker.Update(0, 0, new[] { At(1000) }, evaluate);
+        tracker.Update(1, Step, new[] { At(1400) }, evaluate);
+        return tracker;
+    }
+
+    [Fact]
+    public void ALostTrack_IsFoundAgainByTheOtherO0Spelling_AndKeepsItsEvidence()
+    {
+        var tracker = JumpWithOtherSpelling(Fast);
+
+        var track = Assert.Single(tracker.Tracks);
+        Assert.Equal(1, track.Jumps);
+        var read = Assert.Single(track.Reads);
+        Assert.Equal("SYNTH_PL0T", read.Name); // the letter O of the second read was decided by the first frame's evidence plus its own
+        Assert.Equal(2, read.Count);
+    }
+
+    [Fact]
+    public void ALostTrack_IsNotFoundByTheOtherSpelling_WhenO0MultiFrameIsOff()
+    {
+        var tracker = JumpWithOtherSpelling(Fast with { O0MultiFrame = false });
+
+        Assert.Equal(2, tracker.Tracks.Count);
     }
 
     [Fact]

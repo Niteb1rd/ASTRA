@@ -514,10 +514,10 @@ of the reference as synthetic probabilities, the tracker with alternating reads 
 
 **Underscore or hyphen.** The model now and then reads a low underscore as a hyphen (16 of 3396 underscores of the test character), and a hyphen at either end voids a vote. The two are told apart by where the bar sits in the line's capital band:
 for every `_` or `-` of a NAME (never a distance line) the reader takes the glyph's own mask columns (the same cut as the O/0 check), finds the bar's rows (the rows with at least a quarter of the ink of its busiest row), and divides the centre
-of those rows, counted from the top of the capitals, by the capital height. An underscore sits at 1.0 to 1.1, a hyphen at about 0.58; **0.87 or more is an underscore, 0.71 or less a hyphen, in between the model's character stays**, and a bar thicker
+of those rows, counted from the top of the capitals, by the capital height. An underscore sits at about 1.0 to 1.1, a hyphen at about 0.58; **0.87 or more is an underscore, 0.71 or less a hyphen, in between the model's character stays**, and a bar thicker
 than 0.45 capital heights (a letter fragment or a merged glyph) gets no verdict either. The rule runs after the O/0 check, row by row of a multi-row name (each row with its own band), only when the cut gives one glyph per character
 (`UnderscoreHyphenRule`, constants from `model/us-rule.json`). `NameplateDetectorSettings.UnderscoreHyphenRule` is **on by default**: on the 19 training clips it changed no confirmed name and fixed every measured `_` read as `-` (4150 bars, none misjudged,
-the class means are 20 standard deviations apart). It costs about 0.3 ms per read that contains a bar. `UnderscoreHyphenRuleTests` use synthetic bars at known heights (the band edges and a thick blob included); the test `UnderscoreHyphenLocalParityTests`
+the class means are 20 standard deviations apart). It costs about 0.3 ms per read that contains a bar (a Python timing, not yet measured in C#). `UnderscoreHyphenRuleTests` use synthetic bars at known heights (the band edges and a thick blob included); the test `UnderscoreHyphenLocalParityTests`
 compares frac and verdict with real line crops from your machine and only runs when the environment variable `IRIS_US_FIXTURES` points to the folder (those crops are not in the repository).
 
 ## Build and test (Windows)

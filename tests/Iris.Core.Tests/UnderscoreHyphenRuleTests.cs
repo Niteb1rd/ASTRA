@@ -224,12 +224,12 @@ public class UnderscoreHyphenRuleTests
 /// <c>fixtures-us</c>) holds <c>caseNN.png</c> (a crop of a screen with one nameplate line, and <c>line_box</c> = x, y, width, height of that line in it) and <c>caseNN.json</c> (what the
 /// reference found: the read text, the cap band and, for every bar glyph of the line, its index, the model's character, frac, thick and the verdict). The crops come from game footage (and
 /// the test character's own name) and are never committed; without the variable the test is skipped.
-/// For every case the reader is run on the PNG with that box and must give the reference's text and cap band; then for every bar: frac within 0.02 and the same verdict (null = no verdict),
-/// and the corrected text must be the reference's <c>text_after</c>.
+/// For every case the reader is run on the PNG with that box and must give the reference's text and cap band; then for every bar: the glyph's mask columns (<c>mask_cols</c>) and the bar's
+/// rows (<c>ink_rows</c>) exactly, frac, thick and length within 1e-9, and the same verdict (null = no verdict); the corrected text must be the reference's <c>text_after</c>.
 /// </summary>
 public class UnderscoreHyphenLocalParityTests
 {
-    private const double FracTolerance = 0.02;
+    private const double Tolerance = 1e-9;
 
     [LocalUsFixtureFact]
     public void FracAndVerdict_MatchPythonOnTheRealLines()
@@ -300,9 +300,19 @@ public class UnderscoreHyphenLocalParityTests
                     continue;
                 }
 
-                var expectedFrac = bar.GetProperty("frac").GetDouble();
-                if (Math.Abs(measured.Frac - expectedFrac) > FracTolerance)
-                    problems.Add($"{label}: frac {measured.Frac:F4}, Python {expectedFrac:F4}");
+                var cols = bar.GetProperty("mask_cols");
+                if (start != cols[0].GetInt32() || end != cols[1].GetInt32())
+                    problems.Add($"{label}: glyph columns [{start}, {end}), Python [{cols[0].GetInt32()}, {cols[1].GetInt32()})");
+                var rows = bar.GetProperty("ink_rows");
+                if (measured.FirstRow != rows[0].GetInt32() || measured.LastRow != rows[1].GetInt32())
+                    problems.Add($"{label}: bar rows {measured.FirstRow}..{measured.LastRow}, Python {rows[0].GetInt32()}..{rows[1].GetInt32()}");
+                foreach (var (what, got) in new[] { ("frac", measured.Frac), ("thick", measured.Thick), ("length", measured.Length) })
+                {
+                    var want = bar.GetProperty(what).GetDouble();
+                    if (Math.Abs(got - want) > Tolerance)
+                        problems.Add($"{label}: {what} {got:F12}, Python {want:F12}");
+                }
+
                 var expectedVerdict = bar.GetProperty("verdict").ValueKind == JsonValueKind.Null ? (char?)null : bar.GetProperty("verdict").GetString()![0];
                 if (UnderscoreHyphenRule.Verdict(measured) != expectedVerdict)
                     problems.Add($"{label}: verdict '{UnderscoreHyphenRule.Verdict(measured)}' (frac {measured.Frac:F4}, thick {measured.Thick:F4}), Python '{expectedVerdict}'");

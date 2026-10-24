@@ -778,6 +778,8 @@ public sealed class NameplateTracker
     /// <summary>
     /// A Nameplate track made before this frame, not matched in it, seen within <see cref="NameplateTrackerSettings.IdenticalMs"/>, whose best
     /// read is <paramref name="name"/> and whose name line has the size of <paramref name="top"/>: the most recently seen, then the nearest.
+    /// With <see cref="NameplateTrackerSettings.O0MultiFrame"/> on, the names are compared with 0 taken as O (<see cref="LookAlikes.FoldO0"/>): this is track CONTINUITY (a track that
+    /// voted <c>PL0T</c> is found again by a <c>PLOT</c> read and keeps its evidence), not list or exclusion matching, which stay exact.
     /// Returns its index, or -1. A track is claimed once per frame.
     /// </summary>
     private int FindLostTrack(string name, Rect top, double timeMs, int existing, HashSet<int> trackUsed)
@@ -786,12 +788,15 @@ public sealed class NameplateTracker
         (double Negative, double Distance) bestKey = default;
         var cx = top.X + top.Width / 2.0;
         var cy = top.Y + top.Height / 2.0;
+        var fold = _settings.O0MultiFrame;
+        var wanted = fold ? LookAlikes.FoldO0(name) : name;
         for (var t = 0; t < existing; t++)
         {
             var track = _tracks[t];
             if (trackUsed.Contains(t) || track.Verdict != TrackVerdict.Nameplate || timeMs - track.LastSeenMs > _settings.IdenticalMs)
                 continue;
-            if (!string.Equals(track.BestName, name, StringComparison.Ordinal) || !SameSize(track, top))
+            var have = fold && track.BestName is { } bestName ? LookAlikes.FoldO0(bestName) : track.BestName;
+            if (!string.Equals(have, wanted, StringComparison.Ordinal) || !SameSize(track, top))
                 continue;
             var key = (-track.LastSeenMs, (cx - track.CenterX) * (cx - track.CenterX) + (cy - track.CenterY) * (cy - track.CenterY));
             if (best < 0 || key.Item1 < bestKey.Negative || (key.Item1 == bestKey.Negative && key.Item2 < bestKey.Distance))
