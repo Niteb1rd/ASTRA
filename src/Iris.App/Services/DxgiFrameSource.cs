@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using Iris.Core.Live;
 using Iris.Core.Overlay;
+using Iris.Core.Social;
 using OpenCvSharp;
 using SharpGen.Runtime;
 using Vc = Vortice.Direct3D;
@@ -180,7 +182,9 @@ public sealed class DxgiFrameSource : IFrameSource
         {
             resource?.Dispose();
             // nothing changed on screen: the previous picture stands, but only if there is one of this setup
-            return new GrabResult(GrabStatus.NoNewFrame, _hasPicture && _bgr is { IsDisposed: false } && !_bgr.Empty() ? _bgr : null);
+            if (_hasPicture && _bgr is { IsDisposed: false } && !_bgr.Empty())
+                return new GrabResult(GrabStatus.NoNewFrame, _bgr);
+            return new GrabResult(GrabStatus.NoNewFrame, null, "waiting for the first screen picture");
         }
 
         if (acquired.Failure || resource is null)
@@ -198,15 +202,25 @@ public sealed class DxgiFrameSource : IFrameSource
             using var frame = resource.QueryInterface<Vd.ID3D11Texture2D>();
             var description = frame.Description;
             if (description.Width != (uint)outputBounds.Width || description.Height != (uint)outputBounds.Height)
+            {
+                // start from scratch at the next grab (no sooner than the retry pause, so this cannot loop tightly)
+                Release();
+                _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
                 return GrabResult.Unavailable($"the screen picture is {description.Width}x{description.Height}, not the {(int)outputBounds.Width}x{(int)outputBounds.Height} of the monitor (a rotated screen is not supported)");
+            }
+
             if (description.Format != Vx.Format.B8G8R8A8_UNorm && description.Format != Vx.Format.R8G8B8A8_UNorm)
+            {
+                Release();
+                _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
                 return GrabResult.Unavailable($"the screen picture has pixel format {description.Format}, which IRIS cannot read (only 8 bit B8G8R8A8 and R8G8B8A8 are supported)");
+            }
 
             EnsureStaging(region.Width, region.Height, description.Format);
             var left = region.X - (int)outputBounds.X;
             var top = region.Y - (int)outputBounds.Y;
-            // Box takes uint in Vortice 3.x (int in older versions: then drop the casts)
-            var box = new Vd.Box((uint)left, (uint)top, 0, (uint)(left + region.Width), (uint)(top + region.Height), 1);
+            // Vd.Box most likely takes int in Vortice 3.6.2 (no casts). If the build says the constructor needs uint, add the (uint) casts back on all six arguments.
+            var box = new Vd.Box(left, top, 0, left + region.Width, top + region.Height, 1);
             _context!.CopySubresourceRegion(_staging!, 0, 0, 0, 0, frame, 0, box);
         }
         finally
@@ -276,8 +290,23 @@ public sealed class DxgiFrameSource : IFrameSource
     {
         if (_bgr is null || _bgr.Empty())
             return;
-        foreach (var window in CaptureExclusion.VisibleUnexcludedWindows())
+        var bracketsMasked = false;
+        foreach (var mask in CaptureExclusion.VisibleUnexcludedWindows())
         {
+            if (mask.BracketsOnly)
+            {
+                // The brackets window's rectangle also holds nameplates: painting all of it black would hide them (and make the brackets flicker in the picture).
+                // Only the outlines of the brackets are painted out.
+                if (!bracketsMasked)
+                {
+                    MaskBracketOutlines(region);
+                    bracketsMasked = true;
+                }
+
+                continue;
+            }
+
+            var window = mask.Rect;
             var left = Math.Max(window.Left, region.X) - region.X;
             var top = Math.Max(window.Top, region.Y) - region.Y;
             var right = Math.Min(window.Right, region.X + region.Width) - region.X;
@@ -286,6 +315,91 @@ public sealed class DxgiFrameSource : IFrameSource
                 continue;
             Cv2.Rectangle(_bgr, new Rect(left, top, right - left, bottom - top), new Scalar(0, 0, 0), -1);
         }
+    }
+
+    /// <summary>Extra thickness (pixels) of the black outline over the drawn brackets, so that the antialiased edges and rounding never leave a colored rim.</summary>
+    private const int BracketMaskExtra = 4;
+
+    /// <summary>
+    /// Paints the bracket shapes black, each as a line as thick as the widest thing drawn for it (the dark outline: colored stroke plus the outline on both sides)
+    /// plus <see cref="BracketMaskExtra"/>. The boxes are those of the last model the brackets window drew, in screen pixels as the window draws them; the Mat is
+    /// the capture region, so drawing outside it is clipped by OpenCV.
+    /// </summary>
+    private void MaskBracketOutlines(Rect region)
+    {
+        var bgr = _bgr!;
+        var black = new Scalar(0, 0, 0);
+        foreach (var item in CaptureExclusion.LatestBrackets())
+        {
+            var box = item.ScreenBox;
+            var m = BracketMetrics.For(box);
+            var extent = m.Extent(box);
+            if (extent.Right < region.X || extent.X > region.X + region.Width || extent.Bottom < region.Y || extent.Y > region.Y + region.Height)
+                continue; // nothing of it in the picture
+            var thickness = (int)Math.Ceiling(m.Stroke + 2 * m.Outline) + BracketMaskExtra;
+            Cv2.Polylines(bgr, new[] { BracketPoints(item.Kind, m.LeftX(box), m.Top, m.Width, m.Height, false, region) }, false, black, thickness, LineTypes.Link8);
+            Cv2.Polylines(bgr, new[] { BracketPoints(item.Kind, m.RightX(box), m.Top, m.Width, m.Height, true, region) }, false, black, thickness, LineTypes.Link8);
+        }
+    }
+
+    /// <summary>
+    /// The points (picture pixels, relative to <paramref name="region"/>) of one bracket as an open line: the same shape the overlay draws (OverlayCanvas.BracketShape;
+    /// keep the two in step), with the curves cut into short straight pieces.
+    /// </summary>
+    private static Point[] BracketPoints(MatchKind kind, double x, double y, double width, double height, bool mirrored, Rect region)
+    {
+        var points = new List<Point>(24);
+        (double U, double V) current = (1, 0);
+
+        void Add(double u, double v) =>
+            points.Add(new Point(
+                (int)Math.Round((mirrored ? x + (1 - u) * width : x + u * width) - region.X),
+                (int)Math.Round(y + v * height - region.Y)));
+
+        void Line(double u, double v)
+        {
+            Add(u, v);
+            current = (u, v);
+        }
+
+        void Curve(double cu, double cv, double u, double v)
+        {
+            const int steps = 6;
+            for (var i = 1; i <= steps; i++)
+            {
+                var t = (double)i / steps;
+                var s = 1 - t;
+                Add(s * s * current.U + 2 * s * t * cu + t * t * u, s * s * current.V + 2 * s * t * cv + t * t * v);
+            }
+
+            current = (u, v);
+        }
+
+        Add(1, 0);
+        switch (kind)
+        {
+            case MatchKind.PlayerList: // curly: end, spine, tip in the middle, spine, end
+                Curve(0.5, 0, 0.5, 0.12);
+                Line(0.5, 0.38);
+                Curve(0.5, 0.5, 0, 0.5);
+                Curve(0.5, 0.5, 0.5, 0.62);
+                Line(0.5, 0.88);
+                Curve(0.5, 1, 1, 1);
+                break;
+
+            case MatchKind.OrgList: // square
+                Line(0, 0);
+                Line(0, 1);
+                Line(1, 1);
+                break;
+
+            default: // angle: OrgAttribute and NoMatch
+                Line(0, 0.5);
+                Line(1, 1);
+                break;
+        }
+
+        return points.ToArray();
     }
 
     private void ReleaseFrameQuietly()

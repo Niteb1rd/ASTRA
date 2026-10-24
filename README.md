@@ -408,7 +408,8 @@ The overlay now shows REAL detections: IRIS captures the game's screen, runs the
   the capture, but the converted colors can lower the detection quality. If detection is poor, try SDR for the game's monitor.
 - **IRIS's own overlay is kept out of its own capture.** Every overlay window (brackets, panel and confirmation text, test overlay) is set to "exclude from capture" (`SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE`),
   otherwise the brackets and panel colors would be read as screen content. Side effect: **screen recorders, OBS, Discord screen share and screenshots do not show the overlay either** (Windows 10 version 2004 or later).
-  If Windows refuses the call, the log says so and IRIS paints the overlay windows' rectangles black in every picture it captures, before detection.
+  If Windows refuses the call, or the Windows build is older than 19041 (before version 2004, where the call would turn the window into a black box), IRIS does not rely on it: the log says so, and IRIS paints the panel and test overlay
+  windows' rectangles black in every picture it captures, before detection. For the brackets window only the outlines of the brackets are painted black (a little thicker than drawn), because its rectangle also holds nameplates.
 - New packages: `Vortice.DXGI` 3.6.2 and `Vortice.Direct3D11` 3.6.2 (MIT), in `Iris.App` only. `Iris.Core` still has no Windows or Direct3D code.
 
 **Detection loop** (`LiveDetectionService`, `LiveDetectionEngine`). A background thread ("IRIS detection", below normal priority) does **5 reads a second** (an internal default,

@@ -29,6 +29,7 @@ public partial class OverlayWindow : Window
     private readonly OverlayLayer _layer;
     private readonly Action<string>? _warn;
     private IntPtr _hwnd = IntPtr.Zero;
+    private bool _excluded = true;            // false when Windows could not exclude this window from capture (then the capture thread paints it out)
     private PixelRect _bounds;                // the game window (or monitor), screen pixels
     private bool _hasBounds;
     private PixelRect _fit;                   // the part of it this window covers, game-window pixels
@@ -61,10 +62,48 @@ public partial class OverlayWindow : Window
         NativeMethods.SetWindowLongPtr(_hwnd, NativeMethods.GwlExStyle, new IntPtr(style));
 
         // IRIS's own screen capture must not see this window (brackets and panel colors would reach the detector). Also hides it from recorders and screenshots.
-        if (!CaptureExclusion.Apply(_hwnd))
-            _warn?.Invoke($"The {_layer} overlay window could not be excluded from screen capture (needs Windows 10 version 2004 or later); IRIS paints its rectangle black in its own captures instead");
+        _excluded = CaptureExclusion.Apply(_hwnd, _layer == OverlayLayer.Brackets, _warn);
+        if (!_excluded)
+        {
+            _warn?.Invoke(_layer == OverlayLayer.Brackets
+                ? "The Brackets overlay window could not be excluded from screen capture (needs Windows 10 version 2004 or later); IRIS paints only the bracket outlines black in its own captures instead"
+                : $"The {_layer} overlay window could not be excluded from screen capture (needs Windows 10 version 2004 or later); IRIS paints its rectangle black in its own captures instead");
+        }
 
         ApplyBounds();
+        PublishBracketMasks();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        CaptureExclusion.Remove(_hwnd);
+        base.OnClosed(e);
+    }
+
+    /// <summary>
+    /// Only when this is the brackets window and it could not be excluded from capture: tells the capture thread where the brackets are, in screen physical pixels,
+    /// worked out the way the window draws them (the window sits at the rounded screen position of its fit; the canvas shifts the model by the fit's origin).
+    /// </summary>
+    private void PublishBracketMasks()
+    {
+        if (_layer != OverlayLayer.Brackets || _excluded || _hwnd == IntPtr.Zero)
+            return;
+        if (_model is null || !_hasBounds || _fit.IsEmpty || !IsVisible)
+        {
+            CaptureExclusion.PublishBrackets(Array.Empty<CaptureExclusion.BracketMask>());
+            return;
+        }
+
+        var dx = Math.Round(_bounds.X + _fit.X) - _fit.X;
+        var dy = Math.Round(_bounds.Y + _fit.Y) - _fit.Y;
+        var masks = new CaptureExclusion.BracketMask[_model.Brackets.Count];
+        for (var i = 0; i < masks.Length; i++)
+        {
+            var item = _model.Brackets[i];
+            masks[i] = new CaptureExclusion.BracketMask(new PixelRect(item.Box.X + dx, item.Box.Y + dy, item.Box.Width, item.Box.Height), item.Kind);
+        }
+
+        CaptureExclusion.PublishBrackets(masks); // a new array each time; never changed after this
     }
 
     /// <summary>
@@ -104,6 +143,7 @@ public partial class OverlayWindow : Window
         if (fit.IsEmpty)
         {
             HideOverlay(); // this layer has nothing to draw
+            PublishBracketMasks(); // the window is hidden now, so this publishes "no brackets"
             return;
         }
 
@@ -119,6 +159,8 @@ public partial class OverlayWindow : Window
             Show();       // the first Show creates the window handle and runs OnSourceInitialized
             ApplyBounds(); // and puts it on top again after a hide
         }
+
+        PublishBracketMasks(); // after Show: the first Show is what runs OnSourceInitialized and decides whether masking is needed
     }
 
     /// <summary>Hides the window (it is kept for the next time).</summary>
@@ -126,6 +168,7 @@ public partial class OverlayWindow : Window
     {
         if (IsVisible)
             Hide();
+        PublishBracketMasks();
     }
 
     /// <summary>The same thing as last time? The brackets layer looks at the model (the live pipeline keeps the instance while nothing moved), the panel layer at the entries.</summary>

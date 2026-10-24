@@ -36,7 +36,7 @@ public sealed class LiveDetectionService : IDisposable
     private readonly OverlayController _overlay;
     private readonly Dispatcher _dispatcher;
     private readonly IMonotonicClock _clock = new StopwatchClock();
-    private const double EngineRetryMs = 5000;
+    private static readonly double[] EngineRetryBackoffMs = { 5000, 30000, 300000 }; // after a failed start: 5 s, 30 s, then 5 min
 
     private readonly LiveSettings _live = LiveSettings.Default;
     private readonly ManualResetEventSlim _wake = new(false);
@@ -133,6 +133,8 @@ public sealed class LiveDetectionService : IDisposable
         DxgiFrameSource? source = null;
         LiveDetectionEngine? engine = null;
         var engineRetryAtMs = 0.0;
+        var engineFailures = 0;
+        string? lastEngineProblem = null;
         var running = false;
         var released = true;
         var idleSinceMs = 0.0;
@@ -193,14 +195,25 @@ public sealed class LiveDetectionService : IDisposable
                             _lookupCts = cts;
                             _lookupTask = Task.Run(() => queue.RunAsync(token), token);
                             engine = created; // only a completely started engine is kept
+                            engineFailures = 0;
+                            lastEngineProblem = null;
                         }
                         catch (Exception ex) when (ex is not OutOfMemoryException)
                         {
                             created?.Dispose();
                             // for example the letter model or the cache could not be opened: the loop stays alive and tries again
-                            Log("Live detection could not start (" + ex.GetType().Name + ": " + ex.Message + "); trying again in " + EngineRetryMs / 1000 + " s");
+                            // logged only when the error changes; the pause before the next try grows: 5 s, 30 s, then 5 min
+                            var retryMs = EngineRetryBackoffMs[Math.Min(engineFailures, EngineRetryBackoffMs.Length - 1)];
+                            engineFailures++;
+                            var problem = ex.GetType().Name + ": " + ex.Message;
+                            if (problem != lastEngineProblem)
+                            {
+                                lastEngineProblem = problem;
+                                Log("Live detection could not start (" + problem + "); trying again in " + retryMs / 1000 + " s, then less often while it keeps failing");
+                            }
+
                             engine = null;
-                            engineRetryAtMs = _clock.NowMs + EngineRetryMs;
+                            engineRetryAtMs = _clock.NowMs + retryMs;
                             continue;
                         }
                     }
