@@ -256,11 +256,11 @@ public class LiveEngineTests : IDisposable
 
     private static DetectorFixtureFrame Frame(string file) => DetectorFixtures.Load().Single(f => f.File == file);
 
-    private LiveDetectionEngine NewEngine(out ExclusionList exclusions, Func<string, IReadOnlyList<OrgMembership>?>? orgs = null, IClock? clock = null)
+    private LiveDetectionEngine NewEngine(out ExclusionList exclusions, Func<string, IReadOnlyList<OrgMembership>?>? orgs = null, IClock? clock = null, SessionExclusions? session = null, ILog? log = null)
     {
         var testClock = clock ?? new FakeClock();
         exclusions = ExclusionList.LoadOrCreate(_dir.File("exclusions.txt"), testClock, new ListLog());
-        return new LiveDetectionEngine(new NameplateReader(LetterModel.LoadEmbedded()), exclusions, orgs ?? (_ => null));
+        return new LiveDetectionEngine(new NameplateReader(LetterModel.LoadEmbedded()), exclusions, orgs ?? (_ => null), session, log: log, clock: testClock);
     }
 
     private static PixelRect Window(DetectorFixtureFrame frame) => new(WindowX, WindowY, frame.Width, frame.Height);
@@ -337,7 +337,8 @@ public class LiveEngineTests : IDisposable
         using var image = Cv2.ImRead(frame.ImagePath, ImreadModes.Color);
         using var source = new ImageFrameSource(image, WindowX, WindowY);
         using var engine = NewEngine(out var exclusions);
-        Assert.True(exclusions.AddAutomatic(name, "test"));
+        File.AppendAllText(_dir.File("exclusions.txt"), "\n" + name + "\n"); // an entry of the user's own list
+        Assert.True(exclusions.ReloadIfChanged());
         var config = new SocialConfig();
 
         engine.Step(source, Window(frame), config, 1000);
@@ -347,6 +348,48 @@ public class LiveEngineTests : IDisposable
         Assert.Empty(third.Snapshot.Brackets);
         Assert.Empty(third.Snapshot.Panel);
         Assert.Single(engine.Tracker.Tracks); // the plate is tracked, it is just not drawn
+    }
+
+    [OpenCvFact]
+    public void Pipeline_ASessionExcludedNameGetsNoBracketNoPanelEntryAndNoLookup_ButAListedNameStillDoes()
+    {
+        var frame = Frame("frame_c.png");
+        var name = Assert.Single(frame.Default.Detections).Name;
+        using var image = Cv2.ImRead(frame.ImagePath, ImreadModes.Color);
+        using var source = new ImageFrameSource(image, WindowX, WindowY);
+        var session = new SessionExclusions();
+        Assert.True(session.TryAdd(name));
+        using var engine = NewEngine(out var exclusions, session: session);
+        var config = new SocialConfig();
+
+        engine.Step(source, Window(frame), config, 1000);
+        engine.Step(source, Window(frame), config, 1200);
+        var third = engine.Step(source, Window(frame), config, 1400);
+
+        Assert.Empty(third.Snapshot.Brackets);
+        Assert.Empty(third.Snapshot.Panel);
+        Assert.DoesNotContain(name, exclusions.Names, StringComparer.OrdinalIgnoreCase); // nothing is written to the permanent list
+
+        // the user puts the player on the list: the list comes first, the name is shown at once
+        config.Players.Add(new PlayerEntry(name, OverlayColor.Cyan));
+        engine.Step(source, Window(frame), config, 1600);
+        var shown = engine.Step(source, Window(frame), config, 1800);
+        var bracket = Assert.Single(shown.Snapshot.Brackets);
+        Assert.Equal(MatchKind.PlayerList, bracket.Kind);
+    }
+
+    [Fact]
+    public void Reset_KeepsTheSessionExclusions_TheyLastUntilIrisCloses()
+    {
+        var session = new SessionExclusions();
+        using var engine = NewEngine(out _, session: session);
+        Assert.True(engine.SessionExclusions.TryAdd("SOME_NAME"));
+
+        engine.Reset();
+
+        Assert.Same(session, engine.SessionExclusions);
+        Assert.True(session.Contains("SOME_NAME"));
+        Assert.Same(session, engine.Tracker.SessionExclusions); // the new tracker uses the same list
     }
 
     [OpenCvFact]

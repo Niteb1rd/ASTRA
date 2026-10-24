@@ -470,11 +470,18 @@ public class LiveTrackingTests : IDisposable
         Assert.Equal("BBBB", Assert.Single(corrected.Panel).Handle);
     }
 
+    /// <summary>Puts a name on the exclusion list the way the user does: a line in the file.</summary>
+    private void Exclude(ExclusionList list, string name)
+    {
+        File.AppendAllText(_dir.File("exclusions.txt"), "\n" + name + "\n");
+        Assert.True(list.ReloadIfChanged());
+    }
+
     [Fact]
     public void Builder_ExcludedNamesAndContactCodesGetNoBracket_ButThePlayerListWins()
     {
         var rig = NewRig();
-        Assert.True(rig.Exclusions.AddAutomatic("EXCL_NAME", "test"));
+        Exclude(rig.Exclusions, "EXCL_NAME");
         rig.Next("EXCL_NAME");
         Assert.Empty(rig.Next("EXCL_NAME").Brackets);
 
@@ -483,7 +490,7 @@ public class LiveTrackingTests : IDisposable
         Assert.Empty(codeRig.Next("PA-5968-XF").Brackets);
 
         var winRig = NewRig();
-        winRig.Exclusions.AddAutomatic("EXCL_NAME", "test");
+        Exclude(winRig.Exclusions, "EXCL_NAME");
         winRig.Config.Players.Add(new PlayerEntry("EXCL_NAME", OverlayColor.Cyan));
         winRig.Next("EXCL_NAME");
         Assert.Single(winRig.Next("EXCL_NAME").Brackets);

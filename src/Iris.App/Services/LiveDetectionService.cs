@@ -39,6 +39,9 @@ public sealed class LiveDetectionService : IDisposable
     private static readonly double[] EngineRetryBackoffMs = { 5000, 30000, 300000 }; // after a failed start: 5 s, 30 s, then 5 min
 
     private readonly LiveSettings _live = LiveSettings.Default;
+
+    // The names the duplicate rule excluded: lives as long as IRIS runs, so it survives every engine that is made and every Reset (alt-tab).
+    private readonly SessionExclusions _sessionExclusions = new();
     private readonly ManualResetEventSlim _wake = new(false);
     private readonly ManualResetEventSlim _tickWake = new(false);
     private readonly CancellationTokenSource _stop = new();
@@ -315,10 +318,9 @@ public sealed class LiveDetectionService : IDisposable
     {
         var reader = new NameplateReader(LetterModel.LoadEmbedded());
         queue = OrgMemberLookupQueue.For(_services.Database, _services.Refresher, _services.Clock, _services.Log);
-        var duplicates = new DuplicateNameTracker(_services.Database, _services.Exclusions, _services.Clock);
         return new LiveDetectionEngine(
-            reader, _services.Exclusions, LookupCachedOrgs, duplicates, queue, _live, detectorSettings: null, trackerSettings: null,
-            log: _services.Log, clock: _services.Clock);
+            reader, _services.Exclusions, LookupCachedOrgs, _sessionExclusions, queue, _live, detectorSettings: null, trackerSettings: null,
+            log: _services.Log, clock: _services.Clock, isOrgMember: (sid, handle) => _services.Database.IsOrgMember(sid, handle));
     }
 
     /// <summary>The orgs of a handle from the cache, null when the player was never looked up. A cache problem is handled by the engine (the player shows as "not looked up").</summary>

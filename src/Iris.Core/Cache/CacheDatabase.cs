@@ -28,8 +28,8 @@ namespace Iris.Core.Cache;
 ///   not_found      kind ('player' or 'org') + name PK | source | last_refreshed
 ///                  The negative cache: RSI answered 404 for this name.
 ///   duplicate_name_counts   name PK | frames | last_seen        (added in schema version 2)
-///                  For the exclusion list: in how many frames this name was seen on two separate nameplates
-///                  (see DuplicateNameTracker). The row is deleted once the name has been excluded.
+///                  No longer used: the duplicate rule is now a session rule kept in memory (see SessionExclusions). The table and its API
+///                  stay so that existing cache files keep their schema; nothing writes to it.
 ///
 /// source is one of: 'player_list', 'org_list', 'org_list_member', 'hotkey' (see <see cref="CacheSource"/>).
 ///

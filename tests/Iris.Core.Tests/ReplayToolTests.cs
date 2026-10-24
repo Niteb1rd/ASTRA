@@ -101,6 +101,62 @@ public class ReplayToolTests
     }
 
     [Fact]
+    public void ClipList_AMultiRowName_IsTheRowsJoined()
+    {
+        var labels = ClipLabels.ParseClipList("clip1: first_row / SecondRow/third, SINGLE\n");
+        Assert.Equal(new[] { "FIRST_ROWSECONDROWTHIRD", "SINGLE" }, labels.NamesFor("clip1"));
+
+        var csv = ClipLabels.ParseScreenshotCsv("file,expected_players\nshot1.jpg,UPPERROW/LOWERROW;OTHER\n");
+        Assert.Equal(new[] { "UPPERROWLOWERROW", "OTHER" }, csv.NamesFor("shot1.jpg"));
+    }
+
+    [Fact]
+    public void Metrics_AMultiRowLabel_IsFoundWhenTheJoinedNameIsConfirmed()
+    {
+        var labels = ClipLabels.ParseClipList("clip1: UPPERROW/LOWERROW\n");
+        var metrics = new ReplayMetrics(labels, Array.Empty<string>());
+        foreach (var track in Tracks((100, new string?[] { "UPPERROWLOWERROW", "UPPERROWLOWERROW" })))
+            metrics.AddTrack("clip1", track);
+
+        var g = metrics.Groups["clip1"];
+        Assert.Equal(new[] { "UPPERROWLOWERROW" }, g.Found.Keys);
+        Assert.Empty(g.WrongConfirmed);
+    }
+
+    [Fact]
+    public void Metrics_ALabeledContactCode_IsFoundWhenRead_AndNotAMissWhenUnread()
+    {
+        var labels = ClipLabels.ParseClipList("clip1: ALPHA_ONE, PA-5968-XF\nclip2: BRAVO_TWO, QZ-1234-AB\n");
+        var metrics = new ReplayMetrics(labels, Array.Empty<string>());
+
+        // clip1: both are read; clip2: the name is read, the code never is
+        foreach (var track in Tracks(
+                     (100, new string?[] { "ALPHA_ONE", "ALPHA_ONE" }),
+                     (400, new string?[] { "PA-5968-XF", "PA-5968-XF" })))
+            metrics.AddTrack("clip1", track);
+        foreach (var track in Tracks((100, new string?[] { "BRAVO_TWO", "BRAVO_TWO" })))
+            metrics.AddTrack("clip2", track);
+
+        var one = metrics.Groups["clip1"];
+        Assert.Equal(1, one.RequiredLabels);
+        Assert.Equal(1, one.FoundCodes);
+        Assert.Equal(2, one.Labels);
+        Assert.Equal(2, one.Found.Count);
+        Assert.Empty(one.WrongConfirmed);
+        Assert.Empty(one.FilteredConfirmed);
+
+        var two = metrics.Groups["clip2"];
+        Assert.Equal(1, two.ContactCodeLabels);
+        Assert.Equal(0, two.FoundCodes);
+        Assert.Equal(1, two.Labels);          // the unread code is not counted as a label to find
+        Assert.Single(two.Found);
+
+        var text = metrics.Format();
+        Assert.DoesNotContain("QZ-1234-AB", text);   // not listed as never confirmed
+        Assert.Contains("TOTAL", text);
+    }
+
+    [Fact]
     public void ClipList_NeedsAColon()
     {
         Assert.Throws<FormatException>(() => ClipLabels.ParseClipList("clipA ALPHA\n"));

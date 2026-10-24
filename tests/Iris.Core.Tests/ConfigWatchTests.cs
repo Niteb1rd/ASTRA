@@ -678,18 +678,6 @@ public class ConfigPollerTests
     }
 
     [Fact]
-    public void ExclusionList_OwnAutomaticAdd_IsNotReportedAsAnOutsideEdit()
-    {
-        using var env = new WatchEnv();
-        File.WriteAllText(env.Paths.ExclusionsFile, "Gold\n");
-        var exclusions = ExclusionList.LoadOrCreate(env.Paths.ExclusionsFile, env.Clock, env.Log);
-
-        Assert.True(exclusions.AddAutomatic("Zinc", "seen twice"));
-
-        Assert.False(exclusions.ReloadIfChanged());
-    }
-
-    [Fact]
     public void ExclusionList_HandEdit_IsReportedByReloadIfChanged()
     {
         using var env = new WatchEnv();
