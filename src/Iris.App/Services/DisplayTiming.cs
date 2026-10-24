@@ -81,7 +81,7 @@ internal static class DisplayTiming
     /// <summary>
     /// DEVMODEW, 220 bytes. Offsets: device name 0 (64 bytes), SpecVersion 64, DriverVersion 66, Size 68, DriverExtra 70, Fields 72, the 16 byte union of the printer fields and the display
     /// fields 76 (position x and y, display orientation, fixed output), Color 92 ... Collate 100, form name 102 (64 bytes), LogPixels 166, BitsPerPel 168, PelsWidth 172, PelsHeight 176,
-    /// DisplayFlags 180, DisplayFrequency 184, then five more DWORDs to the end at 220. Sequential layout needs no padding anywhere (every field sits on its own alignment), which
+    /// DisplayFlags 180, DisplayFrequency 184, then eight more DWORDs (32 bytes) to the end at 220. Sequential layout needs no padding anywhere (every field sits on its own alignment), which
     /// <see cref="Read"/> checks against <see cref="DevModeSize"/>.
     /// </summary>
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

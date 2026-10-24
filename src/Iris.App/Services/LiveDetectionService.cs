@@ -21,7 +21,7 @@ namespace Iris.App.Services;
 /// <list type="number">
 /// <item><b>Capture and tracking thread</b> ("IRIS tracking"). The ONLY owner of the screen duplication (<see cref="DxgiFrameSource"/>). While <see cref="OverlayController.Gate"/> is active
 /// (Star Citizen in front and borderless, the overlay not disabled) it is EVENT DRIVEN: it waits in <c>AcquireNextFrame</c> for the screen's next new picture and stamps it with the time
-/// it was presented (<see cref="FrameClock"/>); a frame that comes sooner than one tracking period after the last tracked one (<see cref="TrackingCap"/>) is released unused. For a
+/// it was presented (<see cref="FrameClock"/>); a frame that comes sooner than one tracking period after the last tracked one (<see cref="TrackingSchedule"/>) is released unused. For a
 /// frame that is tracked it takes a finished
 /// detection if there is one (<see cref="DetectionResultSlot"/>; a detection always wins: <see cref="PlateTemplateTracker.ApplyDetection"/>), asks the tracker which small search
 /// patches it needs (<see cref="PlateTemplateTracker.Plan"/>), copies those patches, and at most every 200 ms ALSO the whole detection scan region, out of that ONE acquired frame
@@ -54,7 +54,7 @@ public sealed class LiveDetectionService : IDisposable
     /// <summary>On a still screen the plates are held, and a due detection reads the previous picture again, every this many milliseconds (the wait for the screen is the pause between).</summary>
     private const double HoldStepMs = 50.0;
 
-    private const int UnavailablePauseMs = 20;   // nothing can be captured: look again in 20 ms
+    private const int UnavailablePauseMs = 50;   // nothing can be captured: look again in 50 ms (never a tight loop)
     private const int ErrorPauseMs = 50;         // a step threw: do not loop tightly
     private const int TooSmallPauseMs = 100;     // the game window is too small to scan
 
@@ -90,6 +90,7 @@ public sealed class LiveDetectionService : IDisposable
     private double _lastPublishMs;
     private double _nextDetectMs;
     private double _lastFrameMs;       // the time of the newest frame (or hold step) so far: frame times never go back
+    private readonly TrackingSchedule _schedule = new();
     private double _lastTrackedMs = double.NaN; // the time of the last tracked frame (NaN: none yet in this run)
     private double _lastStepMs;        // the clock when the last frame was tracked or the last hold step ran
     private string? _lastCaptureProblem;
@@ -248,8 +249,6 @@ public sealed class LiveDetectionService : IDisposable
         }
         finally
         {
-            if (running)
-                NativeMethods.TimeEndPeriod(1);
             _hub.Publish(LiveSnapshot.Empty);
             try
             {
@@ -279,11 +278,11 @@ public sealed class LiveDetectionService : IDisposable
         _nextDetectMs = now;
         _lastFrameMs = now;
         _lastTrackedMs = double.NaN;
+        _schedule.Reset();
         _lastStepMs = now;
         _lastCaptureProblem = null;
         _tooSmallLogged = false;
         _geometry = null;
-        NativeMethods.TimeBeginPeriod(1);
         var bounds = gate.Bounds;
         var cap = TrackingCapFps();
         Log(string.Format(
@@ -294,7 +293,6 @@ public sealed class LiveDetectionService : IDisposable
 
     private void StopRun(double now)
     {
-        NativeMethods.TimeEndPeriod(1);
         _source?.ReleaseHeldFrame();
         Log(_stats.TakeSummary(now, _confirmedTracks, TrackingCapFps()));
         LogRenderSummary();
@@ -319,7 +317,7 @@ public sealed class LiveDetectionService : IDisposable
 
     /// <summary>
     /// One step of the event-driven loop: wait for the screen's next NEW picture (<see cref="DxgiFrameSource.AcquireNextFrame"/>, up to
-    /// <see cref="DxgiFrameSource.AcquireTimeoutMs"/>), and for a new frame decide whether to track it (<see cref="TrackingCap"/>: at least 1000 / cap ms, less 1 ms, since the
+    /// <see cref="DxgiFrameSource.AcquireTimeoutMs"/>), and for a new frame decide whether to track it (<see cref="TrackingSchedule"/>: a running schedule that meets the cap on average, with 1 ms of slack; the
     /// last tracked frame; Max tracks every one); a frame that is not tracked is released at once and the loop waits again. The time of a frame is its own present time
     /// (<see cref="FrameClock"/>), never earlier than the frame before. A still screen (a timeout, or a wake for the mouse pointer only) is a "hold" step every
     /// <see cref="HoldStepMs"/>: the brackets hold where they are, the plates that were found stay seen, and the previous scan picture is read again when a detection is due.
@@ -346,7 +344,7 @@ public sealed class LiveDetectionService : IDisposable
                 var frameMs = Math.Max(arrival.FrameMs, _lastFrameMs);
                 _lastFrameMs = frameMs;
                 stats.AddGameFrame(frameMs);
-                if (!TrackingCap.ShouldTrack(frameMs, _lastTrackedMs, TrackingCapFps()))
+                if (!_schedule.Offer(frameMs, TrackingCapFps()))
                 {
                     source.ReleaseHeldFrame(); // not this one: wait for the next
                     return 0;
@@ -355,7 +353,6 @@ public sealed class LiveDetectionService : IDisposable
                 var sinceLast = double.IsNaN(_lastTrackedMs) ? 1000.0 / 60.0 : frameMs - _lastTrackedMs;
                 _lastTrackedMs = frameMs;
                 _lastStepMs = _clock.NowMs;
-                _lastCaptureProblem = null;
                 Process(gate, frameMs, Math.Max(1.0, sinceLast), StepKind.NewFrame, null);
                 stats.AddTrackedFrame();
                 return 0;
@@ -364,11 +361,10 @@ public sealed class LiveDetectionService : IDisposable
             case FrameWait.Unchanged:
             {
                 var now = _clock.NowMs;
-                if (now - _lastStepMs < HoldStepMs)
+                if (now - _lastStepMs < HoldStepMs - 5.0)
                     return 0; // woken early (the mouse pointer): the next wait is the pause
                 _lastStepMs = now;
                 _lastFrameMs = Math.Max(_lastFrameMs, now); // the next frame is never stamped earlier than this step
-                _lastCaptureProblem = null;
                 Process(gate, now, HoldStepMs, StepKind.Unchanged, null);
                 return 0;
             }
@@ -473,6 +469,7 @@ public sealed class LiveDetectionService : IDisposable
         }
         else
         {
+            _lastCaptureProblem = null; // a picture again: a new problem is logged afresh
             var first = detectSlot ? 1 : 0;
             if (detectSlot)
             {

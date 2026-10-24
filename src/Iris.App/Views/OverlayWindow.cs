@@ -43,13 +43,21 @@ public sealed class OverlayWindow : IDisposable
     /// <summary>Room kept around what is drawn when the window is (re)sized: a bracket that moves a little does not change the window's size (and its bitmap).</summary>
     private const double RoomAround = 64.0;
 
+    /// <summary>The surface (bitmap and DIB) is a multiple of this many pixels each way, so that a window that grows or shrinks a little keeps its surfaces.</summary>
+    private const int SurfaceBucket = 128;
+
+    /// <summary>This many updates in a row that did not work while the window is shown, and it is hidden: a visible window must never stop updating.</summary>
+    private const int MaxFailuresShown = 3;
+
     private readonly OverlayLayer _layer;
     private readonly Action<string>? _warn;   // a line for the log (problems of the setup, the once-a-minute render statistics)
     private readonly OverlayPainter _painter;
     private LayeredWindow? _window;           // created the first time it is needed
-    private bool _failed;                     // Windows refused to make the window or its bitmap: said once, nothing is drawn after that
+    private bool _failed;                     // Windows refused to make the window: said once, nothing is drawn after that
     private bool _closed;
     private bool _updateFailedLogged;
+    private bool _retryUpdate;                // the last update did not work: the next Present or frame draws again
+    private int _updateFailures;              // consecutive updates that did not work
     private bool _visibleInCapture;           // the setting "Show overlay in screenshots and recordings" (WDA_NONE, IRIS paints the window out of its own captures)
     private bool _excluded = true;            // false when this window is not excluded from capture by Windows (then the capture thread paints it out)
     private bool _hooked;                     // CompositionTarget.Rendering is hooked (brackets layer, while shown)
@@ -225,7 +233,7 @@ public sealed class OverlayWindow : IDisposable
         var started = Stopwatch.GetTimestamp();
         var stats = _stats;
         var model = provider(_model);
-        var redrew = !ReferenceEquals(model, _model);
+        var redrew = !ReferenceEquals(model, _model) || _retryUpdate;
         if (redrew)
             Present(model, _bounds, _settings); // may hide the window (no brackets left), which removes the hook
         stats?.AddFrame((Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency, redrew);
@@ -271,7 +279,7 @@ public sealed class OverlayWindow : IDisposable
 
         var boundsChanged = !_hasBounds || bounds != _bounds;
         var contentChanged = boundsChanged || !SameContent(model) || settings != _settings || toast != _toast;
-        if (!contentChanged && IsShown)
+        if (!contentChanged && IsShown && !_retryUpdate)
             return; // nothing moved, nothing to redraw: the hot path of the tracking
 
         _bounds = bounds;
@@ -297,11 +305,23 @@ public sealed class OverlayWindow : IDisposable
             return;
 
         _painter.SetContent(model, layout, toastLayout, toastLayout is null ? null : toast, fit, bounds.Height);
+        _retryUpdate = false;
         if (!Update())
         {
-            _model = null; // nothing was shown for this model: the next Present draws again, and the frame hook has nothing to compare with
+            // Retryable: the next Present (or, for the brackets, the next frame) draws again. A shown window keeps its last picture only for a few tries and is then hidden:
+            // a window that is visible but no longer updates (brackets frozen on the screen) is worse than none.
+            _retryUpdate = true;
+            _updateFailures++;
+            if (_updateFailures >= MaxFailuresShown && IsShown)
+            {
+                _warn?.Invoke($"The {_layer} overlay could not be updated {_updateFailures} times in a row; it is hidden until it works again");
+                HideOverlay();
+            }
+
             return;
         }
+
+        _updateFailures = 0;
 
         _shownModel = model;
         _shownBounds = bounds;
@@ -326,6 +346,8 @@ public sealed class OverlayWindow : IDisposable
         StopRenderHook();
         _window?.Hide();
         _shownModel = null;
+        _retryUpdate = false;
+        _updateFailures = 0;
         PublishBracketMasks();
     }
 
@@ -341,28 +363,37 @@ public sealed class OverlayWindow : IDisposable
         if (width <= 0 || height <= 0)
             return false;
 
-        var bits = window.BeginSurface(width, height);
+        // surfaces of a bucketed size: no new bitmap or DIB until the window outgrows its bucket (or shrinks into a smaller one)
+        var surfaceWidth = Bucket(width);
+        var surfaceHeight = Bucket(height);
+        var bits = window.BeginSurface(surfaceWidth, surfaceHeight);
         if (bits == IntPtr.Zero)
         {
-            Fail($"The {_layer} overlay window's bitmap could not be made ({width}x{height})");
+            if (!_updateFailedLogged)
+            {
+                _updateFailedLogged = true;
+                _warn?.Invoke($"The {_layer} overlay window's bitmap could not be made ({surfaceWidth}x{surfaceHeight}); it is tried again at the next change");
+            }
+
             return false;
         }
 
         try
         {
-            if (_visual is null || _target is null || _targetWidth != width || _targetHeight != height)
+            if (_visual is null || _target is null || _targetWidth != surfaceWidth || _targetHeight != surfaceHeight)
             {
                 _visual ??= new DrawingVisual();
-                _target = new RenderTargetBitmap(width, height, 96.0, 96.0, PixelFormats.Pbgra32);
-                _targetWidth = width;
-                _targetHeight = height;
+                _target = new RenderTargetBitmap(surfaceWidth, surfaceHeight, 96.0, 96.0, PixelFormats.Pbgra32);
+                _targetWidth = surfaceWidth;
+                _targetHeight = surfaceHeight;
             }
 
-            _target.Clear(); // a render adds to what is there
+            _target.Clear(); // a render adds to what is there: the whole surface, so the part beyond the window's size is clear too
             using (var context = _visual.RenderOpen())
                 _painter.Paint(context);
             _target.Render(_visual);
-            _target.CopyPixels(new Int32Rect(0, 0, width, height), bits, window.Stride * height, window.Stride);
+            // only the window's own rectangle is copied (with the surface's stride); what is outside it is never shown, because the update passes the real size
+            _target.CopyPixels(new Int32Rect(0, 0, width, height), bits, window.Stride * surfaceHeight, window.Stride);
         }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or OutOfMemoryException or COMException)
         {
@@ -378,7 +409,7 @@ public sealed class OverlayWindow : IDisposable
 
         var x = (int)Math.Round(_bounds.X + _fit.X);
         var y = (int)Math.Round(_bounds.Y + _fit.Y);
-        if (window.Commit(x, y))
+        if (window.Commit(x, y, width, height))
             return true;
         if (!_updateFailedLogged)
         {
@@ -388,6 +419,9 @@ public sealed class OverlayWindow : IDisposable
 
         return false;
     }
+
+    /// <summary>The size rounded up to the next multiple of <see cref="SurfaceBucket"/>.</summary>
+    private static int Bucket(int size) => (size + SurfaceBucket - 1) / SurfaceBucket * SurfaceBucket;
 
     /// <summary>The same thing as last time? The brackets layer looks at the model (the live pipeline keeps the instance while nothing moves), the panel layer at the entries.</summary>
     private bool SameContent(OverlayModel model) =>

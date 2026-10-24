@@ -1,27 +1,47 @@
 namespace Iris.Core.Live;
 
 /// <summary>
-/// The cap of the tracking, as a pure decision (no clock, no threads): the capture loop wakes for every NEW frame of the game (Desktop Duplication tells it when the
-/// screen has a new picture) and asks whether this frame is to be tracked. A frame is tracked when at least one tracking period has passed since the last tracked one,
-/// less <see cref="SlackMs"/> so that a game running at exactly the cap (or a jittery frame time) is not tracked every second frame; with no cap (Max) every new frame is.
+/// The cap of the tracking, as a pure decision (no clock, no threads): the capture loop wakes for every NEW frame of the game and asks whether this frame is to be tracked.
+/// The cap is met ON AVERAGE by a running schedule: a frame is tracked when it is not earlier than the next allowed time (less <see cref="SlackMs"/> for jitter), and the next
+/// allowed time then moves one period on from where it was (so a frame that came a little early or late does not shift the whole rhythm), but never more than one period
+/// behind the frame (a long gap does not buy a burst). With no cap (Max) every new frame is tracked.
 /// </summary>
-public static class TrackingCap
+public sealed class TrackingSchedule
 {
-    /// <summary>The frame time may be this much short of one period and still count: frame times jitter by a fraction of a millisecond, and a 60 fps game at a cap of 60 must track every frame.</summary>
+    /// <summary>A frame this much short of the next allowed time still counts: frame times jitter by a fraction of a millisecond, and a 60 fps game at a cap of 60 must track every frame.</summary>
     public const double SlackMs = 1.0;
 
-    /// <summary>The shortest time between two tracked frames for a cap in frames a second (0 for no cap, or a cap of 0 or less).</summary>
-    public static double MinIntervalMs(int capFps) => capFps <= 0 ? 0.0 : Math.Max(0.0, 1000.0 / capFps - SlackMs);
+    private double _nextAllowed = double.NaN;
 
-    /// <summary>
-    /// Whether the new frame at <paramref name="frameMs"/> is to be tracked, given when the last tracked frame was (<paramref name="lastTrackedMs"/>; NaN when there was none yet,
-    /// then the answer is yes) and the cap (<paramref name="capFps"/> frames a second; 0 or less means Max: every new frame).
-    /// </summary>
-    public static bool ShouldTrack(double frameMs, double lastTrackedMs, int capFps)
+    /// <summary>The time from which the next frame may be tracked (NaN: any, none tracked yet or no cap).</summary>
+    public double NextAllowedMs => _nextAllowed;
+
+    /// <summary>Forget the schedule (a new run): the next frame is tracked.</summary>
+    public void Reset() => _nextAllowed = double.NaN;
+
+    /// <summary>The period of a cap in milliseconds (0 for no cap, or a cap of 0 or less).</summary>
+    public static double PeriodMs(int capFps) => capFps <= 0 ? 0.0 : 1000.0 / capFps;
+
+    /// <summary>Whether the new frame at <paramref name="frameMs"/> is to be tracked under the cap (<paramref name="capFps"/> frames a second; 0 or less means Max: every new frame). Call once per new frame.</summary>
+    public bool Offer(double frameMs, int capFps)
     {
-        if (capFps <= 0 || double.IsNaN(lastTrackedMs))
+        if (capFps <= 0)
+        {
+            _nextAllowed = double.NaN;
             return true;
-        return frameMs - lastTrackedMs >= MinIntervalMs(capFps);
+        }
+
+        var period = PeriodMs(capFps);
+        if (double.IsNaN(_nextAllowed))
+        {
+            _nextAllowed = frameMs + period;
+            return true;
+        }
+
+        if (frameMs < _nextAllowed - SlackMs)
+            return false;
+        _nextAllowed = Math.Max(_nextAllowed + period, frameMs - period);
+        return true;
     }
 }
 

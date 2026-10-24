@@ -6,86 +6,114 @@ namespace Iris.Core.Tests;
 /// <summary>The pure parts of the event-driven tracking: the cap decision, the QPC-to-clock conversion and the game frame rate of the minute line.</summary>
 public class FrameTimingTests
 {
-    // ----- TrackingCap -----
+    // ----- TrackingSchedule -----
+
+    private static int CountTracked(TrackingSchedule schedule, int gameFps, int cap, int seconds)
+    {
+        var count = 0;
+        for (var i = 0; i < gameFps * seconds; i++)
+        {
+            if (schedule.Offer(i * 1000.0 / gameFps, cap))
+                count++;
+        }
+
+        return count;
+    }
 
     [Fact]
     public void Cap_TheFirstFrameIsAlwaysTracked()
     {
-        Assert.True(TrackingCap.ShouldTrack(1234.0, double.NaN, 60));
-        Assert.True(TrackingCap.ShouldTrack(0.0, double.NaN, 30));
-        Assert.True(TrackingCap.ShouldTrack(5.0, double.NaN, 0));
+        Assert.True(new TrackingSchedule().Offer(1234.0, 60));
+        Assert.True(new TrackingSchedule().Offer(0.0, 30));
+        Assert.True(new TrackingSchedule().Offer(5.0, 0));
     }
 
     [Fact]
     public void Cap_MaxTracksEveryNewFrame()
     {
-        // no cap other than the frames themselves: even frames 1 ms apart, even the same time twice
-        Assert.True(TrackingCap.ShouldTrack(101.0, 100.0, 0));
-        Assert.True(TrackingCap.ShouldTrack(100.0, 100.0, 0));
-        Assert.True(TrackingCap.ShouldTrack(100.1, 100.0, -1));
+        var schedule = new TrackingSchedule();
+        Assert.True(schedule.Offer(100.0, 0));
+        Assert.True(schedule.Offer(101.0, 0));
+        Assert.True(schedule.Offer(101.0, 0));
+        Assert.True(schedule.Offer(101.1, -1));
     }
 
-    [Fact]
-    public void Cap_AGameFasterThanTheCapIsThinnedOut()
+    [Theory]
+    [InlineData(144, 60)]
+    [InlineData(144, 30)]
+    [InlineData(240, 90)]
+    [InlineData(100, 60)]
+    [InlineData(75, 30)]
+    public void Cap_IsMetOnAverage(int gameFps, int cap)
     {
-        // a 144 fps game (6.94 ms frames) at a cap of 60 (period 16.67 ms, minus 1 ms of slack): every third frame
-        var cap = 60;
-        var last = 0.0;
-        var tracked = new List<double> { last };
-        for (var i = 1; i <= 144; i++)
-        {
-            var t = i * 1000.0 / 144.0;
-            if (TrackingCap.ShouldTrack(t, last, cap))
-            {
-                last = t;
-                tracked.Add(t);
-            }
-        }
-
-        // frames at 6.94, 13.89 (< 15.67 since the last) are skipped, the third at 20.8 is tracked: 48 of 144 plus the first
-        Assert.InRange(tracked.Count, 47, 50);
-        for (var i = 1; i < tracked.Count; i++)
-            Assert.True(tracked[i] - tracked[i - 1] >= TrackingCap.MinIntervalMs(cap));
+        var tracked = CountTracked(new TrackingSchedule(), gameFps, cap, 10);
+        // within 2 % of cap x seconds (the first frame is tracked at once)
+        Assert.InRange(tracked, cap * 10 * 0.98, cap * 10 * 1.02 + 1);
     }
 
     [Fact]
     public void Cap_AGameAtTheCapIsTrackedEveryFrame_ThanksToTheSlack()
     {
-        // 60 fps frames jitter around 16.67 ms: 16.0 ms after the last tracked one still counts (period minus the 1 ms slack)
-        Assert.True(TrackingCap.ShouldTrack(116.0, 100.0, 60));
-        Assert.True(TrackingCap.ShouldTrack(116.67, 100.0, 60));
-        Assert.False(TrackingCap.ShouldTrack(115.0, 100.0, 60)); // 15 ms: too soon
-    }
+        var schedule = new TrackingSchedule();
+        Assert.Equal(600, CountTracked(schedule, 60, 60, 10));
 
-    [Theory]
-    [InlineData(30, 32.33)]
-    [InlineData(60, 15.67)]
-    [InlineData(90, 10.11)]
-    public void Cap_MinimumIntervalIsThePeriodMinusOneMillisecond(int cap, double expectedMs)
-    {
-        Assert.Equal(expectedMs, TrackingCap.MinIntervalMs(cap), 2);
-        Assert.Equal(0.0, TrackingCap.MinIntervalMs(0));
-        Assert.True(TrackingCap.ShouldTrack(1000.0 + expectedMs + 0.01, 1000.0, cap));
-        Assert.False(TrackingCap.ShouldTrack(1000.0 + expectedMs - 0.05, 1000.0, cap));
+        // frame times that jitter by +-0.8 ms around 16.67 ms
+        var jittered = new TrackingSchedule();
+        var count = 0;
+        for (var i = 0; i < 600; i++)
+        {
+            var jitter = (i % 2 == 0 ? 0.8 : -0.8);
+            if (jittered.Offer(i * 1000.0 / 60.0 + jitter, 60))
+                count++;
+        }
+
+        Assert.Equal(600, count);
     }
 
     [Fact]
     public void Cap_ASlowGameIsTrackedAtItsOwnRate()
     {
-        // 24 fps film-like frames at a cap of 90: every frame (41.7 ms apart is more than the 10.1 ms minimum)
-        var last = 0.0;
+        Assert.Equal(240, CountTracked(new TrackingSchedule(), 24, 90, 10));
+    }
+
+    [Fact]
+    public void Cap_ALongGapDoesNotBuyABurst()
+    {
+        var schedule = new TrackingSchedule();
+        Assert.True(schedule.Offer(0.0, 60));
+        Assert.True(schedule.Offer(5000.0, 60)); // after a 5 s stall
+        // the schedule is at most one period behind the frame: one second of a 144 fps game after the stall is tracked at about the cap, not 144 times
         var count = 0;
-        for (var i = 1; i <= 24; i++)
+        for (var i = 1; i <= 144; i++)
         {
-            var t = i * 1000.0 / 24.0;
-            if (TrackingCap.ShouldTrack(t, last, 90))
-            {
-                last = t;
+            if (schedule.Offer(5000.0 + i * 1000.0 / 144.0, 60))
                 count++;
-            }
         }
 
-        Assert.Equal(24, count);
+        Assert.InRange(count, 58, 63);
+    }
+
+    [Fact]
+    public void Cap_ResetAndMaxForgetTheSchedule()
+    {
+        var schedule = new TrackingSchedule();
+        Assert.True(schedule.Offer(0.0, 60));
+        Assert.False(schedule.Offer(2.0, 60));
+        schedule.Reset();
+        Assert.True(schedule.Offer(3.0, 60));
+        Assert.False(schedule.Offer(4.0, 60));
+        Assert.True(schedule.Offer(5.0, 0)); // Max
+        Assert.True(double.IsNaN(schedule.NextAllowedMs));
+    }
+
+    [Theory]
+    [InlineData(30, 33.33)]
+    [InlineData(60, 16.67)]
+    [InlineData(90, 11.11)]
+    public void Cap_PeriodIsOneOverTheCap(int cap, double expectedMs)
+    {
+        Assert.Equal(expectedMs, TrackingSchedule.PeriodMs(cap), 2);
+        Assert.Equal(0.0, TrackingSchedule.PeriodMs(0));
     }
 
     // ----- FrameClock -----

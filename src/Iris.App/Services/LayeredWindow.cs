@@ -83,11 +83,11 @@ internal sealed class LayeredWindow : IDisposable
     /// <summary>True between <see cref="Show"/> and <see cref="Hide"/>.</summary>
     public bool IsShown => _shown;
 
-    /// <summary>The row length of <see cref="BeginSurface"/>'s pixels in bytes (4 bytes a pixel, no padding).</summary>
+    /// <summary>The row length of <see cref="BeginSurface"/>'s pixels in bytes (4 bytes a pixel, no padding): of the whole surface, which may be larger than what <see cref="Commit"/> shows.</summary>
     public int Stride => _width * 4;
 
     /// <summary>
-    /// Makes the DIB <paramref name="width"/> x <paramref name="height"/> pixels (kept as it is when the size did not change) and returns where its pixels are: premultiplied BGRA,
+    /// Makes the DIB (the surface) <paramref name="width"/> x <paramref name="height"/> pixels (kept as it is when the size did not change; the caller passes a bucketed size so that it rarely does) and returns where its pixels are: premultiplied BGRA,
     /// top row first, <see cref="Stride"/> bytes a row. The caller fills ALL of it, then calls <see cref="Commit"/>. The pointer is valid until the next call with another size or the dispose.
     /// Returns <see cref="IntPtr.Zero"/> when Windows could not make the bitmap.
     /// </summary>
@@ -113,7 +113,11 @@ internal sealed class LayeredWindow : IDisposable
         };
         var bitmap = CreateDIBSection(_memoryDc, ref info, DibRgbColors, out var bits, IntPtr.Zero, 0);
         if (bitmap == IntPtr.Zero || bits == IntPtr.Zero)
+        {
+            if (bitmap != IntPtr.Zero)
+                DeleteObject(bitmap); // a bitmap without pixels is no use and must not leak
             return IntPtr.Zero;
+        }
 
         var previous = SelectObject(_memoryDc, bitmap);
         if (_bitmap == IntPtr.Zero)
@@ -128,16 +132,16 @@ internal sealed class LayeredWindow : IDisposable
     }
 
     /// <summary>
-    /// ONE <c>UpdateLayeredWindow</c>: the window is put at (<paramref name="x"/>, <paramref name="y"/>) in screen pixels, sized like the DIB of the last <see cref="BeginSurface"/> and given
-    /// its pixels, all in the same step. Returns false when Windows refused (the window then stays as it was).
+    /// ONE <c>UpdateLayeredWindow</c>: the window is put at (<paramref name="x"/>, <paramref name="y"/>) in screen pixels, sized <paramref name="width"/> x <paramref name="height"/>
+    /// (at most the surface; the top-left part of the DIB, source point (0, 0)) and given its pixels, all in the same step. Returns false when Windows refused (the window then stays as it was).
     /// </summary>
-    public bool Commit(int x, int y)
+    public bool Commit(int x, int y, int width, int height)
     {
-        if (_disposed || _hwnd == IntPtr.Zero || _bitmap == IntPtr.Zero)
+        if (_disposed || _hwnd == IntPtr.Zero || _bitmap == IntPtr.Zero || width <= 0 || height <= 0 || width > _width || height > _height)
             return false;
 
         var position = new NativePoint { X = x, Y = y };
-        var size = new NativeSize { Cx = _width, Cy = _height };
+        var size = new NativeSize { Cx = width, Cy = height };
         var source = new NativePoint { X = 0, Y = 0 };
         var blend = new BlendFunction { BlendOp = AcSrcOver, BlendFlags = 0, SourceConstantAlpha = 255, AlphaFormat = AcSrcAlpha };
         var screen = GetDC(IntPtr.Zero);
