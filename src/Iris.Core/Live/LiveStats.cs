@@ -18,8 +18,38 @@ public sealed class LiveStats
     private long _matchAttempts;
     private long _matchesFound;
     private double _windowStartMs;
+    private int _gameFrames;            // new frames of the game seen (every acquired frame with new content, tracked or not)
+    private double _firstGameFrameMs;
+    private double _lastGameFrameMs;
+    private int _trackedFrames;         // frames the tracking ran for
 
     public LiveStats(double startMs) => _windowStartMs = startMs;
+
+    /// <summary>The frame rate of the game as seen by the capture, from the timestamps of the new frames: (frames - 1) / (last - first), 0 with fewer than two frames.</summary>
+    public static double FrameRate(int frames, double firstMs, double lastMs)
+    {
+        var span = lastMs - firstMs;
+        return frames < 2 || !(span > 0) ? 0.0 : (frames - 1) * 1000.0 / span;
+    }
+
+    /// <summary>A new frame of the game was seen at <paramref name="frameMs"/> (the frame's own time, live clock), whether the tracking ran for it or not.</summary>
+    public void AddGameFrame(double frameMs)
+    {
+        lock (_gate)
+        {
+            if (_gameFrames == 0)
+                _firstGameFrameMs = frameMs;
+            _lastGameFrameMs = frameMs;
+            _gameFrames++;
+        }
+    }
+
+    /// <summary>The tracking ran for a frame (with or without plates to follow).</summary>
+    public void AddTrackedFrame()
+    {
+        lock (_gate)
+            _trackedFrames++;
+    }
 
     public int Reads
     {
@@ -93,8 +123,12 @@ public sealed class LiveStats
             return nowMs - _windowStartMs >= everyMs;
     }
 
-    /// <summary>The summary line for the time since the start or the last call, then starts a new window. <paramref name="tracks"/> is the number of confirmed tracks now.</summary>
-    public string TakeSummary(double nowMs, int tracks)
+    /// <summary>
+    /// The summary line for the time since the start or the last call, then starts a new window. <paramref name="tracks"/> is the number of confirmed tracks now.
+    /// <paramref name="trackingCapFps"/> is the tracking cap in frames a second (0 = Max, no cap); the line says how many frames the game showed
+    /// ("game frames ~143/s", from the new-frame timestamps) and how many of them were tracked.
+    /// </summary>
+    public string TakeSummary(double nowMs, int tracks, int trackingCapFps = 0)
     {
         lock (_gate)
         {
@@ -103,9 +137,15 @@ public sealed class LiveStats
             var average = _readMs.Count == 0 ? 0.0 : _readMs.Average();
             var trackAverage = _trackMs.Count == 0 ? 0.0 : _trackMs.Average();
             var share = _matchAttempts == 0 ? 0.0 : 100.0 * _matchesFound / _matchAttempts;
+            var gameRate = FrameRate(_gameFrames, _firstGameFrameMs, _lastGameFrameMs);
+            var trackedRate = seconds > 0 ? _trackedFrames / seconds : 0.0;
+            var cap = trackingCapFps > 0 ? $"cap {trackingCapFps}" : "no cap";
             var line = string.Create(inv,
                 $"Live detection: {_readMs.Count} reads in {seconds:0} s, average {average:0.0} ms, p95 {Percentile95(_readMs):0.0} ms, {_skippedSlots} slots skipped, {_unavailable} without a picture, {tracks} confirmed tracks; "
-                + $"tracking: {_trackMs.Count} ticks, average {trackAverage:0.000} ms, p95 {Percentile95(_trackMs):0.000} ms, {share:0.0} % of {_matchAttempts} matches found");
+                + $"tracking: {_trackMs.Count} ticks, average {trackAverage:0.000} ms, p95 {Percentile95(_trackMs):0.000} ms, {share:0.0} % of {_matchAttempts} matches found; "
+                + $"game frames ~{gameRate:0}/s, tracked ~{trackedRate:0}/s ({cap})");
+            _gameFrames = 0;
+            _trackedFrames = 0;
             _readMs.Clear();
             _trackMs.Clear();
             _skippedSlots = 0;

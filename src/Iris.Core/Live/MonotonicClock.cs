@@ -14,7 +14,13 @@ public interface IMonotonicClock
 /// <summary>The real clock: a <see cref="Stopwatch"/>.</summary>
 public sealed class StopwatchClock : IMonotonicClock
 {
-    private readonly Stopwatch _watch = Stopwatch.StartNew();
+    private readonly Stopwatch _watch;
+
+    public StopwatchClock()
+    {
+        OriginTimestamp = Stopwatch.GetTimestamp(); // read just before the watch starts: the watch's zero, in Stopwatch ticks
+        _watch = Stopwatch.StartNew();
+    }
 
     /// <summary>
     /// THE clock of the live overlay: the capture loop stamps its snapshots with it and the renderer (the UI thread, at monitor refresh) reads it for "now", so both must
@@ -23,4 +29,10 @@ public sealed class StopwatchClock : IMonotonicClock
     public static StopwatchClock Shared { get; } = new();
 
     public double NowMs => _watch.Elapsed.TotalMilliseconds;
+
+    /// <summary>
+    /// The value of <see cref="Stopwatch.GetTimestamp"/> at this clock's zero. A time stamped in those ticks (on Windows the QueryPerformanceCounter, which is what
+    /// Desktop Duplication's <c>LastPresentTime</c> uses) is <see cref="FrameClock.QpcToMs"/> (ticks, this, <see cref="Stopwatch.Frequency"/>) on this clock.
+    /// </summary>
+    public long OriginTimestamp { get; }
 }
