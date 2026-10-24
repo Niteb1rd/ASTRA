@@ -11,6 +11,35 @@ namespace Iris.Replay;
 /// frame number and the rate given to <see cref="FrameSources.Frames"/> (the tracker needs time, not only order).</param>
 public readonly record struct SourceFrame(string Clip, int Number, string Name, Mat Image, double TimeMs = 0.0);
 
+/// <summary>
+/// Keeps frames by TIME: a frame is kept when its timestamp has advanced at least 1000/N ms since the last kept one (the first frame is
+/// always kept). With a 60 or 120 fps video and N = 5 this reads every 12th or 24th frame, as the app does (it reads 5 times a second);
+/// without a rate every frame is kept. One sampler per clip. Not thread safe.
+/// </summary>
+public sealed class FrameSampler
+{
+    // A frame that is due only by the rounding of 1000/fps in floating point (199.99999999 of 200 ms) still counts as due.
+    private const double ToleranceMs = 0.001;
+
+    private readonly double _intervalMs;
+    private double _lastKeptMs = double.NaN;
+
+    /// <summary>A sampler for <paramref name="fps"/> frames a second; null keeps every frame.</summary>
+    public FrameSampler(double? fps)
+    {
+        if (fps is not null && !(fps.Value > 0))
+            throw new ArgumentOutOfRangeException(nameof(fps), "The frame rate must be above 0.");
+        _intervalMs = fps is null ? 0.0 : 1000.0 / fps.Value;
+    }
+
+    /// <summary>True when a frame at <paramref name="timeMs"/> is to be kept (it does not change the sampler: call <see cref="Kept"/> when the frame was used).</summary>
+    public bool Due(double timeMs) =>
+        _intervalMs <= 0.0 || double.IsNaN(_lastKeptMs) || timeMs - _lastKeptMs >= _intervalMs - ToleranceMs;
+
+    /// <summary>Notes that the frame at <paramref name="timeMs"/> was kept: the next one is due 1000/N ms after it.</summary>
+    public void Kept(double timeMs) => _lastKeptMs = timeMs;
+}
+
 /// <summary>A clip to replay: a video file, or a list of image files in order.</summary>
 public sealed record ClipInput(string Clip, string? VideoPath, IReadOnlyList<string> Images);
 
@@ -87,13 +116,14 @@ public static class FrameSources
     }
 
     /// <summary>
-    /// The frames of a clip, every <paramref name="every"/>th one. Every frame of a video is decoded: <c>Grab()</c> runs the FFmpeg
-    /// decoder, and only the conversion to an image (<c>Retrieve</c>) is skipped for the frames in between, so <c>--every</c> saves
+    /// The frames of a clip, every <paramref name="every"/>th one, and of those only the ones <paramref name="sampler"/> finds due (by time:
+    /// see <see cref="FrameSampler"/>; null keeps all). Every frame of a video is decoded: <c>Grab()</c> runs the FFmpeg
+    /// decoder, and only the conversion to an image (<c>Retrieve</c>) is skipped for the frames in between, so <c>--every</c> and <c>--fps</c> save
     /// detection time, not decoding time. Throws InvalidOperationException when a video cannot be opened. Images that cannot be
     /// read are skipped and reported to <paramref name="unreadable"/> (with the path). <paramref name="imageFps"/> is the frame rate that the
     /// numbers in image file names stand for (10 for the frames of the training kit).
     /// </summary>
-    public static IEnumerable<SourceFrame> Frames(ClipInput clip, int every, Action<string>? unreadable = null, double imageFps = 10.0)
+    public static IEnumerable<SourceFrame> Frames(ClipInput clip, int every, Action<string>? unreadable = null, double imageFps = 10.0, FrameSampler? sampler = null)
     {
         if (clip.VideoPath is not null)
         {
@@ -114,6 +144,9 @@ public static class FrameSources
                 number++;
                 if ((number - 1) % every != 0)
                     continue;
+                var timeMs = (number - 1) * 1000.0 / fps;
+                if (sampler is not null && !sampler.Due(timeMs))
+                    continue;
                 var frame = new Mat();
                 if (!capture.Retrieve(frame) || frame.Empty())
                 {
@@ -121,7 +154,8 @@ public static class FrameSources
                     continue;
                 }
 
-                yield return new SourceFrame(clip.Clip, number, $"{clip.Clip}#{number}", frame, (number - 1) * 1000.0 / fps);
+                sampler?.Kept(timeMs);
+                yield return new SourceFrame(clip.Clip, number, $"{clip.Clip}#{number}", frame, timeMs);
             }
 
             yield break;
@@ -132,6 +166,11 @@ public static class FrameSources
             if (index % every != 0)
                 continue;
             var path = clip.Images[index];
+            var fileName = Path.GetFileName(path);
+            var frameNumber = TrailingNumber(fileName) ?? index + 1;
+            var timeMs = (frameNumber - 1) * 1000.0 / imageFps;
+            if (sampler is not null && !sampler.Due(timeMs))
+                continue;
             var image = ReadImage(path);
             if (image is null)
             {
@@ -139,9 +178,8 @@ public static class FrameSources
                 continue;
             }
 
-            var fileName = Path.GetFileName(path);
-            var frameNumber = TrailingNumber(fileName) ?? index + 1;
-            yield return new SourceFrame(clip.Clip, frameNumber, fileName, image, (frameNumber - 1) * 1000.0 / imageFps);
+            sampler?.Kept(timeMs);
+            yield return new SourceFrame(clip.Clip, frameNumber, fileName, image, timeMs);
         }
     }
 

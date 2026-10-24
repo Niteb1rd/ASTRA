@@ -78,8 +78,9 @@ public static class Program
         var inv = CultureInfo.InvariantCulture;
         var step = options.Every == 1 ? "every frame" : string.Create(inv, $"every {options.Every} frames");
         var settings = options.Settings;
+        var sampling = options.SampleFps is null ? string.Empty : string.Create(inv, $", sampled by time at {options.SampleFps.Value:0.##} frames a second");
         var mode = single ? "single images, no tracker" : $"tracker: {options.TrackerSettings.ConfirmReads} identical reads of one box width over at least {options.TrackerSettings.ConfirmSpanMs:0} ms";
-        Console.WriteLine(string.Create(inv, $"Replaying {clips.Count} clip(s), {step}, scan region x {settings.RegionLeft:P0}-{settings.RegionRight:P0}, y {settings.RegionTop:P0}-{settings.RegionBottom:P0}; {mode}."));
+        Console.WriteLine(string.Create(inv, $"Replaying {clips.Count} clip(s), {step}{sampling}, scan region x {settings.RegionLeft:P0}-{settings.RegionRight:P0}, y {settings.RegionTop:P0}-{settings.RegionBottom:P0}; {mode}."));
         Console.WriteLine();
 
         var summaries = new List<ClipSummary>();
@@ -110,7 +111,7 @@ public static class Program
 
             try
             {
-                foreach (var frame in FrameSources.Frames(clip, options.Every, _ => unreadable++, options.ImageFps))
+                foreach (var frame in FrameSources.Frames(clip, options.Every, _ => unreadable++, options.ImageFps, new FrameSampler(single ? null : options.SampleFps)))
                 {
                     using var image = frame.Image;
                     if (single)

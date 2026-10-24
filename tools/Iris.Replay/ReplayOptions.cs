@@ -11,7 +11,7 @@ public sealed class ReplayOptions
 
         Usage:
           Iris.Replay <input> [--labels FILE] [--out FOLDER] [--annotate] [--every N] [--model FILE] [--region L,R,T,B]
-                              [--fps N] [--confirm-reads N] [--confirm-span MS]
+                              [--fps N] [--image-fps N] [--confirm-reads N] [--confirm-span MS]
 
           <input>      a video file (mp4, mkv, mov, avi, webm), a folder of frame images (png, jpg, bmp, tif),
                        a folder with one such sub folder (or video) per clip, or a single image
@@ -22,10 +22,13 @@ public sealed class ReplayOptions
           --annotate   also write a PNG per frame with tracked lines to FOLDER\annotated: confirmed names green, nameplates not yet
                        confirmed yellow, rejected pairs red
           --every N    use every Nth frame (default 1)
+          --fps N      sample the frames by TIME: keep a frame when its timestamp has advanced at least 1000/N ms since the last kept
+                       one (default: every frame). A video of 60 or 120 fps is read much more often than the app reads (5 times a
+                       second), which lets a short-lived misread reach the confirmation; --fps 5 mirrors the app. Applied after --every
           --model F    use this letters-model.bin instead of the one built into IRIS
           --region R   scan region as fractions of the frame: left,right,top,bottom (default 0.15,0.85,0.10,0.70)
-          --fps N      frame rate that the frame numbers of image files stand for (default 10, as in the training kit); a video
-                       brings its own
+          --image-fps N   frame rate that the frame numbers of image files stand for (default 10, as in the training kit); a video
+                       brings its own (this was --fps before --fps became the sampling rate)
           --confirm-reads N   a name is confirmed after N identical reads (default 3)
           --confirm-span MS   ... spread over at least this many milliseconds (default 300)
 
@@ -51,8 +54,11 @@ public sealed class ReplayOptions
 
     public NameplateTrackerSettings TrackerSettings { get; private set; } = NameplateTrackerSettings.Default;
 
-    /// <summary>Frame rate that the frame numbers of image files stand for.</summary>
+    /// <summary>Frame rate that the frame numbers of image files stand for (<c>--image-fps</c>).</summary>
     public double ImageFps { get; private set; } = 10.0;
+
+    /// <summary>Sampling rate in frames a second (<c>--fps</c>): frames are kept by time, 1000/N ms apart at least. Null keeps every frame.</summary>
+    public double? SampleFps { get; private set; }
 
     public bool ShowHelp { get; private set; }
 
@@ -84,6 +90,7 @@ public sealed class ReplayOptions
                 case "--every":
                 case "--region":
                 case "--fps":
+                case "--image-fps":
                 case "--confirm-reads":
                 case "--confirm-span":
                     if (i + 1 >= args.Count)
@@ -140,8 +147,13 @@ public sealed class ReplayOptions
                 return null;
             case "--fps":
                 if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var fps) || !(fps > 0 && fps <= 1000))
-                    return "--fps needs a number above 0.";
-                ImageFps = fps;
+                    return "--fps needs a number above 0 (frames a second to sample, such as 5).";
+                SampleFps = fps;
+                return null;
+            case "--image-fps":
+                if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var imageFps) || !(imageFps > 0 && imageFps <= 1000))
+                    return "--image-fps needs a number above 0.";
+                ImageFps = imageFps;
                 return null;
             case "--confirm-reads":
                 if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var reads) || reads < 1)

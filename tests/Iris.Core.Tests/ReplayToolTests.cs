@@ -19,7 +19,7 @@ public class ReplayToolTests
     public void Options_ReadEverything()
     {
         var options = ReplayOptions.Parse(
-            new[] { "clips", "--labels", "clips.txt", "--out", "somewhere", "--annotate", "--every", "5", "--region", "0.1, 0.9, 0.2, 0.8" }, out var error);
+            new[] { "clips", "--labels", "clips.txt", "--out", "somewhere", "--annotate", "--every", "5", "--region", "0.1, 0.9, 0.2, 0.8", "--fps", "5", "--image-fps", "25" }, out var error);
 
         Assert.Null(error);
         Assert.NotNull(options);
@@ -28,6 +28,8 @@ public class ReplayToolTests
         Assert.Equal("somewhere", options.OutDirectory);
         Assert.True(options.Annotate);
         Assert.Equal(5, options.Every);
+        Assert.Equal(5.0, options.SampleFps);
+        Assert.Equal(25.0, options.ImageFps);
         Assert.Equal(0.1, options.Settings.RegionLeft);
         Assert.Equal(0.9, options.Settings.RegionRight);
         Assert.Equal(0.2, options.Settings.RegionTop);
@@ -41,6 +43,8 @@ public class ReplayToolTests
 
         Assert.Null(error);
         Assert.Equal(1, options!.Every);
+        Assert.Null(options.SampleFps);   // every frame
+        Assert.Equal(10.0, options.ImageFps);
         Assert.False(options.Annotate);
         Assert.Null(options.LabelsPath);
         Assert.Equal(NameplateDetectorSettings.Default, options.Settings);
@@ -58,6 +62,7 @@ public class ReplayToolTests
         new[] { "a", "--fps" },
         new[] { "a", "--fps", "0" },
         new[] { "a", "--fps", "x" },
+        new[] { "a", "--image-fps", "0" },
         new[] { "a", "--region", "0.1,0.2" },
         new[] { "a", "--region", "0.9,0.1,0.1,0.7" },
         new[] { "a", "--bogus" },
@@ -278,6 +283,110 @@ public class ReplayToolTests
     public void EditDistance_IsTheLevenshteinDistance(string a, string b, int expected)
     {
         Assert.Equal(expected, ReplayMetrics.EditDistance(a, b));
+    }
+
+    // ------------------------------------------------------------------------------------------------ sampling by time
+
+    /// <summary>Which of the frames of a video of the given rate a sampler keeps (frame numbers from 0), as the replay loop uses it.</summary>
+    private static List<int> Kept(double videoFps, int frames, double? sampleFps)
+    {
+        var sampler = new FrameSampler(sampleFps);
+        var kept = new List<int>();
+        for (var n = 0; n < frames; n++)
+        {
+            var time = n * 1000.0 / videoFps;
+            if (!sampler.Due(time))
+                continue;
+            sampler.Kept(time);
+            kept.Add(n);
+        }
+
+        return kept;
+    }
+
+    [Fact]
+    public void Sampler_WithoutARate_KeepsEveryFrame()
+    {
+        Assert.Equal(Enumerable.Range(0, 50), Kept(60.0, 50, null));
+    }
+
+    [Theory]
+    [InlineData(60.0, 12)]    // 200 ms is 12 frames of 60 fps
+    [InlineData(120.0, 24)]
+    [InlineData(30.0, 6)]
+    [InlineData(144.0, 29)]   // 28.8 frames: the 29th frame is the first one 200 ms later
+    public void Sampler_KeepsOneFrameEvery200Ms_At5Fps(double videoFps, int every)
+    {
+        var kept = Kept(videoFps, 600, 5.0);
+
+        Assert.Equal(Enumerable.Range(0, 600).Where(n => n % every == 0), kept);
+        for (var i = 1; i < kept.Count; i++)
+            Assert.True((kept[i] - kept[i - 1]) * 1000.0 / videoFps >= 200.0 - 0.001);
+    }
+
+    [Fact]
+    public void Sampler_ByTime_NotByFrameCount()
+    {
+        // 7 fps is 142.86 ms: 60 fps frames are 16.67 ms apart, so the 9th frame (150 ms) is the first that is due
+        Assert.Equal(new[] { 0, 9, 18, 27 }, Kept(60.0, 28, 7.0));
+    }
+
+    [Fact]
+    public void Sampler_AFasterRateThanTheVideo_KeepsEveryFrame()
+    {
+        Assert.Equal(Enumerable.Range(0, 20), Kept(10.0, 20, 30.0));
+        Assert.Equal(Enumerable.Range(0, 20), Kept(10.0, 20, 10.0));
+    }
+
+    [Fact]
+    public void Sampler_DueDoesNotChangeIt_OnlyKeptDoes()
+    {
+        var sampler = new FrameSampler(5.0);
+        Assert.True(sampler.Due(0));
+        Assert.True(sampler.Due(0));
+        sampler.Kept(0);
+        Assert.False(sampler.Due(199.0));
+        Assert.False(sampler.Due(199.0));
+        Assert.True(sampler.Due(200.0));
+        sampler.Kept(210.0);   // the next one is due 200 ms after the frame that was kept, not after the grid
+        Assert.False(sampler.Due(400.0));
+        Assert.True(sampler.Due(410.0));
+    }
+
+    [Fact]
+    public void Sampler_RefusesARateOfZero()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FrameSampler(0.0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FrameSampler(-5.0));
+    }
+
+    [OpenCvFact]
+    public void ImageFrames_AreSampledByTime()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "iris-replay-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            for (var i = 1; i <= 10; i++)
+                File.Copy(Path.Combine(DetectorFixtures.Dir, "frame_d.png"), Path.Combine(root, $"f{i}.png"));
+            var clip = Assert.Single(FrameSources.Discover(root));
+
+            var numbers = new List<int>();
+            var times = new List<double>();
+            foreach (var frame in FrameSources.Frames(clip, 1, null, 10.0, new FrameSampler(5.0)))
+            {
+                using var image = frame.Image;
+                numbers.Add(frame.Number);
+                times.Add(frame.TimeMs);
+            }
+
+            Assert.Equal(new[] { 1, 3, 5, 7, 9 }, numbers);   // 10 fps images, 5 fps wanted: every second one
+            Assert.Equal(new[] { 0.0, 200.0, 400.0, 600.0, 800.0 }, times);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
     }
 
     // ------------------------------------------------------------------------------------------------ files
