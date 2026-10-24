@@ -220,10 +220,15 @@ public static class O0Rule
         return new O0Measurement(glyphWidth / (double)Upscale, glyphHeight / (double)Upscale, holeWidth / (double)Upscale, holeHeight / (double)Upscale);
     }
 
-    /// <summary>P(O) for a measurement (<c>o0_prob</c>): the features <c>outer_w / outer_h</c> and <c>hole_w / outer_h</c> on the fitted line, one Gaussian per class.</summary>
+    /// <summary>
+    /// P(O) for a measurement (<c>o0_prob</c>): the features <c>outer_w / outer_h</c> and <c>hole_w / outer_h</c> on the fitted line, one Gaussian per class.
+    /// The position on the line is clamped between the two class means first: the O Gaussian is wider than the 0 one, so without the clamp a glyph narrower than
+    /// any zero would come out as an O (the wider curve wins far out in the tails). Narrower than the average 0 is a 0, wider than the average O is an O.
+    /// </summary>
     public static double ProbabilityO(O0Measurement m)
     {
         var s = (m.OuterWidth / m.OuterHeight) * WeightA + (m.HoleWidth / m.OuterHeight) * WeightB;
+        s = Math.Clamp(s, Math.Min(Mean0, MeanO), Math.Max(Mean0, MeanO));
         var lO = -0.5 * Math.Pow((s - MeanO) / SdO, 2) - Math.Log(SdO);
         var l0 = -0.5 * Math.Pow((s - Mean0) / Sd0, 2) - Math.Log(Sd0);
         var d = l0 - lO;
