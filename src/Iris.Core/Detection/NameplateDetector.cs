@@ -224,6 +224,8 @@ public sealed class NameplateDetector : IDisposable
             score += piece.Score;
         if (_settings.SubPixelO0Rule)
             text = O0Rule.Correct(bgr, read, text); // the letter O or the digit 0: measured on the glyph's own pixels (names only, never distance lines)
+        if (_settings.UnderscoreHyphenRule)
+            text = UnderscoreHyphenRule.Correct(read, text); // an underscore or a hyphen: told apart by the height of the bar in the capital band (after the O/0 pass, per row)
         return new NameWord(text, score, mask);
     }
 

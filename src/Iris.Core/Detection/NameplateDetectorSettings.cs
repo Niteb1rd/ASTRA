@@ -147,6 +147,14 @@ public sealed record NameplateDetectorSettings
     /// </summary>
     public bool SubPixelO0Rule { get; init; } = true;
 
+    /// <summary>
+    /// The underscore / hyphen rule (<see cref="Letters.UnderscoreHyphenRule"/>): every <c>_</c> or <c>-</c> the model read in a NAME is measured on the reader's own mask and replaced by the
+    /// verdict of its height in the capital band (an underscore sits at the bottom of the band, a hyphen in the middle; a bar in the undecided band in between keeps the model's character).
+    /// On by default: on the 19 training clips it changes no confirmed name and fixes every measured underscore read as a hyphen (16 of 16 single frames of the test character).
+    /// It runs after the O/0 rule, per row of a multi-row name, and never on a distance line. Off: the model's bars as read.
+    /// </summary>
+    public bool UnderscoreHyphenRule { get; init; } = true;
+
     /// <summary>The thresholds of the plate colour classes (see <see cref="PlateColors"/>).</summary>
     public PlateColorSettings PlateColorRules { get; init; } = PlateColorSettings.Default;
 
