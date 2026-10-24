@@ -478,7 +478,7 @@ Right after that line the brackets window adds `Overlay render: N frames in 60 s
 Tests: `LiveTrackingTests` (geometry, prediction and the 50 ms render cap, bracket metrics, window fit, stats, snapshot from tracks), `TemplateTrackingTests` (template tracking on synthetic pictures: follow, lose after 300 ms, a detection wins, the cap, colour classes;
 the mailbox, the result slot, the published history, the statistics), `LiveEngineTests` (settings, org member queue, the whole pipeline with a fake frame source over the detector fixtures), `TrackSimulationTests` (the replay tool's `--track`), `FrameTimingTests` (the tracking cap, the QPC-to-clock conversion, the game frame rate of the minute line). The window code (`LayeredWindow`, `OverlayWindow`, `DxgiFrameSource`, the event driven loop) is in the app and has no automated tests; check it on a Windows PC with a running game: the minute lines should say `game frames ~` close to the game's frame rate, and the brackets must not jump when one appears or goes.
 
-## Multi-row names, plate colour, duplicate names and the O/0 check
+## Multi-row names, plate colour, duplicate names, the O/0 check and the underscore or hyphen check
 
 **Multi-row names.** The game wraps a long handle over up to 3 centered rows above the distance line. The detector joins them (a port of
 `stack_rows` of the Python reference): rows above the name line within 0.8 line heights of the row below, a pitch of 1.05 to 1.8 line heights,
@@ -502,6 +502,24 @@ outer width to height and of the hole width to height decide with a two-feature 
 `NameplateDetectorSettings.SubPixelO0Rule` is **on by default, on purpose**; the Python reference flag `o0_rule` defaults to off only so that old results can be reproduced. Setting it to false switches the check off. `O0RuleTests` use synthetic glyphs; the test `O0LocalParityTests` compares with real crops from your machine and only runs when the environment variable
 `IRIS_O0_FIXTURES` points to the folder (those crops are not in the repository).
 
+*O/0 across frames (off by default, the decision is yours).* The check above judges one frame at a time, and on small plates it is often unsure or flips from frame to frame, which splits the votes of one plate over several spellings
+(`PL0T` and `PLOT`). The reader therefore also reports, for every O or 0 it measured, its place in the name and P(O) before the verdict (`NameplateDetection.O0Evidence`, `TrackEvaluation.O0Evidence`; rows of a multi-row name
+are counted in the joined name). With `NameplateTrackerSettings.O0MultiFrame` on (`O0EvidenceTable`), the tracker adds up the log odds of P(O) per position over the frames of a track (per name with `0` read as `O`; a frame counts at most
++/-4, at most 16 names per track) and votes for the spelling the sum decides once the odds reach 19 to 1 (a total of at least ln 19 = 2.944, positive: `O`, negative: `0`); undecided positions keep the character of the read. It sits right
+after the check for a name that may not start or end with `-` and before the exclusion checks, so the resolved name is what is excluded, counted and voted for. On the 19 training clips it raised the share of exactly spelled votes of the test
+character from 72 % to 95 %, removed one wrong confirmed name and confirmed one plate a frame earlier, but it added one wrong confirmed name (`UNKN0WN`, a misread of the game's placeholder `UNKNOWN` on a small plate, where P(O) is over-confident and the
+frames of one plate are not independent). The counterpart is `NameplateTrackerSettings.ExclusionFoldsO0` (also off by default): the exclusion list and the session exclusions then compare names with `0` read as `O`, so `UNKN0WN` is the excluded
+`UNKNOWN`. The player list and the org lists always match exactly. Turn both on together; neither changes what a single frame reads, and the screenshot exams do not see them. Tests: `O0MultiFrameTests` (the twelve evidence sequences
+of the reference as synthetic probabilities, the tracker with alternating reads of one plate, the folded exclusions).
+
+**Underscore or hyphen.** The model now and then reads a low underscore as a hyphen (16 of 3396 underscores of the test character), and a hyphen at either end voids a vote. The two are told apart by where the bar sits in the line's capital band:
+for every `_` or `-` of a NAME (never a distance line) the reader takes the glyph's own mask columns (the same cut as the O/0 check), finds the bar's rows (the rows with at least a quarter of the ink of its busiest row), and divides the centre
+of those rows, counted from the top of the capitals, by the capital height. An underscore sits at 1.0 to 1.1, a hyphen at about 0.58; **0.87 or more is an underscore, 0.71 or less a hyphen, in between the model's character stays**, and a bar thicker
+than 0.45 capital heights (a letter fragment or a merged glyph) gets no verdict either. The rule runs after the O/0 check, row by row of a multi-row name (each row with its own band), only when the cut gives one glyph per character
+(`UnderscoreHyphenRule`, constants from `model/us-rule.json`). `NameplateDetectorSettings.UnderscoreHyphenRule` is **on by default**: on the 19 training clips it changed no confirmed name and fixed every measured `_` read as `-` (4150 bars, none misjudged,
+the class means are 20 standard deviations apart). It costs about 0.3 ms per read that contains a bar. `UnderscoreHyphenRuleTests` use synthetic bars at known heights (the band edges and a thick blob included); the test `UnderscoreHyphenLocalParityTests`
+compares frac and verdict with real line crops from your machine and only runs when the environment variable `IRIS_US_FIXTURES` points to the folder (those crops are not in the repository).
+
 ## Build and test (Windows)
 
 One-time setup: install the .NET 8 SDK.
@@ -520,7 +538,7 @@ dotnet test IRIS.sln
 (`dotnet test tests\Iris.Core.Tests` runs only the tests project.)
 
 The first run downloads the packages it needs, which takes about a minute.
-Without captured RSI pages, a good result looks like `Passed!  - Failed: 0, Passed: N, Skipped: 7` (the 6 tests that need real RSI pages, see below, plus the local O/0 parity test while `IRIS_O0_FIXTURES` is unset).
+Without captured RSI pages, a good result looks like `Passed!  - Failed: 0, Passed: N, Skipped: 8` (the 6 tests that need real RSI pages, see below, plus the two local parity tests, O/0 and underscore or hyphen, while `IRIS_O0_FIXTURES` and `IRIS_US_FIXTURES` are unset).
 
 ## Run the app (Windows)
 
