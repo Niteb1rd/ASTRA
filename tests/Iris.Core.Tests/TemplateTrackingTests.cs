@@ -255,11 +255,16 @@ public class TemplateTrackingTests
             tracker.ApplyDetection(Detection(first, 200, 300, 1000, vx: 0.2), 1000);
         }
 
-        var plan = tracker.Plan(1500, 33, W, H);
-        var tick = tracker.Update(1500, plan, null, screenUnchanged: true);
+        // half a second of ticks in which the screen did not change (no new picture): nothing moved, so nothing is lost and nothing drifts
+        var attempts = 0;
+        for (var t = 1033.0; t <= 1500; t += 33)
+        {
+            var plan = tracker.Plan(t, 33, W, H);
+            attempts += tracker.Update(t, plan, null, screenUnchanged: true).Attempts;
+        }
 
-        Assert.Equal(0, tick.Attempts);
-        var bracket = Assert.Single(tracker.Snapshot(1500).Brackets); // not lost, though it was last seen 500 ms ago
+        Assert.Equal(0, attempts);
+        var bracket = Assert.Single(tracker.Snapshot(1500).Brackets); // not lost, though the last detection was 500 ms ago
         Assert.Equal(200, bracket.Box.X);
         Assert.Equal(0, bracket.VxPerMs);
     }
