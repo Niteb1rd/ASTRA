@@ -1,63 +1,23 @@
 namespace Iris.Core.Detection;
 
 /// <summary>
-/// Contact codes: the labels the game puts on unidentified contacts and some ships, such as <c>PA-5968-XF</c>: two letters, four
-/// digits, two letters; each of the two hyphens is present or not, independently (8, 9 or 10 characters, as in the Python reference).
-/// They are not player handles, so a nameplate that reads like one is ignored unless the code is on the user's own player list (see <see cref="NameFilter"/>).
-/// This is a test of the SHAPE, not a comparison of two names (those match exactly, see <see cref="LookAlikes"/>): where the pattern wants
-/// letters or digits a slot is a little generous, a letter slot also takes <c>0</c> and <c>1</c> and a digit slot also takes <c>O</c> and <c>I</c>,
-/// because a code that is read slightly wrong must still be recognised as one and ignored (the safe direction).
+/// Contact codes: the labels the game puts on unidentified contacts and some ships, such as <c>PA-5968-XF</c>: exactly two letters, a
+/// hyphen, four digits, a hyphen, two letters (10 characters). They are not player handles, so a nameplate that reads like one is ignored
+/// unless the code is on the user's own player list (see <see cref="NameFilter"/>). The check is exact, with no look-alike tolerance: the
+/// two hyphens make the shape unambiguous, and a code read slightly wrong is simply not ignored (the overlay shows it with the No Match
+/// rule) rather than risking that a real handle without hyphens is taken for a code.
 /// </summary>
 public static class ContactCode
 {
     /// <summary>True when <paramref name="name"/> has the shape of a contact code (case-insensitive).</summary>
     public static bool IsContactCode(string? name)
     {
-        if (name is null)
+        if (name is null || name.Length != 10 || name[2] != '-' || name[7] != '-')
             return false;
-        var length = name.Length;
-        if (length < 8 || length > 10)
-            return false;
-
-        var at = 0;
-        return Letters(name, ref at) && Hyphen(name, ref at)
-            && Digits(name, ref at) && Hyphen(name, ref at)
-            && Letters(name, ref at) && at == length;
+        return IsLetter(name[0]) && IsLetter(name[1])
+            && char.IsAsciiDigit(name[3]) && char.IsAsciiDigit(name[4]) && char.IsAsciiDigit(name[5]) && char.IsAsciiDigit(name[6])
+            && IsLetter(name[8]) && IsLetter(name[9]);
     }
 
-    private static bool Letters(string s, ref int at)
-    {
-        for (var i = 0; i < 2; i++, at++)
-        {
-            if (at >= s.Length)
-                return false;
-            var c = char.ToUpperInvariant(s[at]);
-            if (!(c is >= 'A' and <= 'Z' or '0' or '1'))
-                return false;
-        }
-
-        return true;
-    }
-
-    private static bool Digits(string s, ref int at)
-    {
-        for (var i = 0; i < 4; i++, at++)
-        {
-            if (at >= s.Length)
-                return false;
-            var c = char.ToUpperInvariant(s[at]);
-            if (!(c is >= '0' and <= '9' or 'O' or 'I'))
-                return false;
-        }
-
-        return true;
-    }
-
-    /// <summary>Takes a hyphen if there is one; it is optional.</summary>
-    private static bool Hyphen(string s, ref int at)
-    {
-        if (at < s.Length && s[at] == '-')
-            at++;
-        return true;
-    }
+    private static bool IsLetter(char c) => char.ToUpperInvariant(c) is >= 'A' and <= 'Z';
 }
