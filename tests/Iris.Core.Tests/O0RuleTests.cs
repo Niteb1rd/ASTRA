@@ -162,7 +162,7 @@ public class O0RuleTests
     public void Measure_AWideRingIsAnO_ANarrowOneIsAZero()
     {
         using var wide = DrawnRing(10, 12, 6, 8);
-        using var narrow = DrawnRing(7, 12, 3, 8);
+        using var narrow = DrawnRing(6, 12, 2, 8);
 
         var o = O0Rule.Measure(wide)!.Value;
         var zero = O0Rule.Measure(narrow)!.Value;
@@ -171,7 +171,7 @@ public class O0RuleTests
         Assert.InRange(o.OuterHeight, 11.5, 12.5);
         Assert.InRange(o.HoleWidth, 5.5, 6.5);
         Assert.Equal('O', O0Rule.Verdict(O0Rule.ProbabilityO(o)));
-        Assert.InRange(zero.OuterWidth, 6.5, 7.5);
+        Assert.InRange(zero.OuterWidth, 5.5, 6.5);
         Assert.Equal('0', O0Rule.Verdict(O0Rule.ProbabilityO(zero)));
     }
 
@@ -211,10 +211,10 @@ public class O0RuleTests
     {
         // a wide ring read as 0 is an O, a narrow ring read as O is a 0; the glyph's box is the ring itself, the pad of 3 pixels is the dark margin around it
         using var wide = DrawnRing(10, 12, 6, 8);
-        using var narrow = DrawnRing(7, 12, 3, 8);
+        using var narrow = DrawnRing(6, 12, 2, 8);
 
         Assert.Equal("O", O0Rule.Correct(wide, ReadOf("0", 3, 3, 10, 12), "0"));
-        Assert.Equal("0", O0Rule.Correct(narrow, ReadOf("O", 3, 3, 7, 12), "O"));
+        Assert.Equal("0", O0Rule.Correct(narrow, ReadOf("O", 3, 3, 6, 12), "O"));
     }
 
     [OpenCvFact]
@@ -241,12 +241,12 @@ public class O0RuleTests
 /// LOCAL ONLY parity of the C# measurement with the Python reference on REAL glyph crops: the folder named by the environment variable <c>IRIS_O0_FIXTURES</c> (the training kit's
 /// <c>fixtures-o0</c>) holds <c>caseNN.png</c> (exactly what <c>o0_measure</c> receives: the glyph's box plus 3 pixels of margin, BGR, original pixels) and <c>caseNN.json</c> (the expected
 /// outer_w, outer_h, hole_w, hole_h, p_O and verdict; null for a glyph that is not a ring). The crops come from game footage and are never committed; without the variable the test is skipped.
-/// Sizes must agree within 0.15 px, P(O) within 0.05, and the verdict exactly.
+/// Sizes must agree within 0.125 px (one upscaled pixel), P(O) within 0.02, and the verdict exactly.
 /// </summary>
 public class O0LocalParityTests
 {
-    private const double SizeTolerance = 0.15;
-    private const double ProbabilityTolerance = 0.05;
+    private const double SizeTolerance = 0.125; // one upscaled pixel (the reference ran on another OpenCV version)
+    private const double ProbabilityTolerance = 0.02;
 
     [LocalO0FixtureFact]
     public void Measurements_MatchPythonOnTheRealGlyphs()

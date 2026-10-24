@@ -458,13 +458,13 @@ exactly as `plate_color` / `classify_color` of the reference (`PlateColors`); it
 **Duplicate names.** A player cannot be in two places at once, so one name read on two separate plates means one of the reads is wrong. In order, for every name:
 1. a name on one of your lists (player list, org list, org attribute) is **always shown and never excluded**;
 2. otherwise only WHITE plates count: when the same name is read on 2 or more non-overlapping white plates by both tracks in the same update, within 3 updates,
-   it gets a **session exclusion**: kept in memory, it survives Reset (the user's Reset hotkey) and is gone when IRIS quits;
+   it gets a **session exclusion**: kept in memory, it survives Reset (which happens when the game leaves the front or the overlay is disabled; there is no hotkey) and is gone when IRIS quits;
 3. a session-excluded name gets no bracket, no panel entry and no RSI lookup; the log says once per name `Session exclusion: NAME (seen on 2+ white nameplates)`.
 Nothing is written to `exclusions.txt` any more (`ExclusionList` keeps user and default entries only).
 
 **O/0 check.** The letter model cannot tell `O` from `0` reliably, so the reader measures the glyph on the screen pixels (names only, never the distance line): the glyph is enlarged 8x, thresholded, and the ratio of the
 outer width to height and of the hole width to height decide with a two-feature Gaussian rule whether it is a letter `O` or a zero (`O0Rule`, constants from `model/o0-rule.json`; a verdict needs 95 % probability, otherwise the model's read stays).
-`NameplateDetectorSettings.SubPixelO0Rule` (default on) switches it off. `O0RuleTests` use synthetic glyphs; the test `O0LocalParityTests` compares with real crops from your machine and only runs when the environment variable
+`NameplateDetectorSettings.SubPixelO0Rule` is **on by default, on purpose**; the Python reference flag `o0_rule` defaults to off only so that old results can be reproduced. Setting it to false switches the check off. `O0RuleTests` use synthetic glyphs; the test `O0LocalParityTests` compares with real crops from your machine and only runs when the environment variable
 `IRIS_O0_FIXTURES` points to the folder (those crops are not in the repository).
 
 ## Build and test (Windows)
@@ -485,8 +485,7 @@ dotnet test IRIS.sln
 (`dotnet test tests\Iris.Core.Tests` runs only the tests project.)
 
 The first run downloads the packages it needs, which takes about a minute.
-Without captured RSI pages, a good result looks like `Passed!  - Failed: 0, Passed: N, Skipped: 6`.
-The 6 skipped tests are the ones that need real RSI pages (see below).
+Without captured RSI pages, a good result looks like `Passed!  - Failed: 0, Passed: N, Skipped: 7` (the 6 tests that need real RSI pages, see below, plus the local O/0 parity test while `IRIS_O0_FIXTURES` is unset).
 
 ## Run the app (Windows)
 

@@ -28,8 +28,8 @@ namespace Iris.Core.Cache;
 ///   not_found      kind ('player' or 'org') + name PK | source | last_refreshed
 ///                  The negative cache: RSI answered 404 for this name.
 ///   duplicate_name_counts   name PK | frames | last_seen        (added in schema version 2)
-///                  No longer used: the duplicate rule is now a session rule kept in memory (see SessionExclusions). The table and its API
-///                  stay so that existing cache files keep their schema; nothing writes to it.
+///                  No longer used: the duplicate rule is now a session rule kept in memory (see SessionExclusions). The table is kept (and still created)
+///                  so that existing cache files keep their schema; nothing reads or writes it.
 ///
 /// source is one of: 'player_list', 'org_list', 'org_list_member', 'hotkey' (see <see cref="CacheSource"/>).
 ///
@@ -388,42 +388,6 @@ public sealed class CacheDatabase : IDisposable
     {
         var recordedAt = GetNotFoundTime(kind, name);
         return recordedAt is { } recorded && now - recorded < CacheSettings.NotFoundRetention;
-    }
-
-    // ---------------------------------------------------------------------------------------
-    // Duplicate-name counts (exclusion list)
-    // ---------------------------------------------------------------------------------------
-
-    /// <summary>In how many frames this name has been seen on two separate nameplates so far (0 if never).</summary>
-    public int GetDuplicateFrames(string name)
-    {
-        lock (_gate)
-        {
-            var text = ScalarText("SELECT frames FROM duplicate_name_counts WHERE name = $name", ("$name", name));
-            return text is null ? 0 : int.Parse(text, CultureInfo.InvariantCulture);
-        }
-    }
-
-    /// <summary>Adds one frame to the name's count (starting at 1) and returns the new count.</summary>
-    public int IncrementDuplicateFrames(string name, DateTimeOffset now)
-    {
-        int frames = 0;
-        InTransaction(() =>
-        {
-            Execute(
-                "INSERT INTO duplicate_name_counts (name, frames, last_seen) VALUES ($name, 1, $time) "
-                + "ON CONFLICT(name) DO UPDATE SET frames = frames + 1, last_seen = $time",
-                ("$name", name), ("$time", FormatTime(now)));
-            var text = ScalarText("SELECT frames FROM duplicate_name_counts WHERE name = $name", ("$name", name));
-            frames = text is null ? 0 : int.Parse(text, CultureInfo.InvariantCulture);
-        });
-        return frames;
-    }
-
-    /// <summary>Forgets the name's count (used once the name has been put on the exclusion list).</summary>
-    public void DeleteDuplicateFrames(string name)
-    {
-        InTransaction(() => Execute("DELETE FROM duplicate_name_counts WHERE name = $name", ("$name", name)));
     }
 
     // ---------------------------------------------------------------------------------------

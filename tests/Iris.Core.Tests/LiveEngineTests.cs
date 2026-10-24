@@ -370,10 +370,12 @@ public class LiveEngineTests : IDisposable
         Assert.Empty(third.Snapshot.Panel);
         Assert.DoesNotContain(name, exclusions.Names, StringComparer.OrdinalIgnoreCase); // nothing is written to the permanent list
 
-        // the user puts the player on the list: the list comes first, the name is shown at once
+        // the user puts the player on the list: the list comes first, so the name is no longer filtered; the track needs a fresh confirmation
+        // (about 3 reads, 200 ms apart), so it shows on the third step after the change
         config.Players.Add(new PlayerEntry(name, OverlayColor.Cyan));
         engine.Step(source, Window(frame), config, 1600);
-        var shown = engine.Step(source, Window(frame), config, 1800);
+        engine.Step(source, Window(frame), config, 1800);
+        var shown = engine.Step(source, Window(frame), config, 2000);
         var bracket = Assert.Single(shown.Snapshot.Brackets);
         Assert.Equal(MatchKind.PlayerList, bracket.Kind);
     }

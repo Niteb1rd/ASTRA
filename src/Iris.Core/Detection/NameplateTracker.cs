@@ -593,6 +593,10 @@ public sealed class NameplateTracker
     private readonly NameplateTrackerSettings _settings;
     private readonly SessionExclusions _session;
     private readonly List<NameplateTrack> _tracks = new();
+
+    /// <summary>The most recently closed tracks: a session exclusion marks them too (as the reference marks every track).</summary>
+    private readonly Queue<NameplateTrack> _closedHistory = new();
+    private const int ClosedHistory = 256;
     private int _nextId = 1;
     private long _update;                        // number of Update calls so far (the duplicate rule counts in updates)
     private Func<string, bool>? _isListed;       // the isListed of the Update that is running
@@ -732,7 +736,14 @@ public sealed class NameplateTracker
         }
 
         if (closed.Count > 0)
+        {
             _tracks.RemoveAll(t => closed.Contains(t));
+            foreach (var t in closed)
+                _closedHistory.Enqueue(t);
+            while (_closedHistory.Count > ClosedHistory)
+                _closedHistory.Dequeue();
+        }
+
         return new TrackerUpdate(confirmedNow, closed, correctedNow, _newlyExcluded);
     }
 
@@ -858,7 +869,7 @@ public sealed class NameplateTracker
                 return false; // a listed name is never excluded
             if (_session.TryAdd(name))
                 (_newlyExcluded ??= new List<string>()).Add(name);
-            foreach (var t in _tracks)
+            foreach (var t in _tracks.Concat(_closedHistory))
             {
                 if (string.Equals(t.ConfirmedName, name, StringComparison.Ordinal) || t.Reads.Any(r => string.Equals(r.Name, name, StringComparison.Ordinal)))
                     t.DuplicateExcluded = true;

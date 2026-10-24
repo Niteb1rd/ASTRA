@@ -109,6 +109,8 @@ public static class Program
             var nameplateTracks = 0;
             var confirmedNames = new HashSet<string>();
             var corrections = 0;
+            var closedTracks = new List<NameplateTrack>();
+            var sessionExcluded = new HashSet<string>(StringComparer.Ordinal);
 
             void CloseTracks(IEnumerable<NameplateTrack> closed)
             {
@@ -119,7 +121,7 @@ public static class Program
                     foreach (var c in track.Confirmations)
                         confirmedNames.Add(c.Name);
                     corrections += track.Corrections.Count;
-                    metrics?.AddTrack(clip.Clip, track);
+                    closedTracks.Add(track); // counted at the end of the clip, once the session exclusions are known
                     tracksCsv.WriteLine(TrackRow(clip.Clip, track));
                 }
             }
@@ -167,6 +169,8 @@ public static class Program
                     watch.Stop();
                     times.Add(watch.Elapsed.TotalMilliseconds);
                     metrics?.AddFrame(frame.Clip, frame.Name, watch.Elapsed.TotalMilliseconds);
+                    foreach (var name in update.Excluded)
+                        sessionExcluded.Add(name);
                     CloseTracks(update.Closed);
 
                     var marks = new List<Marked>();
@@ -205,7 +209,14 @@ public static class Program
             }
 
             if (!single)
+            {
                 CloseTracks(tracker.Finish());
+                foreach (var name in tracker.SessionExclusions.Names)
+                    sessionExcluded.Add(name);
+            }
+
+            foreach (var track in closedTracks)
+                metrics?.AddTrack(clip.Clip, track, sessionExcluded);
             summaries.Add(new ClipSummary(clip.Clip, times.Count, nameplateTracks, confirmedNames.Count, corrections, times));
             if (skipped is not null)
                 Console.WriteLine($"{clip.Clip}: skipped: {skipped}");

@@ -188,16 +188,16 @@ public sealed class LiveDetectionEngine : IDisposable
     }
 
     /// <summary>
-    /// True when the name is on one of the user's lists: the player list, the org list or an org attribute rule (through the orgs in the cache), or it is a cached member of a
-    /// listed org whose page has not been looked up yet. Such a name is always shown and never excluded by the duplicate rule.
+    /// True when the name is on one of the user's lists: the player list, or a member of an org on the org list (through the orgs in the cache, or as a cached member of a
+    /// listed org whose page has not been looked up yet). Org attribute rules (No Org, Redacted, archetype, activity) do not count. Such a name is always shown and never
+    /// excluded by the duplicate rule.
     /// </summary>
     private bool IsListed(string name, SocialConfig config)
     {
         if (NameFilter.IsOnPlayerList(name, config))
             return true;
         var orgs = MemoizedOrgs(name);
-        var match = orgs is null ? ColorResolver.ResolveUnknown(name, config) : ColorResolver.Resolve(name, orgs, config);
-        if (match.Kind != MatchKind.NoMatch)
+        if (orgs is not null && ColorResolver.Resolve(name, orgs, config).Kind is MatchKind.PlayerList or MatchKind.OrgList)
             return true;
         if (_isOrgMember is null)
             return false;

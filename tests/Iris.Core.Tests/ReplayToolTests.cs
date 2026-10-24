@@ -124,6 +124,25 @@ public class ReplayToolTests
     }
 
     [Fact]
+    public void Metrics_ASessionExcludedName_IsNeitherFoundNorWrong()
+    {
+        var labels = ClipLabels.ParseClipList("clip1: ALPHA_ONE\n");
+        var metrics = new ReplayMetrics(labels, Array.Empty<string>());
+        foreach (var track in Tracks(
+                     (100, new string?[] { "ALPHA_ONE", "ALPHA_ONE" }),
+                     (400, new string?[] { "ZZZZZZZZ", "ZZZZZZZZ" })))
+            metrics.AddTrack("clip1", track, new[] { "ALPHA_ONE", "ZZZZZZZZ" });
+
+        var g = metrics.Groups["clip1"];
+        Assert.Empty(g.Found);
+        Assert.Empty(g.WrongConfirmed);
+        Assert.Empty(g.WrongFinal);
+        Assert.Equal(new[] { "ALPHA_ONE", "ZZZZZZZZ" }, g.SessionExcluded);
+        Assert.Equal(2, g.SessionExcludedTracks);
+        Assert.Contains("Excluded by the session duplicate rule", metrics.Format());
+    }
+
+    [Fact]
     public void Metrics_ALabeledContactCode_IsFoundWhenRead_AndNotAMissWhenUnread()
     {
         var labels = ClipLabels.ParseClipList("clip1: ALPHA_ONE, PA-5968-XF\nclip2: BRAVO_TWO, QZ-1234-AB\n");
