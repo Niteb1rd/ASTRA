@@ -11,6 +11,9 @@ public class RsiNamesTests
     [InlineData("abcd")]
     [InlineData("a-_9")]
     [InlineData("Under_score-Dash")]
+    [InlineData("_abcd")]       // an underscore may start and end a handle
+    [InlineData("abcd_")]
+    [InlineData("SHIFT_")]
     public void ValidHandles_Accepted(string handle) => Assert.True(RsiNames.IsValidHandle(handle));
 
     [Theory]
@@ -23,17 +26,21 @@ public class RsiNamesTests
     [InlineData("tab\there")]
     [InlineData("trailing-newline\n")]
     [InlineData("Ünicode")]
+    [InlineData("-abcd")]       // a hyphen may not start or end a handle
+    [InlineData("abcd-")]
     public void InvalidHandles_Rejected(string handle) => Assert.False(RsiNames.IsValidHandle(handle));
 
     [Fact]
-    public void Handle_LengthLimitsAre4To25()
+    public void Handle_LengthLimitsAre4To64()
     {
         Assert.Equal(4, RsiNames.MinHandleLength);
-        Assert.Equal(25, RsiNames.MaxHandleLength);
+        Assert.Equal(64, RsiNames.MaxHandleLength);
         Assert.False(RsiNames.IsValidHandle(new string('a', 3)));
         Assert.True(RsiNames.IsValidHandle(new string('a', 4)));
         Assert.True(RsiNames.IsValidHandle(new string('a', 25)));
-        Assert.False(RsiNames.IsValidHandle(new string('a', 26)));
+        Assert.True(RsiNames.IsValidHandle(new string('a', 64)));
+        Assert.False(RsiNames.IsValidHandle(new string('a', 65)));
+        Assert.False(RsiNames.IsValidHandle("-" + new string('a', 10)));
         Assert.False(RsiNames.IsValidHandle(null));
     }
 

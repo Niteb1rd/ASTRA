@@ -7,12 +7,12 @@ namespace Iris.Replay;
 /// <summary>What a read or confirmed name is, compared with the names that are known to be on screen.</summary>
 public enum ReadKind
 {
-    /// <summary>One of the labeled names (exactly, or with the accuracy look-alikes 0/O and 1/I: see <see cref="NameMatcher"/>).</summary>
+    /// <summary>One of the labeled names (exactly, ignoring only upper/lower case: see <see cref="NameMatcher"/>; there is no look-alike tolerance).</summary>
     Labeled,
 
     /// <summary>
-    /// Not a labeled name, but one the app ignores by name: a word of the exclusion list (stars, planets, ships, UNKNOWN; look-alike
-    /// tolerant) or a contact code such as <c>PA-5968-XF</c> (see <see cref="NameFilter"/>).
+    /// Not a labeled name, but one the app ignores by name: a word of the exclusion list (stars, planets, ships, UNKNOWN; exact) or a
+    /// contact code such as <c>PA-5968-XF</c> (see <see cref="NameFilter"/>).
     /// </summary>
     Excluded,
 
@@ -21,12 +21,11 @@ public enum ReadKind
 }
 
 /// <summary>A labeled name that a track confirmed.</summary>
-/// <param name="Label">The labeled name.</param>
-/// <param name="Exact">True when the confirmed text was identical to the label (not only a look-alike of it).</param>
+/// <param name="Label">The labeled name (the confirmed text was identical to it).</param>
 /// <param name="ConfirmedFrame">Frame number at which it was confirmed.</param>
 /// <param name="DelayFrames">Frames from the first read of this name by its track to its confirmation.</param>
 /// <param name="DelayMs">The same in milliseconds of video time.</param>
-public sealed record FoundName(string Label, bool Exact, long ConfirmedFrame, long DelayFrames, double DelayMs);
+public sealed record FoundName(string Label, long ConfirmedFrame, long DelayFrames, double DelayMs);
 
 /// <summary>The measures of one clip (or one image).</summary>
 public sealed class GroupMetrics
@@ -57,11 +56,17 @@ public sealed class GroupMetrics
     /// <summary>Nameplate tracks of excluded names and contact codes.</summary>
     public int FilteredTracks { get; internal set; }
 
+    /// <summary>How often a confirmed name was CORRECTED (switched to another name) by the tracks of the clip.</summary>
+    public int Corrections { get; internal set; }
+
     /// <summary>Per labeled name: the first time a track confirmed it.</summary>
     public Dictionary<string, FoundName> Found { get; } = new();
 
     /// <summary>Confirmed names that are no labeled name, no excluded name, no contact code: the app would look them up.</summary>
     public SortedSet<string> WrongConfirmed { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The wrong names among the names the tracks ended with (their confirmed name when they closed): what is still shown after all corrections.</summary>
+    public SortedSet<string> WrongFinal { get; } = new(StringComparer.Ordinal);
 
     /// <summary>Confirmed names that are not labeled but are ignored by name (exclusion list, contact codes).</summary>
     public SortedSet<string> FilteredConfirmed { get; } = new(StringComparer.Ordinal);
@@ -69,15 +74,11 @@ public sealed class GroupMetrics
     /// <summary>Milliseconds per frame (cheap pass, reads and tracker).</summary>
     public List<double> FrameMs { get; } = new();
 
-    /// <summary>Single image mode: per labeled name, the frames where it was read exactly / exactly or with look-alikes.</summary>
-    public Dictionary<string, HashSet<int>> ExactFrames { get; } = new();
-
-    public Dictionary<string, HashSet<int>> FuzzyFrames { get; } = new();
+    /// <summary>Single image mode: per labeled name, the frames where it was read (exactly).</summary>
+    public Dictionary<string, HashSet<int>> ReadFrames { get; } = new();
 
     /// <summary>Labeled names confirmed (or, in single image mode, read) at least once.</summary>
-    public int NamesFound => Found.Count + FuzzyFrames.Count;
-
-    public int NamesExact => Found.Values.Count(f => f.Exact) + ExactFrames.Count;
+    public int NamesFound => Found.Count + ReadFrames.Count;
 
     public double? MedianDelayFrames => Found.Count == 0 ? null : Program.Median(Found.Values.Select(f => (double)f.DelayFrames).ToList());
 
@@ -93,7 +94,7 @@ public sealed class GroupMetrics
 public sealed class ReplayMetrics
 {
     private readonly ClipLabels _labels;
-    private readonly HashSet<string> _excludedFolded;
+    private readonly HashSet<string> _excluded;
     private readonly string[] _known;
     private readonly SortedDictionary<string, GroupMetrics> _groups = new(StringComparer.Ordinal);
 
@@ -101,8 +102,8 @@ public sealed class ReplayMetrics
     {
         _labels = labels;
         var excluded = excludedNames.Select(n => n.Trim()).Where(n => n.Length > 0).ToList();
-        _excludedFolded = new HashSet<string>(excluded.Select(LookAlikes.FoldName), StringComparer.Ordinal);
-        _known = labels.AllNames().Concat(excluded).Select(LookAlikes.FoldName).Distinct(StringComparer.Ordinal).ToArray();
+        _excluded = new HashSet<string>(excluded, StringComparer.OrdinalIgnoreCase);
+        _known = labels.AllNames().Concat(excluded).Select(n => n.ToUpperInvariant()).Distinct(StringComparer.Ordinal).ToArray();
     }
 
     public IReadOnlyDictionary<string, GroupMetrics> Groups => _groups;
@@ -113,29 +114,16 @@ public sealed class ReplayMetrics
     /// <summary>The names that are known for a group, or null when the label file does not mention it.</summary>
     public IReadOnlyList<string>? LabelsOf(string key) => _labels.NamesFor(key);
 
-    /// <summary>Classifies one read or confirmed name against a vocabulary (the labeled names of its clip or image).</summary>
-    public ReadKind Classify(string read, IReadOnlyList<string> vocabulary, out string? label, out bool exact)
+    /// <summary>
+    /// Classifies one read or confirmed name against a vocabulary (the labeled names of its clip or image). Names match exactly (ignoring only
+    /// upper/lower case): a read with a 0 for an O is a wrong read, not a found name.
+    /// </summary>
+    public ReadKind Classify(string read, IReadOnlyList<string> vocabulary, out string? label)
     {
-        label = null;
-        exact = false;
-        foreach (var name in vocabulary)
-        {
-            if (name == read)
-            {
-                label = name;
-                exact = true;
-                return ReadKind.Labeled;
-            }
-        }
-
-        var match = NameMatcher.BestMatch(read, vocabulary);
-        if (match is not null)
-        {
-            label = match;
+        label = NameMatcher.BestMatch(read, vocabulary);
+        if (label is not null)
             return ReadKind.Labeled;
-        }
-
-        if (_excludedFolded.Contains(LookAlikes.FoldName(read)) || ContactCode.IsContactCode(read))
+        if (_excluded.Contains(read) || ContactCode.IsContactCode(read))
             return ReadKind.Excluded;
         return ReadKind.Wrong;
     }
@@ -168,9 +156,9 @@ public sealed class ReplayMetrics
     /// Counts the reads of one frame (also for the "match" columns of the csv). In single image mode (screenshot labels) these reads are
     /// what is measured: names read exactly, and wrong reads.
     /// </summary>
-    public void AddReads(string clip, string frameName, int frameNumber, IReadOnlyList<NameplateDetection> detections, out IReadOnlyList<(string? Label, bool Exact)> matches)
+    public void AddReads(string clip, string frameName, int frameNumber, IReadOnlyList<NameplateDetection> detections, out IReadOnlyList<string?> matches)
     {
-        var list = new List<(string?, bool)>();
+        var list = new List<string?>();
         matches = list;
         var key = GroupKey(clip, frameName);
         var vocabulary = _labels.NamesFor(key);
@@ -181,14 +169,12 @@ public sealed class ReplayMetrics
         foreach (var detection in detections)
         {
             group.Reads++;
-            var kind = Classify(detection.Name, vocabulary, out var label, out var exact);
-            list.Add((label, exact));
+            var kind = Classify(detection.Name, vocabulary, out var label);
+            list.Add(label);
             switch (kind)
             {
                 case ReadKind.Labeled:
-                    AddFrameTo(group.FuzzyFrames, label!, frameNumber);
-                    if (exact)
-                        AddFrameTo(group.ExactFrames, label!, frameNumber);
+                    AddFrameTo(group.ReadFrames, label!, frameNumber);
                     break;
                 case ReadKind.Excluded:
                     group.ExcludedReads++;
@@ -209,18 +195,19 @@ public sealed class ReplayMetrics
         if (vocabulary is null || group is null)
             return;
 
+        group.Corrections += track.Corrections.Count;
+        if (track.ConfirmedName is not null && Classify(track.ConfirmedName, vocabulary, out _) == ReadKind.Wrong)
+            group.WrongFinal.Add(track.ConfirmedName);
         foreach (var (name, frame, ms) in track.Confirmations)
         {
-            switch (Classify(name, vocabulary, out var label, out var exact))
+            switch (Classify(name, vocabulary, out var label))
             {
                 case ReadKind.Labeled:
                     var first = track.FirstReadFrame.TryGetValue(name, out var f) ? f : frame;
                     var firstMs = track.Reads.FirstOrDefault(r => r.Name == name)?.FirstMs ?? ms;
-                    var found = new FoundName(label!, exact, frame, frame - first, ms - firstMs);
+                    var found = new FoundName(label!, frame, frame - first, ms - firstMs);
                     if (!group.Found.TryGetValue(label!, out var known) || frame < known.ConfirmedFrame)
-                        group.Found[label!] = known is not null && known.Exact && !exact ? found with { Exact = true } : found;
-                    else if (exact && !known.Exact)
-                        group.Found[label!] = known with { Exact = true };
+                        group.Found[label!] = found;
                     break;
                 case ReadKind.Excluded:
                     group.FilteredConfirmed.Add(name);
@@ -241,7 +228,7 @@ public sealed class ReplayMetrics
             return;
         }
 
-        switch (Classify(best, vocabulary, out _, out _))
+        switch (Classify(best, vocabulary, out _))
         {
             case ReadKind.Labeled:
                 break;
@@ -263,7 +250,7 @@ public sealed class ReplayMetrics
     /// </summary>
     public bool SimilarToKnown(string read)
     {
-        var folded = LookAlikes.FoldName(read);
+        var folded = read.ToUpperInvariant();
         foreach (var known in _known)
         {
             if (folded.Length >= 3 && known.StartsWith(folded, StringComparison.Ordinal))
@@ -310,22 +297,23 @@ public sealed class ReplayMetrics
             return text.ToString();
         }
 
-        const string row = "{0,-24} {1,6} {2,6} | {3,9} {4,6} | {5,8} {6,8} | {7,6} {8,5} {9,5} {10,6} {11,5} | {12,7} {13,7}";
-        text.AppendLine(string.Format(inv, row, "clip", "frames", "labels", "found", "exact", "delay fr", "delay ms", "wrong", "junk", "anim", "unread", "ignrd", "ms med", "ms p95"));
-        int frames = 0, labels = 0, found = 0, exact = 0, wrong = 0, junk = 0, anim = 0, unread = 0, filtered = 0;
+        const string row = "{0,-24} {1,6} {2,6} | {3,9} | {4,8} {5,8} | {6,6} {7,8} {8,5} | {9,5} {10,5} {11,6} {12,5} | {13,7} {14,7}";
+        text.AppendLine(string.Format(inv, row, "clip", "frames", "labels", "found", "delay fr", "delay ms", "wrong", "wrongEnd", "corr", "junk", "anim", "unread", "ignrd", "ms med", "ms p95"));
+        int frames = 0, labels = 0, found = 0, wrong = 0, wrongEnd = 0, corrections = 0, junk = 0, anim = 0, unread = 0, filtered = 0;
         var delaysFrames = new List<double>();
         var delaysMs = new List<double>();
         var allMs = new List<double>();
         foreach (var (key, g) in _groups)
         {
-            text.AppendLine(string.Format(inv, row, Shorten(key, 24), g.Frames, g.Labels, $"{g.Found.Count}/{g.Labels}", g.Found.Values.Count(x => x.Exact),
-                Number(g.MedianDelayFrames), Number(g.MedianDelayMs), g.WrongConfirmed.Count, g.JunkTracks, g.AnimationTracks, g.UnreadTracks,
-                g.FilteredTracks, Number(Program.Median(g.FrameMs)), Number(Program.Percentile95(g.FrameMs))));
+            text.AppendLine(string.Format(inv, row, Shorten(key, 24), g.Frames, g.Labels, $"{g.Found.Count}/{g.Labels}",
+                Number(g.MedianDelayFrames), Number(g.MedianDelayMs), g.WrongConfirmed.Count, g.WrongFinal.Count, g.Corrections, g.JunkTracks, g.AnimationTracks,
+                g.UnreadTracks, g.FilteredTracks, Number(Program.Median(g.FrameMs)), Number(Program.Percentile95(g.FrameMs))));
             frames += g.Frames;
             labels += g.Labels;
             found += g.Found.Count;
-            exact += g.Found.Values.Count(x => x.Exact);
             wrong += g.WrongConfirmed.Count;
+            wrongEnd += g.WrongFinal.Count;
+            corrections += g.Corrections;
             junk += g.JunkTracks;
             anim += g.AnimationTracks;
             unread += g.UnreadTracks;
@@ -335,13 +323,14 @@ public sealed class ReplayMetrics
             allMs.AddRange(g.FrameMs);
         }
 
-        text.AppendLine(string.Format(inv, row, "TOTAL", frames, labels, $"{found}/{labels}", exact,
+        text.AppendLine(string.Format(inv, row, "TOTAL", frames, labels, $"{found}/{labels}",
             Number(delaysFrames.Count == 0 ? null : Program.Median(delaysFrames)), Number(delaysMs.Count == 0 ? null : Program.Median(delaysMs)),
-            wrong, junk, anim, unread, filtered, Number(Program.Median(allMs)), Number(Program.Percentile95(allMs))));
+            wrong, wrongEnd, corrections, junk, anim, unread, filtered, Number(Program.Median(allMs)), Number(Program.Percentile95(allMs))));
         text.AppendLine();
-        text.AppendLine("found = labeled names a track CONFIRMED (read identically several times; look-alikes 0/O and 1/I count), exact = confirmed with exactly the labeled spelling;");
+        text.AppendLine("found = labeled names a track CONFIRMED (read identically several times, with exactly the labeled spelling: names match exactly, 0/O and 1/I are different);");
         text.AppendLine("delay = median, over the found names, from the first read of the name to its confirmation (frames and ms of video time);");
-        text.AppendLine("wrong = names CONFIRMED that are not labeled, not excluded, not contact codes: the app would look them up (the target is 0);");
+        text.AppendLine("wrong = names CONFIRMED that are not labeled, not excluded, not contact codes: the app would look them up (the target is 0); wrongEnd = the same for the name each track ended with, after corrections;");
+        text.AppendLine("corr = confirmed names that were CORRECTED (the track switched to another name that it read more often over the recent window);");
         text.AppendLine("junk / anim / unread = nameplate tracks whose best read is none of the known names / a stage or near miss of one / nothing readable; ignrd = tracks of excluded names and contact codes.");
 
         var first = true;
@@ -386,23 +375,22 @@ public sealed class ReplayMetrics
 
     private void FormatImages(StringBuilder text, IFormatProvider inv)
     {
-        const string row = "{0,-24} {1,6} | {2,9} {3,9} | {4,7} {5,7} {6,7}";
-        text.AppendLine(string.Format(inv, row, "image", "labels", "exact", "close", "wrong", "excl.", "reads"));
-        int labels = 0, exact = 0, close = 0, wrong = 0, excluded = 0, reads = 0;
+        const string row = "{0,-24} {1,6} | {2,9} | {3,7} {4,7} {5,7}";
+        text.AppendLine(string.Format(inv, row, "image", "labels", "read", "wrong", "excl.", "reads"));
+        int labels = 0, read = 0, wrong = 0, excluded = 0, reads = 0;
         foreach (var (key, g) in _groups)
         {
-            text.AppendLine(string.Format(inv, row, Shorten(key, 24), g.Labels, $"{g.ExactFrames.Count}/{g.Labels}", $"{g.FuzzyFrames.Count}/{g.Labels}", g.WrongReads, g.ExcludedReads, g.Reads));
+            text.AppendLine(string.Format(inv, row, Shorten(key, 24), g.Labels, $"{g.ReadFrames.Count}/{g.Labels}", g.WrongReads, g.ExcludedReads, g.Reads));
             labels += g.Labels;
-            exact += g.ExactFrames.Count;
-            close += g.FuzzyFrames.Count;
+            read += g.ReadFrames.Count;
             wrong += g.WrongReads;
             excluded += g.ExcludedReads;
             reads += g.Reads;
         }
 
-        text.AppendLine(string.Format(inv, row, "TOTAL", labels, $"{exact}/{labels}", $"{close}/{labels}", wrong, excluded, reads));
+        text.AppendLine(string.Format(inv, row, "TOTAL", labels, $"{read}/{labels}", wrong, excluded, reads));
         text.AppendLine();
-        text.AppendLine("Every image is read once, without the tracker. exact = labeled names read exactly; close = with the look-alikes 0/O and 1/I;");
+        text.AppendLine("Every image is read once, without the tracker. read = labeled names read exactly (0/O and 1/I are different);");
         text.AppendLine("wrong = reads that are no labeled name, no excluded name, no contact code; excl. = excluded names and contact codes.");
     }
 

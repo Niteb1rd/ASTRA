@@ -11,14 +11,14 @@ namespace Iris.Core.Detection;
 /// <item><b>Cheap pass</b> (<see cref="FindCandidates"/>). Crop to the scan region (<see cref="NameplateDetectorSettings"/>). Color mask: a pixel is
 /// text when it is locally brighter than its 11x11 surroundings (top-hat of its channel) AND cyan or white, red (hostile) or green
 /// (friendly) in hue. Drop shapes taller than a letter, join the letters of a word with a 7x1 dilation, keep the connected shapes that look
-/// like a text line (10 to 22 pixels high, 24 to 400 wide, partly filled). A line is ISOLATED when there is no ink (other than specks) within
+/// like a text line (10 to 22 pixels high, 24 to <see cref="MaxLineWidth"/> = 832 wide, partly filled). A line is ISOLATED when there is no ink (other than specks) within
 /// <see cref="NameplateDetectorSettings.ClearLines"/> line heights to its left and right. A pair is an isolated line directly above another
 /// isolated line (gap up to 1.4 line heights), about as high, centered on it, and not a left aligned label column. A targeted nameplate prints
 /// its speed after the distance (<c>9.0km [-29m/s]</c>); the whole line is centered under the name. When the line joiner leaves the speed group as a
 /// box of its own, the two boxes are also offered as one joined line (<see cref="SpeedUnions"/>), which can only be the lower line of a pair.</item>
 /// <item><b>Evaluate</b> (<see cref="Evaluate"/>). The lower line is read in DISTANCE MODE (the characters 0-9 . k m and the digit look-alikes;
 /// the period is not dropped as noise) and must be exactly <c>number.digit</c> + <c>m</c> or <c>km</c>, see <see cref="DistanceLineRule"/>: the
-/// ANCHOR (one word gap after the unit may be followed by the <c>[</c> of a speed group, which is then ignored). Only then the upper line is read with the name alphabet; it must be ONE word of 4 to 25 characters A-Z 0-9 - _. If it is also read
+/// ANCHOR (one word gap after the unit may be followed by the <c>[</c> of a speed group, which is then ignored). Only then the upper line is read with the name alphabet; it must be ONE word of 4 to 64 characters A-Z 0-9 - _ that does not start or end with - (such a read is a nameplate without a vote; "_" may stand anywhere). If it is also read
 /// surely enough (score per letter at least <see cref="NameplateDetectorSettings.MinNameScore"/>) the evaluation carries a
 /// <see cref="NameplateDetection"/>, which is one vote for that name.</item>
 /// <item><b>Track</b> (<see cref="NameplateTracker"/>). Reads are not trusted one by one: the tracker confirms a name after it was read identically
@@ -34,6 +34,14 @@ public sealed class NameplateDetector : IDisposable
     // Top-hat thresholds and color rules of the text mask (0 to 255 intensities, not pixel sizes: not scaled).
     private const double TopHatMin = 28;
     private const double GreenTopHatMin = 20;
+
+    /// <summary>
+    /// The widest text line, in pixels of a frame 1440 high (scaled with the frame height), that the cheap pass accepts: 832 = 64 characters (the
+    /// longest handle) at 13 px each. A letter advances 10.1 px on average at 1440 (measured on 2801 reads of labeled names of 6 or more letters:
+    /// median 10.0, 95th percentile 11.0, widest 11.7, the same at every line height from 11 to 22 px), so a 64 character name is about 650 px wide
+    /// and 750 px even with only wide letters; 832 leaves 11 % over the widest advance seen. It was 400 (about 40 characters).
+    /// </summary>
+    public const int MaxLineWidth = 832;
 
     /// <summary>The characters a name is read with.</summary>
     public const string NameAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
@@ -139,6 +147,8 @@ public sealed class NameplateDetector : IDisposable
             score += piece.Score;
         if (!IsOneWord(nameRead) || !IsName(text))
             return PairEvaluation.No;
+        if (!NameShape.HasValidEdges(text))
+            return new PairEvaluation(true, null); // a nameplate, but a name may not start or end with -: no vote
         if (score / text.Length < _settings.MinNameScore)
             return new PairEvaluation(true, null); // a nameplate, but this read is too unsure to vote
 
@@ -301,7 +311,7 @@ public sealed class NameplateDetector : IDisposable
         var maxHeight = Scaled(frameHeight, 22);
         var minHeight = Scaled(frameHeight, 10);
         var minWidth = Scaled(frameHeight, 24);
-        var maxWidth = Scaled(frameHeight, 400);
+        var maxWidth = Scaled(frameHeight, MaxLineWidth);
         var speck = Math.Max(1, (int)Math.Floor(_settings.SpeckArea * Math.Pow(frameHeight / (double)_settings.ReferenceHeight, 2) + 0.5));
 
         var boxes = new List<Rect>();
@@ -636,7 +646,7 @@ public sealed class NameplateDetector : IDisposable
         return true;
     }
 
-    /// <summary>The structure of a handle: 4 to 25 characters of A-Z, 0-9, "-" and "_".</summary>
+    /// <summary>The structure of a handle: 4 to 64 characters of A-Z, 0-9, "-" and "_" (the edge rule is <see cref="NameShape"/>).</summary>
     private bool IsName(string text)
     {
         if (text.Length < _settings.MinNameLength || text.Length > _settings.MaxNameLength)

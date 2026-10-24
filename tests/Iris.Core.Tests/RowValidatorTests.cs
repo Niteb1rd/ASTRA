@@ -30,7 +30,7 @@ public class RowValidatorTests : IDisposable
         var result = await Validator().ValidatePlayerAsync(text, NoOthers);
 
         Assert.Equal(RowCheckState.InvalidFormat, result.State);
-        Assert.Equal("Handles are 4 to 25 characters: letters, digits, - and _", result.Message);
+        Assert.Equal("Handles are 4 to 64 characters: letters, digits, - and _ (not starting or ending with -)", result.Message);
         Assert.Empty(_env.Rsi.Calls);
     }
 

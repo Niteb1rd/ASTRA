@@ -55,6 +55,9 @@ public class ReplayToolTests
         new[] { "a", "--every" },
         new[] { "a", "--every", "0" },
         new[] { "a", "--every", "x" },
+        new[] { "a", "--fps" },
+        new[] { "a", "--fps", "0" },
+        new[] { "a", "--fps", "x" },
         new[] { "a", "--region", "0.1,0.2" },
         new[] { "a", "--region", "0.9,0.1,0.1,0.7" },
         new[] { "a", "--bogus" },
@@ -126,7 +129,7 @@ public class ReplayToolTests
         var metrics = new ReplayMetrics(labels, new[] { "Stanton", "UNKNOWN" });
 
         metrics.AddReads("clip1", "f1", 1, new[] { Detection("ALPHA_ONE"), Detection("UNKNOWN") }, out var m1);
-        metrics.AddReads("clip1", "f2", 2, new[] { Detection("ALPHA_0NE"), Detection("ZZZZZZZZ") }, out var m2);   // look-alike, wrong
+        metrics.AddReads("clip1", "f2", 2, new[] { Detection("ALPHA_0NE"), Detection("ZZZZZZZZ") }, out var m2);   // a 0 for the O is another name: both wrong
         metrics.AddReads("clip1", "f3", 3, Array.Empty<NameplateDetection>(), out _);
         metrics.AddReads("clip1", "f4", 4, new[] { Detection("BRAVO-TWO"), Detection("PA-5968-XF") }, out _);    // a contact code is ignored by name
         metrics.AddReads("other", "g1", 1, new[] { Detection("ALPHA_ONE") }, out var m3);                        // clip without labels
@@ -135,14 +138,12 @@ public class ReplayToolTests
         Assert.Equal(2, g.Labels);
         Assert.Equal(6, g.Reads);   // 2 + 2 + 0 + 2 (the clip without labels is not counted)
         Assert.Equal(2, g.ExcludedReads);
-        Assert.Equal(1, g.WrongReads);
-        Assert.Equal(2, g.ExactFrames.Count);
-        Assert.Equal(2, g.FuzzyFrames.Count);
-        Assert.Equal(new HashSet<int> { 1 }, g.ExactFrames["ALPHA_ONE"]);
-        Assert.Equal(new HashSet<int> { 1, 2 }, g.FuzzyFrames["ALPHA_ONE"]);
-        Assert.Equal(("ALPHA_ONE", true), m1[0]);
-        Assert.Equal(("ALPHA_ONE", false), m2[0]);
-        Assert.Null(m2[1].Label);
+        Assert.Equal(2, g.WrongReads);
+        Assert.Equal(2, g.ReadFrames.Count);
+        Assert.Equal(new HashSet<int> { 1 }, g.ReadFrames["ALPHA_ONE"]);   // frame 2 read ALPHA_0NE: not ALPHA_ONE
+        Assert.Equal("ALPHA_ONE", m1[0]);
+        Assert.Null(m2[0]);
+        Assert.Null(m2[1]);
         Assert.Empty(m3);
         Assert.DoesNotContain("other", metrics.Groups.Keys);
     }
@@ -196,10 +197,11 @@ public class ReplayToolTests
         var g = metrics.Groups["clip1"];
         var found = Assert.Single(g.Found);
         Assert.Equal("ALPHA_ONE", found.Key);
-        Assert.True(found.Value.Exact);
         Assert.Equal(1, found.Value.DelayFrames);
         Assert.Equal(100.0, found.Value.DelayMs);
         Assert.Equal(new[] { "ZZZZZZZZ" }, g.WrongConfirmed);
+        Assert.Equal(new[] { "ZZZZZZZZ" }, g.WrongFinal);
+        Assert.Equal(0, g.Corrections);
         Assert.Equal(new[] { "UNKNOWN" }, g.FilteredConfirmed);
         Assert.Equal(6, g.NameplateTracks);
         Assert.Equal(1, g.AnimationTracks);
@@ -215,7 +217,7 @@ public class ReplayToolTests
     }
 
     [Fact]
-    public void Metrics_ALookAlikeConfirmation_IsFoundButNotExact()
+    public void Metrics_ALookAlikeConfirmation_IsWrong_NotFound()
     {
         var labels = ClipLabels.ParseClipList("clip1: ALPHA_ONE\n");
         var metrics = new ReplayMetrics(labels, Array.Empty<string>());
@@ -223,8 +225,33 @@ public class ReplayToolTests
             metrics.AddTrack("clip1", track);
 
         var g = metrics.Groups["clip1"];
-        Assert.False(g.Found["ALPHA_ONE"].Exact);
-        Assert.Empty(g.WrongConfirmed);
+        Assert.Empty(g.Found);   // names match exactly: the zero is not an O
+        Assert.Equal(new[] { "ALPHA_0NE" }, g.WrongConfirmed);
+    }
+
+    [Fact]
+    public void Metrics_CountCorrections_AndTheWrongNamesThatRemain()
+    {
+        var labels = ClipLabels.ParseClipList("clip1: ALPHA_ONE\n");
+        var metrics = new ReplayMetrics(labels, Array.Empty<string>());
+        // confirmed ZZZZZZZZ at frame 1; a confirmed track is read once a second, then ALPHA_ONE is read three times (frames 11 to 13) and corrects it
+        var reads = new string?[14];
+        reads[0] = reads[1] = "ZZZZZZZZ";
+        reads[11] = reads[12] = reads[13] = "ALPHA_ONE";
+        var track = Assert.Single(Tracks((100, reads)));
+        Assert.Equal("ALPHA_ONE", track.ConfirmedName);
+        Assert.Single(track.Corrections);
+
+        metrics.AddTrack("clip1", track);
+
+        var g = metrics.Groups["clip1"];
+        Assert.Equal(1, g.Corrections);
+        Assert.Equal(new[] { "ZZZZZZZZ" }, g.WrongConfirmed);   // it was shown for a while
+        Assert.Empty(g.WrongFinal);                              // but it is not what the track ended with
+        var found = g.Found["ALPHA_ONE"];
+        Assert.Equal(2, found.DelayFrames);                      // first read at frame 11, confirmed at frame 13
+        Assert.Equal(200.0, found.DelayMs);
+        Assert.Contains("corr", metrics.Format());
     }
 
     [Fact]
@@ -238,7 +265,7 @@ public class ReplayToolTests
         metrics.AddFrame("Names", "shot2.jpg", 5.0);
         metrics.AddReads("Names", "shot2.jpg", 2, new[] { Detection("ALPHA_ONE") }, out _);   // not expected there: wrong
 
-        Assert.Single(metrics.Groups["shot1.jpg"].ExactFrames);
+        Assert.Single(metrics.Groups["shot1.jpg"].ReadFrames);
         Assert.Equal(1, metrics.Groups["shot2.jpg"].WrongReads);
         Assert.Equal(0, metrics.Groups["shot2.jpg"].Labels);
         Assert.Contains("TOTAL", metrics.Format());

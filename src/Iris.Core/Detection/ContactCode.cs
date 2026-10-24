@@ -4,8 +4,9 @@ namespace Iris.Core.Detection;
 /// Contact codes: the labels the game puts on unidentified contacts and some ships, such as <c>PA-5968-XF</c>: two letters, four
 /// digits, two letters; each of the two hyphens is present or not, independently (8, 9 or 10 characters, as in the Python reference).
 /// They are not player handles, so a nameplate that reads like one is ignored unless the code is on the user's own player list (see <see cref="NameFilter"/>).
-/// The accuracy look-alikes of <see cref="LookAlikes"/> are tolerated where the pattern wants letters or digits: a letter slot also takes
-/// <c>0</c> and <c>1</c> (an <c>O</c> or <c>I</c> read as a digit), a digit slot also takes <c>O</c> and <c>I</c>.
+/// This is a test of the SHAPE, not a comparison of two names (those match exactly, see <see cref="LookAlikes"/>): where the pattern wants
+/// letters or digits a slot is a little generous, a letter slot also takes <c>0</c> and <c>1</c> and a digit slot also takes <c>O</c> and <c>I</c>,
+/// because a code that is read slightly wrong must still be recognised as one and ignored (the safe direction).
 /// </summary>
 public static class ContactCode
 {

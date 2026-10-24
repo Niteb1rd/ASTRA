@@ -39,20 +39,21 @@ public class ColorAndPanelTests
     }
 
     [Fact]
-    public void PlayerList_MatchesLookAlikeReads()
+    public void PlayerList_MatchesExactly_NotLookAlikeReads()
     {
         var c = Config(c => c.Players.Add(new PlayerEntry("Nitebird", OverlayColor.Cyan)));
-        foreach (var read in new[] { "N1TEBIRD", "NITEB1RD", "n1teb1rd" })
+        foreach (var read in new[] { "Nitebird", "NITEBIRD", "nitebird" })
         {
-            var m = ColorResolver.Resolve(read, Nitebird, c);
-            Assert.Equal(MatchKind.PlayerList, m.Kind);
-            Assert.Equal(OverlayColor.Cyan, m.Color);
-            var unknown = ColorResolver.ResolveUnknown(read, c);
-            Assert.Equal(MatchKind.PlayerList, unknown.Kind);
-            Assert.Equal(OverlayColor.Cyan, unknown.Color);
+            Assert.Equal(MatchKind.PlayerList, ColorResolver.Resolve(read, Nitebird, c).Kind);
+            Assert.Equal(MatchKind.PlayerList, ColorResolver.ResolveUnknown(read, c).Kind);
         }
 
-        Assert.Equal(MatchKind.NoMatch, ColorResolver.Resolve("N2TEBIRD", Nitebird, c).Kind);
+        // a zero for the O, a one for the I: no look-alike tolerance, these are other names
+        foreach (var read in new[] { "N1TEBIRD", "NITEB1RD", "n1teb1rd", "N2TEBIRD" })
+        {
+            Assert.Equal(MatchKind.NoMatch, ColorResolver.Resolve(read, Nitebird, c).Kind);
+            Assert.Equal(MatchKind.NoMatch, ColorResolver.ResolveUnknown(read, c).Kind);
+        }
     }
 
     [Fact]

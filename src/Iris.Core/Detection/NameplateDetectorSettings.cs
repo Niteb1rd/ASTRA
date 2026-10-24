@@ -24,17 +24,17 @@ public sealed record NameplateDetectorSettings
 
     /// <summary>
     /// Frame height for which the pixel constants of the detector (the 11 pixel top-hat window, letter heights of 10 to 22, line
-    /// widths of 24 to 400, the 7 pixel join of letters, the pairing tolerances and the speck size) were tuned: 1440, the height of a
+    /// widths of 24 to 832 (<see cref="NameplateDetector.MaxLineWidth"/>), the 7 pixel join of letters, the pairing tolerances and the speck size) were tuned: 1440, the height of a
     /// 3440x1440 screen. For another frame height h every one of them is multiplied by h / ReferenceHeight (rounded, at least 1).
     /// The letter reader (<see cref="Letters.NameplateReader"/>) is NOT scaled: it enlarges every line crop 4 times and measures
     /// letters relative to their own capital height, so it copes with other sizes by itself, but its model was trained at 1440.
     /// </summary>
     public int ReferenceHeight { get; init; } = 1440;
 
-    /// <summary>A handle has 4 to 25 characters (letters, digits, "-" and "_").</summary>
+    /// <summary>A handle has 4 to 64 characters (letters, digits, "-" and "_"; it may not start or end with "-").</summary>
     public int MinNameLength { get; init; } = 4;
 
-    public int MaxNameLength { get; init; } = 25;
+    public int MaxNameLength { get; init; } = 64;
 
     /// <summary>
     /// The name read must be at least this sure to count as a vote: the mean log probability per letter (closer to 0 is surer; clean

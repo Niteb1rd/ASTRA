@@ -8,7 +8,7 @@
   ],
   "ref_height": 1440,
   "name_min": 4,
-  "name_max": 25,
+  "name_max": 64,
   "min_name_score": -0.2,
   "min_dist_score": -0.35,
   "max_dist_gap": 4.0,

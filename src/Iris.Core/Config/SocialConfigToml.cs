@@ -56,9 +56,9 @@ public static class SocialConfigToml
     public const string FormatId = "sc-social-overlay";
     public const int FormatVersion = 1;
 
-    // RSI handles and SIDs: letters, digits, hyphen, underscore. No spaces or other symbols.
+    // RSI handles and SIDs: letters, digits, hyphen, underscore. No spaces or other symbols. A handle may not start or end with a hyphen.
     private static readonly Regex HandleRe = new(
-        "^[A-Za-z0-9_-]{" + RsiNames.MinHandleLength + "," + RsiNames.MaxHandleLength + "}$", RegexOptions.Compiled);
+        "^(?!-)[A-Za-z0-9_-]{" + RsiNames.MinHandleLength + "," + RsiNames.MaxHandleLength + "}(?<!-)$", RegexOptions.Compiled);
     private static readonly Regex SidRe = new("^[A-Za-z0-9_-]{1,20}$", RegexOptions.Compiled);
 
     // ------------------------------------------------------------------ write
@@ -185,7 +185,7 @@ public static class SocialConfigToml
             WarnUnknown(t, path, warnings, "handle", "color");
             if (handle is null || color is null) continue;
             if (!HandleRe.IsMatch(handle))
-                errors.Add($"{path}.handle: \"{handle}\" is not a valid handle (4 to 25 characters: letters, digits, - and _ only).");
+                errors.Add($"{path}.handle: \"{handle}\" is not a valid handle (4 to 64 characters: letters, digits, - and _ only; not starting or ending with -).");
             else if (!seenHandles.Add(handle))
                 errors.Add($"{path}.handle: \"{handle}\" is listed more than once.");
             else

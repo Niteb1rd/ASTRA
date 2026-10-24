@@ -288,29 +288,44 @@ public class ExclusionListTests : IDisposable
     }
 
     [Fact]
-    public void IsExcluded_ToleratesTheAccuracyLookAlikes_Only()
+    public void IsExcluded_IsExact_IgnoringOnlyTheCase()
     {
         var path = PathOf();
         WriteRaw(path, "Hurston\nLorville\n");
         var list = Load(path);
 
-        Assert.True(list.IsExcluded("HURST0N"));
-        Assert.True(list.IsExcluded("hurst0n"));
-        Assert.True(list.IsExcluded("L0RV1LLE"));
-        Assert.True(list.IsExcluded("LORVILLE"));
+        Assert.True(list.IsExcluded("HURSTON"));
+        Assert.True(list.IsExcluded("hurston"));
+        Assert.True(list.IsExcluded(" Lorville "));
+        Assert.False(list.IsExcluded("HURST0N"));     // 0 for O: no look-alike tolerance
+        Assert.False(list.IsExcluded("L0RV1LLE"));
         Assert.False(list.IsExcluded("HURSTQN"));
-        Assert.False(list.IsExcluded("LORV1LLEX"));
+        Assert.False(list.IsExcluded("LORVILLEX"));
     }
 
     [Fact]
-    public void AddAutomatic_DoesNotAddALookAlikeOfAListedName()
+    public void AddAutomatic_AddsALookAlikeOfAListedName_ItIsAnotherName()
     {
         var path = PathOf();
         WriteRaw(path, "Hurston\n");
         var list = Load(path);
         var before = list.Count;
 
-        list.AddAutomatic("HURST0N", "test");
+        Assert.True(list.AddAutomatic("HURST0N", "test"));
+
+        Assert.Equal(before + 1, list.Count);
+        Assert.True(list.IsExcluded("HURST0N"));
+    }
+
+    [Fact]
+    public void AddAutomatic_DoesNotAddTheSameNameInAnotherCase()
+    {
+        var path = PathOf();
+        WriteRaw(path, "Hurston\n");
+        var list = Load(path);
+        var before = list.Count;
+
+        Assert.False(list.AddAutomatic("HURSTON", "test"));
 
         Assert.Equal(before, list.Count);
     }

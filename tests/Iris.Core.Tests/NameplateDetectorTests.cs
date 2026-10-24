@@ -88,6 +88,17 @@ public class NameplateDetectorTests
     }
 
     [Fact]
+    public void LongestHandle_FitsTheLineWidthFilter()
+    {
+        Assert.Equal(64, NameplateDetectorSettings.Default.MaxNameLength);
+        Assert.Equal(Iris.Core.Rsi.RsiNames.MaxHandleLength, NameplateDetectorSettings.Default.MaxNameLength);
+        // a letter advances 10.1 px on average and 11.7 px at most (measured at 1440 high): 64 letters must fit with margin
+        Assert.True(NameplateDetector.MaxLineWidth >= 64 * 11.7 * 1.1);
+        Assert.Equal(832, NameplateDetectorSettings.Default.Scale(1440, NameplateDetector.MaxLineWidth));
+        Assert.Equal(1248, NameplateDetectorSettings.Default.Scale(2160, NameplateDetector.MaxLineWidth));
+    }
+
+    [Fact]
     public void Settings_RejectNonsense()
     {
         Assert.Null(NameplateDetectorSettings.Default.Validate());

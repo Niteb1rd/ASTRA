@@ -12,14 +12,15 @@ public static class RsiNames
     public const int MinHandleLength = 4;
 
     /// <summary>Longest player handle IRIS accepts.</summary>
-    public const int MaxHandleLength = 25;
+    public const int MaxHandleLength = 64;
 
-    // \z (not $) on purpose: "$" would also accept a trailing newline.
+    // \z (not $) on purpose: "$" would also accept a trailing newline. A handle may not start or end with "-" (RSI's account creation refuses it);
+    // "_" is allowed anywhere.
     private static readonly Regex HandlePattern = new(
-        "^[A-Za-z0-9_-]{" + MinHandleLength + "," + MaxHandleLength + "}\\z", RegexOptions.CultureInvariant);
+        "^(?!-)[A-Za-z0-9_-]{" + MinHandleLength + "," + MaxHandleLength + "}(?<!-)\\z", RegexOptions.CultureInvariant);
     private static readonly Regex SidPattern = new(@"^[A-Za-z0-9_-]{1,20}\z", RegexOptions.CultureInvariant);
 
-    /// <summary>Player handle: letters, digits, "_" and "-", 4 to 25 characters.</summary>
+    /// <summary>Player handle: letters, digits, "_" and "-", 4 to 64 characters, not starting or ending with "-" ("_" is fine there).</summary>
     public static bool IsValidHandle(string? handle) => handle is not null && HandlePattern.IsMatch(handle);
 
     /// <summary>Org SID: letters, digits, "_" and "-", 1 to 20 characters.</summary>

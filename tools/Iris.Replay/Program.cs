@@ -14,8 +14,8 @@ namespace Iris.Replay;
 /// </summary>
 public static class Program
 {
-    private const string CsvHeader = "source,frame,track,verdict,confirmed,name,score,x,y,w,h,distance,dist_x,dist_y,dist_w,dist_h,match,exact";
-    private const string TrackHeader = "clip,track,first_frame,first_ms,last_seen_ms,ever_nameplate,evaluations,best_name,confirmed_names,reads";
+    private const string CsvHeader = "source,frame,track,verdict,confirmed,name,score,x,y,w,h,distance,dist_x,dist_y,dist_w,dist_h,match";
+    private const string TrackHeader = "clip,track,first_frame,first_ms,last_seen_ms,ever_nameplate,evaluations,best_name,confirmed_names,corrections,corrected,reads";
 
     public static int Main(string[] args)
     {
@@ -45,7 +45,7 @@ public static class Program
         }
     }
 
-    private sealed record ClipSummary(string Clip, int Frames, int NameplateTracks, int Confirmed, List<double> Times);
+    private sealed record ClipSummary(string Clip, int Frames, int NameplateTracks, int Confirmed, int Corrections, List<double> Times);
 
     private static int Run(ReplayOptions options)
     {
@@ -78,7 +78,7 @@ public static class Program
         var inv = CultureInfo.InvariantCulture;
         var step = options.Every == 1 ? "every frame" : string.Create(inv, $"every {options.Every} frames");
         var settings = options.Settings;
-        var mode = single ? "single images, no tracker" : $"tracker: {options.TrackerSettings.ConfirmReads} identical reads over at least {options.TrackerSettings.ConfirmSpanMs:0} ms";
+        var mode = single ? "single images, no tracker" : $"tracker: {options.TrackerSettings.ConfirmReads} identical reads of one box width over at least {options.TrackerSettings.ConfirmSpanMs:0} ms";
         Console.WriteLine(string.Create(inv, $"Replaying {clips.Count} clip(s), {step}, scan region x {settings.RegionLeft:P0}-{settings.RegionRight:P0}, y {settings.RegionTop:P0}-{settings.RegionBottom:P0}; {mode}."));
         Console.WriteLine();
 
@@ -92,6 +92,7 @@ public static class Program
             var tracker = new NameplateTracker(options.TrackerSettings);
             var nameplateTracks = 0;
             var confirmedNames = new HashSet<string>();
+            var corrections = 0;
 
             void CloseTracks(IEnumerable<NameplateTrack> closed)
             {
@@ -101,6 +102,7 @@ public static class Program
                         nameplateTracks++;
                     foreach (var c in track.Confirmations)
                         confirmedNames.Add(c.Name);
+                    corrections += track.Corrections.Count;
                     metrics?.AddTrack(clip.Clip, track);
                     tracksCsv.WriteLine(TrackRow(clip.Clip, track));
                 }
@@ -121,8 +123,7 @@ public static class Program
                         metrics.AddReads(frame.Clip, frame.Name, frame.Number, detections, out var matches);
                         for (var i = 0; i < detections.Count; i++)
                         {
-                            var match = i < matches.Count ? matches[i] : (Label: (string?)null, Exact: false);
-                            csv.WriteLine(CsvRow(clip.Clip, frame, null, detections[i], match.Label, match.Exact, true));
+                            csv.WriteLine(CsvRow(clip.Clip, frame, null, detections[i], i < matches.Count ? matches[i] : null, true));
                         }
 
                         if (options.Annotate && detections.Count > 0)
@@ -146,7 +147,7 @@ public static class Program
                         var evaluation = evaluator.Evaluate(top, bottom);
                         evaluated[top] = evaluation;
                         return new TrackEvaluation(evaluation.IsNameplate, evaluation.Detection?.Name);
-                    });
+                    }, image.Height);
                     watch.Stop();
                     times.Add(watch.Elapsed.TotalMilliseconds);
                     metrics?.AddFrame(frame.Clip, frame.Name, watch.Elapsed.TotalMilliseconds);
@@ -162,7 +163,7 @@ public static class Program
                         if (evaluation?.Detection is not null)
                         {
                             var d = evaluation.Detection;
-                            csv.WriteLine(CsvRow(clip.Clip, frame, track, d, null, false, false));
+                            csv.WriteLine(CsvRow(clip.Clip, frame, track, d, null, false));
                         }
 
                         if (confirmed)
@@ -189,7 +190,7 @@ public static class Program
 
             if (!single)
                 CloseTracks(tracker.Finish());
-            summaries.Add(new ClipSummary(clip.Clip, times.Count, nameplateTracks, confirmedNames.Count, times));
+            summaries.Add(new ClipSummary(clip.Clip, times.Count, nameplateTracks, confirmedNames.Count, corrections, times));
             if (skipped is not null)
                 Console.WriteLine($"{clip.Clip}: skipped: {skipped}");
             if (unreadable > 0)
@@ -202,15 +203,15 @@ public static class Program
         tracksCsv.Flush();
         if (metrics is null)
         {
-            Console.WriteLine(string.Format(inv, "{0,-24} {1,7} {2,16} {3,10} {4,10} {5,9}", "clip", "frames", "nameplate tracks", "confirmed", "ms median", "ms p95"));
+            Console.WriteLine(string.Format(inv, "{0,-24} {1,7} {2,16} {3,10} {4,12} {5,10} {6,9}", "clip", "frames", "nameplate tracks", "confirmed", "corrections", "ms median", "ms p95"));
             var all = new List<double>();
             foreach (var s in summaries)
             {
-                Console.WriteLine(string.Format(inv, "{0,-24} {1,7} {2,16} {3,10} {4,10} {5,9}", Shorten(s.Clip, 24), s.Frames, s.NameplateTracks, s.Confirmed, Format(Median(s.Times)), Format(Percentile95(s.Times))));
+                Console.WriteLine(string.Format(inv, "{0,-24} {1,7} {2,16} {3,10} {4,12} {5,10} {6,9}", Shorten(s.Clip, 24), s.Frames, s.NameplateTracks, s.Confirmed, s.Corrections, Format(Median(s.Times)), Format(Percentile95(s.Times))));
                 all.AddRange(s.Times);
             }
 
-            Console.WriteLine(string.Format(inv, "{0,-24} {1,7} {2,16} {3,10} {4,10} {5,9}", "ALL", all.Count, string.Empty, string.Empty, Format(Median(all)), Format(Percentile95(all))));
+            Console.WriteLine(string.Format(inv, "{0,-24} {1,7} {2,16} {3,10} {4,12} {5,10} {6,9}", "ALL", all.Count, string.Empty, string.Empty, summaries.Sum(x => x.Corrections), Format(Median(all)), Format(Percentile95(all))));
         }
 
         Console.WriteLine();
@@ -242,12 +243,14 @@ public static class Program
         var inv = CultureInfo.InvariantCulture;
         var reads = string.Join('|', track.Reads.OrderByDescending(r => r.Count).Select(r => $"{r.Name}:{r.Count}"));
         var confirmed = string.Join('|', track.Confirmations.Select(c => c.Name).Distinct());
+        var corrected = string.Join('|', track.Corrections.Select(c => $"{c.From}>{c.To}"));
         return string.Join(',',
             Escape(clip), track.Id.ToString(inv), track.FirstFrame.ToString(inv), track.FirstMs.ToString("0", inv), track.LastSeenMs.ToString("0", inv),
-            track.EverNameplate ? "1" : "0", track.Evaluations.ToString(inv), Escape(track.BestName ?? string.Empty), Escape(confirmed), Escape(reads));
+            track.EverNameplate ? "1" : "0", track.Evaluations.ToString(inv), Escape(track.BestName ?? string.Empty), Escape(confirmed),
+            track.Corrections.Count.ToString(inv), Escape(corrected), Escape(reads));
     }
 
-    private static string CsvRow(string clip, SourceFrame frame, NameplateTrack? track, NameplateDetection d, string? label, bool exact, bool labeled)
+    private static string CsvRow(string clip, SourceFrame frame, NameplateTrack? track, NameplateDetection d, string? label, bool labeled)
     {
         var inv = CultureInfo.InvariantCulture;
         // a video frame (clip#number) and a single image (named like its clip) stand alone; an image in a folder is folder/file
@@ -265,7 +268,6 @@ public static class Program
             Escape(d.DistanceText),
             d.DistanceBox.X.ToString(inv), d.DistanceBox.Y.ToString(inv), d.DistanceBox.Width.ToString(inv), d.DistanceBox.Height.ToString(inv),
             labeled ? Escape(label ?? string.Empty) : string.Empty,
-            labeled ? (exact ? "1" : "0") : string.Empty,
         };
         return string.Join(',', fields);
     }

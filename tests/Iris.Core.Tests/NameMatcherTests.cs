@@ -8,13 +8,13 @@ public class NameMatcherTests
     [Theory]
     [InlineData("ALPHA_ONE", "ALPHA_ONE", true)]
     [InlineData("ALPHA_ONE", "alpha_one", true)]     // case does not matter
-    [InlineData("ALPHA_0NE", "ALPHA_ONE", true)]     // 0 <-> O
-    [InlineData("ALPHA_ONE", "ALPHA_0NE", true)]
-    [InlineData("L1GHT", "LIGHT", true)]             // 1 <-> I
-    [InlineData("LIGHT", "L1GHT", true)]
-    [InlineData("B0B1", "BOBI", true)]
+    [InlineData("ALPHA_0NE", "ALPHA_ONE", false)]    // 0 and O are different characters: names match exactly
+    [InlineData("ALPHA_ONE", "ALPHA_0NE", false)]
+    [InlineData("L1GHT", "LIGHT", false)]            // so are 1 and I
+    [InlineData("LIGHT", "L1GHT", false)]
+    [InlineData("B0B1", "BOBI", false)]
     [InlineData("ALPHA_ONE", "ALPHA_0N3", false)]    // 3 is not a look-alike of E
-    [InlineData("ABCD", "ABXD", false)]              // no other edit tolerance: K/N/X, D/Q/O, 5/S, 8/B, 6/G, 2/Z, L/1/7 are different letters
+    [InlineData("ABCD", "ABXD", false)]              // no edit tolerance: K/N/X, D/Q/O, 5/S, 8/B, 6/G, 2/Z, L/1/7 are different letters
     [InlineData("QUIET", "0UIET", false)]
     [InlineData("DUCK", "0UCK", false)]
     [InlineData("SAND", "5AND", false)]
@@ -22,7 +22,7 @@ public class NameMatcherTests
     [InlineData("LION", "1ION", false)]
     [InlineData("LION", "7ION", false)]
     [InlineData("ALPHA", "ALPHAS", false)]           // a missing or an extra letter is not tolerated
-    public void Matches_ToleratesOnlyTheAccuracyLookAlikes(string a, string b, bool expected)
+    public void Matches_IsExact_IgnoringOnlyTheCase(string a, string b, bool expected)
     {
         Assert.Equal(expected, NameMatcher.Matches(a, b));
         Assert.Equal(expected, NameMatcher.Matches(b, a));
@@ -34,16 +34,17 @@ public class NameMatcherTests
         var vocabulary = new[] { "ALPHA_ONE", "BRAVO-TWO", "CHARLIE3" };
 
         Assert.Equal("ALPHA_ONE", NameMatcher.BestMatch("ALPHA_ONE", vocabulary));
-        Assert.Equal("ALPHA_ONE", NameMatcher.BestMatch("ALPHA_0NE", vocabulary));
-        Assert.Equal("BRAVO-TWO", NameMatcher.BestMatch("BRAV0-TW0", vocabulary));
+        Assert.Null(NameMatcher.BestMatch("ALPHA_0NE", vocabulary));      // no look-alike tolerance
+        Assert.Null(NameMatcher.BestMatch("BRAV0-TW0", vocabulary));
+        Assert.Equal("BRAVO-TWO", NameMatcher.BestMatch("bravo-two", vocabulary));
         Assert.Equal("CHARLIE3", NameMatcher.BestMatch("charlie3", vocabulary));
     }
 
     [Fact]
-    public void BestMatch_AnExactMatchBeatsALookAlikeMatch()
+    public void BestMatch_ASameCaseMatchBeatsADifferentCaseMatch()
     {
-        Assert.Equal("B0B1", NameMatcher.BestMatch("B0B1", new[] { "BOBI", "B0B1" }));
-        Assert.Equal("BOBI", NameMatcher.BestMatch("B0B1", new[] { "BOBI" }));
+        Assert.Equal("Bob1", NameMatcher.BestMatch("Bob1", new[] { "BOB1", "Bob1" }));
+        Assert.Equal("BOB1", NameMatcher.BestMatch("Bob1", new[] { "BOB1" }));
     }
 
     [Fact]
