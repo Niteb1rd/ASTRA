@@ -119,7 +119,7 @@ public class O0MultiFrameTests
         Assert.Equal(19.0, O0EvidenceTable.DecideOdds);
         Assert.Equal(16, O0EvidenceTable.MaxKeys);
         Assert.Equal(2.9444389791664403, O0EvidenceTable.DecideLlr);
-        Assert.Equal(Math.Log(O0EvidenceTable.DecideOdds), O0EvidenceTable.DecideLlr, 14);
+        Assert.Equal(O0EvidenceTable.DecideLlr, Math.Log(O0EvidenceTable.DecideOdds), 14);
     }
 
     [Fact]
