@@ -34,6 +34,14 @@ public static class LookAlikes
         a is not null && b is not null && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// The name with every digit <c>0</c> turned into the letter <c>O</c>: the key of the O/0-folded comparisons (the exclusion list and the session exclusions when
+    /// <see cref="NameplateTrackerSettings.ExclusionFoldsO0"/> is on, and the evidence of <see cref="NameplateTrackerSettings.O0MultiFrame"/>). The letter model cannot tell
+    /// the two apart on small plates, so a misread like <c>UNKN0WN</c> is the excluded name <c>UNKNOWN</c> once folded. It is NOT an accuracy tolerance: names of the
+    /// player list and the colour lookup still match exactly.
+    /// </summary>
+    public static string FoldO0(string name) => name.Replace('0', 'O');
+
+    /// <summary>
     /// The digit that <paramref name="c"/> stands for in a distance (efficiency list): a digit stands for itself, <c>O Q D</c> for 0,
     /// <c>I</c> for 1, <c>S</c> for 5, <c>B</c> for 8, <c>G</c> for 6, <c>Z</c> for 2 (upper case letters only). Null for any other character.
     /// </summary>

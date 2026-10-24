@@ -17,14 +17,18 @@ public sealed class LiveSnapshotBuilder
     private readonly ExclusionList _exclusions;
     private readonly Func<string, IReadOnlyList<OrgMembership>?> _lookupOrgs;
     private readonly LiveSettings _settings;
+    private readonly bool _exclusionFoldsO0;
 
     /// <param name="exclusions">The exclusion list.</param>
     /// <param name="lookupOrgs">The orgs of a handle from the cache; null = never looked up (the panel then says "Orgs: not looked up", and only the player list can match).</param>
-    public LiveSnapshotBuilder(ExclusionList exclusions, Func<string, IReadOnlyList<OrgMembership>?> lookupOrgs, LiveSettings? settings = null)
+    /// <param name="settings">The live settings.</param>
+    /// <param name="exclusionFoldsO0">Compare names with the exclusion list with 0 and O taken as the same character (<see cref="NameplateTrackerSettings.ExclusionFoldsO0"/>).</param>
+    public LiveSnapshotBuilder(ExclusionList exclusions, Func<string, IReadOnlyList<OrgMembership>?> lookupOrgs, LiveSettings? settings = null, bool exclusionFoldsO0 = false)
     {
         _exclusions = exclusions;
         _lookupOrgs = lookupOrgs;
         _settings = settings ?? LiveSettings.Default;
+        _exclusionFoldsO0 = exclusionFoldsO0;
     }
 
     /// <summary>
@@ -40,7 +44,7 @@ public sealed class LiveSnapshotBuilder
                 continue;
             if (nowMs - track.LastSeenMs > _settings.StaleHideMs)
                 continue;
-            if (NameFilter.ShouldIgnore(name, _exclusions, config))
+            if (NameFilter.ShouldIgnore(name, _exclusions, config, _exclusionFoldsO0))
                 continue;
             shown.Add((track, name));
         }

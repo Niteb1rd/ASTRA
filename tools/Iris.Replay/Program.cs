@@ -171,7 +171,7 @@ public static class Program
                     {
                         var evaluation = evaluator.Evaluate(top, bottom);
                         evaluated[top] = evaluation;
-                        return new TrackEvaluation(evaluation.IsNameplate, evaluation.Detection?.Name, evaluation.Detection?.NameRows, evaluation.Detection?.Color);
+                        return new TrackEvaluation(evaluation.IsNameplate, evaluation.Detection?.Name, evaluation.Detection?.NameRows, evaluation.Detection?.Color, evaluation.Detection?.O0Evidence);
                     }, image.Height);
                     watch.Stop();
                     times.Add(watch.Elapsed.TotalMilliseconds);
