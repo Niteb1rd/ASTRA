@@ -26,6 +26,7 @@ internal static class NativeMethods
 
     public static readonly IntPtr HwndTopmost = new IntPtr(-1);
 
+    private const uint MonitorDefaultToNull = 0;
     private const uint MonitorDefaultToPrimary = 1;
     private const uint MonitorDefaultToNearest = 2;
     private const int DwmwaExtendedFrameBounds = 9;
@@ -70,6 +71,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern IntPtr MonitorFromWindow(IntPtr hWnd, uint flags);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromRect(ref NativeRect rect, uint flags);
 
     [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -194,6 +198,42 @@ internal static class NativeMethods
         bounds = default;
         return false;
     }
+
+    /// <summary>
+    /// The monitor that holds most of <paramref name="rect"/> (screen pixels): its handle (the same value DXGI reports as the output's monitor) and its
+    /// full rectangle. False when the rectangle is on no monitor or Windows gives no answer.
+    /// </summary>
+    public static bool TryGetMonitorForRect(PixelRect rect, out IntPtr monitor, out PixelRect bounds)
+    {
+        var native = new NativeRect
+        {
+            Left = (int)Math.Round(rect.X),
+            Top = (int)Math.Round(rect.Y),
+            Right = (int)Math.Round(rect.Right),
+            Bottom = (int)Math.Round(rect.Bottom),
+        };
+        monitor = MonitorFromRect(ref native, MonitorDefaultToNull);
+        if (monitor != IntPtr.Zero)
+        {
+            var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+            if (GetMonitorInfo(monitor, ref info) && IsUsable(info.Monitor))
+            {
+                bounds = ToPixelRect(info.Monitor);
+                return true;
+            }
+        }
+
+        bounds = default;
+        return false;
+    }
+
+    // The system timer normally ticks every 15.6 ms; Thread.Sleep and waits are only as precise as that. The tracking tick (up to 120 a second) asks for 1 ms
+    // while detection runs, and gives it back afterwards. Calls must be paired (the system counts them).
+    [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
+    public static extern uint TimeBeginPeriod(uint milliseconds);
+
+    [DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
+    public static extern uint TimeEndPeriod(uint milliseconds);
 
     /// <summary>
     /// The full path of the exe a process runs, asked with the limited-information right (PROCESS_QUERY_LIMITED_INFORMATION), which Windows also
