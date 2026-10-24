@@ -111,10 +111,10 @@ public class O0RuleTests
     }
 
     [Theory]
-    [InlineData(9.0, 12.0, 5.0, 8.0, 0.9999957577136197)]
-    [InlineData(8.0, 12.0, 4.0, 8.0, 0.0012333387275540128)]
+    [InlineData(9.0, 12.0, 5.0, 8.0, 0.9997938311463952)]   // above the O mean: clamped to it
+    [InlineData(8.0, 12.0, 4.0, 8.0, 0.012620097629904944)]  // below the 0 mean: clamped to it
     [InlineData(8.5, 12.0, 4.5, 8.0, 0.4224919265388571)]
-    [InlineData(7.5, 12.0, 4.0, 9.0, 0.0005571736676678146)]
+    [InlineData(7.5, 12.0, 4.0, 9.0, 0.012620097629904944)]  // below the 0 mean: clamped to it
     [InlineData(8.75, 12.0, 4.5, 8.0, 0.8533261738581932)]
     public void ProbabilityO_IsThePythonFormula(double ow, double oh, double hw, double hh, double expected) =>
         Assert.Equal(expected, O0Rule.ProbabilityO(new O0Measurement(ow, oh, hw, hh)), 9);
