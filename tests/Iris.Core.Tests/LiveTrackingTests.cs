@@ -121,11 +121,11 @@ public class LiveTrackingTests : IDisposable
     public void Predictor_ABracketMovesWithItsVelocity()
     {
         var snapshot = Snapshot(1000, Bracket(vx: 0.1, vy: -0.05));
-        var model = LivePredictor.ModelAt(snapshot, 1200, Live);
+        var model = LivePredictor.ModelAt(snapshot, 1040, Live);
 
         var box = Assert.Single(model.Brackets).Box;
-        Assert.Equal(120, box.X);  // 100 + 0.1 * 200
-        Assert.Equal(190, box.Y);  // 200 - 0.05 * 200
+        Assert.Equal(104, box.X);  // 100 + 0.1 * 40
+        Assert.Equal(198, box.Y);  // 200 - 0.05 * 40
         Assert.Equal(80, box.Width);
         Assert.Equal(28, box.Height);
     }
@@ -138,9 +138,9 @@ public class LiveTrackingTests : IDisposable
         var next = LivePredictor.ModelAt(snapshot, 1004, Live, previous); // 0.4 px
 
         Assert.Same(previous, next);
-        var moved = LivePredictor.ModelAt(snapshot, 1100, Live, previous); // 10 px
+        var moved = LivePredictor.ModelAt(snapshot, 1050, Live, previous); // 5 px
         Assert.NotSame(previous, moved);
-        Assert.Equal(110, moved.Brackets[0].Box.X);
+        Assert.Equal(105, moved.Brackets[0].Box.X);
         Assert.Same(previous.Panel, moved.Panel);
     }
 
@@ -154,16 +154,40 @@ public class LiveTrackingTests : IDisposable
     }
 
     [Fact]
-    public void Predictor_PredictionStopsAfterTheMaximumTime()
+    public void Predictor_RenderExtrapolationStopsAt50Ms()
     {
         var settings = Live with { StaleHideMs = 100_000 };
         var snapshot = Snapshot(1000, Bracket(vx: 0.1));
 
-        var at500 = LivePredictor.ModelAt(snapshot, 1500, settings).Brackets[0].Box.X;
-        var at2000 = LivePredictor.ModelAt(snapshot, 3000, settings).Brackets[0].Box.X;
+        Assert.Equal(50.0, Live.RenderExtrapolationMs);
+        Assert.Equal(103, LivePredictor.ModelAt(snapshot, 1030, settings).Brackets[0].Box.X);
+        Assert.Equal(105, LivePredictor.ModelAt(snapshot, 1050, settings).Brackets[0].Box.X);
+        Assert.Equal(105, LivePredictor.ModelAt(snapshot, 1051, settings).Brackets[0].Box.X); // 50 ms is as far as it goes
+        Assert.Equal(105, LivePredictor.ModelAt(snapshot, 3000, settings).Brackets[0].Box.X);
+    }
 
-        Assert.Equal(150, at500);
-        Assert.Equal(150, at2000); // 500 ms is as far as it goes
+    [Fact]
+    public void Predictor_TheExtrapolationCapIsASetting()
+    {
+        var settings = Live with { StaleHideMs = 100_000, RenderExtrapolationMs = 100 };
+        var snapshot = Snapshot(1000, Bracket(vx: 0.1));
+
+        Assert.Equal(110, LivePredictor.ModelAt(snapshot, 1500, settings).Brackets[0].Box.X);
+        Assert.Equal(100, LivePredictor.ModelAt(snapshot, 1500, settings with { RenderExtrapolationMs = 0 }).Brackets[0].Box.X);
+    }
+
+    [Fact]
+    public void Predictor_ABracketRenderedBetweenTwoTrackingTicksMovesSmoothlyToTheNextTick()
+    {
+        // tracked at 1000 at x 100 moving 0.2 px/ms; the next tick (33 ms later) finds it at 106.6: no jump at the hand-over
+        var first = Snapshot(1000, Bracket(vx: 0.2));
+        var second = Snapshot(1033, Bracket(vx: 0.2, x: 106.6, reference: 1033));
+
+        var beforeTick = LivePredictor.ModelAt(first, 1033, Live).Brackets[0].Box.X;
+        var afterTick = LivePredictor.ModelAt(second, 1033, Live).Brackets[0].Box.X;
+
+        Assert.Equal(107, beforeTick); // 100 + 0.2 * 33 = 106.6
+        Assert.Equal(107, afterTick);
     }
 
     [Fact]
@@ -329,20 +353,101 @@ public class LiveTrackingTests : IDisposable
     }
 
     [Fact]
+    public void BracketMetrics_AtFullHeightHaveTheSizeOfAOneRowPlate()
+    {
+        // the current formulas applied to a 41 px box: height 41 x 1.24, width 0.24 x height, line max(2, 6 % of the height), outline half of it
+        var box = new PixelRect(100, 100, 80, 41);
+        var m = BracketMetrics.For(box, 1440);
+
+        Assert.Equal(50.84, m.Height, 9);
+        Assert.Equal(12.2016, m.Width, 9);
+        Assert.Equal(3.0504, m.Stroke, 9);
+        Assert.Equal(1.5252, m.Outline, 9);
+        Assert.Equal(10 + 1.5252 + 1.5252, m.Gap, 9); // 10 px clear of the text, plus half the line and the outline
+        Assert.Equal(120.5 - 25.42, m.Top, 9);        // centered on the box: its middle is y 120.5
+    }
+
+    [Theory]
+    [InlineData(1440)]
+    [InlineData(1080)]
+    [InlineData(2160)]
+    [InlineData(720)]
+    public void BracketMetrics_ScaleWithTheScreenHeight(int screenHeight)
+    {
+        var scale = screenHeight / 1440.0;
+        var m = BracketMetrics.For(new PixelRect(0, 0, 100, 41), screenHeight);
+        var full = BracketMetrics.For(new PixelRect(0, 0, 100, 41), 1440);
+
+        Assert.Equal(full.Height * scale, m.Height, 9);
+        Assert.Equal(full.Width * scale, m.Width, 9);
+        Assert.Equal(full.Stroke * scale, m.Stroke, 9);
+        Assert.Equal(full.Outline * scale, m.Outline, 9);
+        Assert.Equal(1.0, BracketMetrics.Scale(0)); // a height that is not known: no scaling
+    }
+
+    [Theory]
+    [InlineData(41)]
+    [InlineData(60)]
+    [InlineData(80)]
+    [InlineData(20)]
+    public void BracketMetrics_TheSizeNeverGrowsWithTheHeightOfThePlate(int plateHeight)
+    {
+        var one = BracketMetrics.For(new PixelRect(300, 200, 150, 41), 1440);
+        var tall = BracketMetrics.For(new PixelRect(300, 200, 150, plateHeight), 1440);
+
+        Assert.Equal(one.Height, tall.Height, 9);
+        Assert.Equal(one.Width, tall.Width, 9);
+        Assert.Equal(one.Stroke, tall.Stroke, 9);
+        Assert.Equal(one.Outline, tall.Outline, 9);
+        Assert.Equal(one.Gap, tall.Gap, 9);
+    }
+
+    [Theory]
+    [InlineData(41, 1440)]
+    [InlineData(80, 1440)]
+    [InlineData(66, 1080)]
+    [InlineData(30, 2160)]
+    public void BracketMetrics_AreCenteredOnTheWholePlate(int plateHeight, int screenHeight)
+    {
+        var box = new PixelRect(321.5, 477.25, 140, plateHeight);
+        var m = BracketMetrics.For(box, screenHeight);
+
+        Assert.Equal(box.Y + box.Height / 2, m.Top + m.Height / 2, 9);
+    }
+
+    [Theory]
+    [InlineData(1440)]
+    [InlineData(1080)]
+    [InlineData(2160)]
+    [InlineData(900)]
+    public void BracketMetrics_TheNearestDrawnPixelIsTenScaledPixelsFromTheText(int screenHeight)
+    {
+        var box = new PixelRect(500, 400, 163, 80);
+        var m = BracketMetrics.For(box, screenHeight);
+        var clear = 10.0 * screenHeight / 1440.0;
+
+        // the arm of the left bracket ends at its right edge; the round pen and the outline stick out half the line plus the outline beyond it
+        var nearestLeft = m.LeftX(box) + m.Width + m.Stroke / 2 + m.Outline;
+        var nearestRight = m.RightX(box) - m.Stroke / 2 - m.Outline;
+        Assert.Equal(clear, box.X - nearestLeft, 9);
+        Assert.Equal(clear, nearestRight - box.Right, 9);
+        Assert.True(box.X - nearestLeft >= clear - 1e-9);
+    }
+
+    [Fact]
     public void BracketMetrics_ExtentHoldsBothBracketsWithTheirOutline()
     {
-        var box = new PixelRect(100, 100, 80, 20);
-        var m = BracketMetrics.For(box);
+        var box = new PixelRect(100, 100, 80, 41);
+        var m = BracketMetrics.For(box, 1440);
         var extent = m.Extent(box);
+        var bleed = 3.0504 / 2 + 1.5252;
 
-        Assert.Equal(97.6, m.Top, 9); // 12 % of the box height above the box
-        Assert.Equal(24.8, m.Height, 9);
-        Assert.Equal(88.448, extent.X, 9);
-        Assert.Equal(95.6, extent.Y, 9);
-        Assert.Equal(191.552, extent.Right, 9);
-        Assert.Equal(28.8, extent.Height, 9);
-        Assert.True(OverlayWindowFit.Contains(extent, box));
-        Assert.Equal(extent, BracketMetrics.ExtentOf(box));
+        Assert.Equal(box.X - m.Gap - m.Width - bleed, extent.X, 9);
+        Assert.Equal(box.Right + m.Gap + m.Width + bleed, extent.Right, 9);
+        Assert.Equal(m.Top - bleed, extent.Y, 9);
+        Assert.Equal(m.Height + 2 * bleed, extent.Height, 9);
+        Assert.True(OverlayWindowFit.Contains(extent, new PixelRect(box.X, m.Top, box.Width, m.Height)));
+        Assert.Equal(extent, BracketMetrics.ExtentOf(box, 1440));
     }
 
     // ----- LiveSnapshotBuilder over a real tracker (fake evaluations) -----

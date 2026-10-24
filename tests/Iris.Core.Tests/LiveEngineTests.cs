@@ -368,6 +368,51 @@ public class LiveEngineTests : IDisposable
     }
 
     [OpenCvFact]
+    public void Process_AConfirmedPlateGetsASeedWithATemplateOfItsNameAndTheTrackerFollowsIt()
+    {
+        var frame = Frame("frame_c.png");
+        var expected = Assert.Single(frame.Default.Detections);
+        using var image = Cv2.ImRead(frame.ImagePath, ImreadModes.Color);
+        using var source = new ImageFrameSource(image, WindowX, WindowY);
+        using var engine = NewEngine(out _);
+        var config = new SocialConfig();
+        Assert.True(engine.TryGetGeometry(frame.Width, frame.Height, out var geometry));
+
+        DetectionResult? result = null;
+        for (var i = 0; i < 3; i++) // three reads confirm the name
+        {
+            result?.Dispose();
+            var grab = source.GrabRegions(new[] { geometry!.ToScreen(WindowX, WindowY) });
+            result = engine.Process(grab.Images[0]!, Window(frame), config, 1000 + 200.0 * i, out var problem);
+            Assert.Null(problem);
+        }
+
+        Assert.NotNull(result);
+        var seed = Assert.Single(result!.Seeds);
+        Assert.Equal(expected.Name, Assert.Single(result.Snapshot.Brackets).Handle);
+        Assert.NotNull(seed.Template);
+        Assert.Equal((int)seed.NameBox.Width, seed.Template!.Width);
+        Assert.Equal((int)seed.NameBox.Height, seed.Template.Height);
+        Assert.True(seed.PlateBox.Height >= seed.NameBox.Height); // the distance line is part of the plate, not of the template
+        Assert.Equal(1400, seed.AtMs);
+
+        // the tracker takes it over and finds the plate again in the same picture (the screen did not move)
+        using var tracker = new PlateTemplateTracker();
+        tracker.ApplyDetection(result, 1400);
+        var plan = tracker.Plan(1433, 33, frame.Width, frame.Height);
+        var patchPictures = plan.Select(p => (Mat?)new Mat(image, p.Patch).Clone()).ToList();
+        var tick = tracker.Update(1433, plan, patchPictures);
+        foreach (var picture in patchPictures)
+            picture!.Dispose();
+
+        Assert.Equal(1, tick.Attempts);
+        Assert.Equal(1, tick.Found);
+        var bracket = Assert.Single(tracker.Snapshot(1433).Brackets);
+        Assert.InRange(bracket.Box.X, seed.PlateBox.X - 1.0, seed.PlateBox.X + 1.0);
+        Assert.InRange(bracket.Box.Y, seed.PlateBox.Y - 1.0, seed.PlateBox.Y + 1.0);
+    }
+
+    [OpenCvFact]
     public void Pipeline_ThePlayerListColorsTheBracketAndACorrectionOfTheListSwitchesItAtOnce()
     {
         var frame = Frame("frame_c.png");

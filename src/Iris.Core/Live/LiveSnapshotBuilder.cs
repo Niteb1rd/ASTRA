@@ -68,15 +68,6 @@ public sealed class LiveSnapshotBuilder
         return new LiveSnapshot(brackets, panel, nowMs);
     }
 
-    /// <summary>The name line and the distance line of a track as one box, in game-window pixels.</summary>
-    public static PixelRect WindowBox(NameplateTrack track, int originX, int originY)
-    {
-        var top = track.Top;
-        var bottom = track.Bottom;
-        var left = Math.Min(top.X, bottom.X);
-        var right = Math.Max(top.X + top.Width, bottom.X + bottom.Width);
-        var upper = Math.Min(top.Y, bottom.Y);
-        var lower = Math.Max(top.Y + top.Height, bottom.Y + bottom.Height);
-        return new PixelRect(left + originX, upper + originY, right - left, lower - upper);
-    }
+    /// <summary>The name rows and the distance line of a track as one box (the plate box), in game-window pixels. See <see cref="PlateGeometry"/>.</summary>
+    public static PixelRect WindowBox(NameplateTrack track, int originX, int originY) => PlateGeometry.Of(track).PlatePixelBox(originX, originY);
 }
