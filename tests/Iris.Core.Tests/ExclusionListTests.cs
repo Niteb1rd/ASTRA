@@ -183,6 +183,7 @@ public class ExclusionListTests : IDisposable
         Assert.False(list.IsExcluded("L0RV1LLE"));
         Assert.False(list.IsExcluded("HURSTQN"));
         Assert.False(list.IsExcluded("LORVILLEX"));
+    }
 
     [Fact]
     public void TheList_NeverWritesToTheFileAfterCreatingIt()
