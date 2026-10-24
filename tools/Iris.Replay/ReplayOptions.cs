@@ -16,7 +16,9 @@ public sealed class ReplayOptions
           <input>      a video file (mp4, mkv, mov, avi, webm), a folder of frame images (png, jpg, bmp, tif),
                        a folder with one such sub folder (or video) per clip, or a single image
           --labels F   clip labels (clips.txt: "clip: NAME1, NAME2"), or screenshot labels (a .csv with the columns
-                       file,expected_players,... and ';' between the names): reports recall and wrong reads
+                       file,expected_players,... and ';' between the names): reports recall and wrong reads.
+                       A name wrapped over several rows is written row by row with '/' (FIRSTROW/SECONDROW); a contact code
+                       (PA-5968-XF) counts as found when read and is not a miss when it is not
           --out FOLDER where detections.csv and the annotated images go (default: Iris\replay in the local application data
                        folder). It must not be inside a git repository: frames and reads are your own data
           --annotate   also write a PNG per frame with tracked lines to FOLDER\annotated: confirmed names green, nameplates not yet

@@ -14,8 +14,8 @@ namespace Iris.Replay;
 /// </summary>
 public static class Program
 {
-    private const string CsvHeader = "source,frame,track,verdict,confirmed,name,score,x,y,w,h,distance,dist_x,dist_y,dist_w,dist_h,match";
-    private const string TrackHeader = "clip,track,first_frame,first_ms,last_seen_ms,ever_nameplate,evaluations,best_name,confirmed_names,corrections,corrected,reads";
+    private const string CsvHeader = "source,frame,track,verdict,confirmed,name,score,x,y,w,h,distance,dist_x,dist_y,dist_w,dist_h,match,rows,row_boxes,color";
+    private const string TrackHeader = "clip,track,first_frame,first_ms,last_seen_ms,ever_nameplate,evaluations,best_name,confirmed_names,corrections,corrected,reads,rows,color";
 
     public static int Main(string[] args)
     {
@@ -144,7 +144,7 @@ public static class Program
 
                         if (options.Annotate && detections.Count > 0)
                         {
-                            var shapes = detections.Select(d => new Marked(d.NameBox, d.DistanceBox, $"{d.Name} {d.MeanScore:0.00}", Green)).ToList();
+                            var shapes = detections.Select(d => new Marked(d.NameBox, d.DistanceBox, $"{d.Name} {d.MeanScore:0.00}", Green, d.NameRows)).ToList();
                             var problem = SaveAnnotated(image, shapes, annotatedFolder, clip, frame);
                             if (problem is not null)
                                 annotateFailures.Add(problem);
@@ -162,7 +162,7 @@ public static class Program
                     {
                         var evaluation = evaluator.Evaluate(top, bottom);
                         evaluated[top] = evaluation;
-                        return new TrackEvaluation(evaluation.IsNameplate, evaluation.Detection?.Name);
+                        return new TrackEvaluation(evaluation.IsNameplate, evaluation.Detection?.Name, evaluation.Detection?.NameRows, evaluation.Detection?.Color);
                     }, image.Height);
                     watch.Stop();
                     times.Add(watch.Elapsed.TotalMilliseconds);
@@ -183,11 +183,11 @@ public static class Program
                         }
 
                         if (confirmed)
-                            marks.Add(new Marked(track.Top, track.Bottom, track.ConfirmedName!, Green));
+                            marks.Add(new Marked(track.Top, track.Bottom, track.ConfirmedName!, Green, track.Rows));
                         else if (track.Verdict == TrackVerdict.Nameplate)
-                            marks.Add(new Marked(track.Top, track.Bottom, evaluation?.Detection?.Name ?? track.BestName ?? "?", Yellow));
+                            marks.Add(new Marked(track.Top, track.Bottom, evaluation?.Detection?.Name ?? track.BestName ?? "?", Yellow, track.Rows));
                         else if (evaluation is not null)
-                            marks.Add(new Marked(track.Top, track.Bottom, string.Empty, Red));
+                            marks.Add(new Marked(track.Top, track.Bottom, string.Empty, Red, track.Rows));
                     }
 
                     if (options.Annotate && marks.Count > 0)
@@ -252,7 +252,7 @@ public static class Program
     private static readonly Scalar Yellow = new(0, 220, 255);
     private static readonly Scalar Red = new(0, 0, 255);
 
-    private sealed record Marked(Rect Top, Rect Bottom, string Label, Scalar Color);
+    private sealed record Marked(Rect Top, Rect Bottom, string Label, Scalar Color, IReadOnlyList<Rect>? Rows = null);
 
     private static string TrackRow(string clip, NameplateTrack track)
     {
@@ -263,7 +263,8 @@ public static class Program
         return string.Join(',',
             Escape(clip), track.Id.ToString(inv), track.FirstFrame.ToString(inv), track.FirstMs.ToString("0", inv), track.LastSeenMs.ToString("0", inv),
             track.EverNameplate ? "1" : "0", track.Evaluations.ToString(inv), Escape(track.BestName ?? string.Empty), Escape(confirmed),
-            track.Corrections.Count.ToString(inv), Escape(corrected), Escape(reads));
+            track.Corrections.Count.ToString(inv), Escape(corrected), Escape(reads),
+            track.Rows.Count.ToString(inv), track.Color?.ToString() ?? string.Empty);
     }
 
     private static string CsvRow(string clip, SourceFrame frame, NameplateTrack? track, NameplateDetection d, string? label, bool labeled)
@@ -284,6 +285,9 @@ public static class Program
             Escape(d.DistanceText),
             d.DistanceBox.X.ToString(inv), d.DistanceBox.Y.ToString(inv), d.DistanceBox.Width.ToString(inv), d.DistanceBox.Height.ToString(inv),
             labeled ? Escape(label ?? string.Empty) : string.Empty,
+            d.NameRows.Count.ToString(inv),
+            Escape(string.Join('|', d.NameRows.Select(r => string.Create(inv, $"{r.X} {r.Y} {r.Width} {r.Height}")))),
+            d.Color?.ToString() ?? string.Empty,
         };
         return string.Join(',', fields);
     }
@@ -299,10 +303,13 @@ public static class Program
         var fontScale = Math.Max(0.4, image.Height / 1800.0);
         foreach (var m in marks)
         {
-            Cv2.Rectangle(copy, Inflate(m.Top, 2), m.Color, thickness);
+            // a multi-row name: every row is boxed (the first row is the label's anchor), then the distance line
+            var rows = m.Rows is { Count: > 0 } ? m.Rows : new[] { m.Top };
+            foreach (var row in rows)
+                Cv2.Rectangle(copy, Inflate(row, 2), m.Color, thickness);
             Cv2.Rectangle(copy, Inflate(m.Bottom, 2), m.Color, thickness);
             if (m.Label.Length > 0)
-                Cv2.PutText(copy, m.Label, new Point(m.Top.X, Math.Max(14, m.Top.Y - 6)), HersheyFonts.HersheySimplex, fontScale, m.Color, thickness);
+                Cv2.PutText(copy, m.Label, new Point(rows[0].X, Math.Max(14, rows[0].Y - 6)), HersheyFonts.HersheySimplex, fontScale, m.Color, thickness);
         }
 
         var clipFolder = Path.Combine(folder, MakeSafe(clip.Clip));

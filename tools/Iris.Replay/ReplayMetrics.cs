@@ -33,7 +33,17 @@ public sealed class GroupMetrics
 {
     public int Frames { get; internal set; }
 
-    public int Labels { get; internal set; }
+    /// <summary>Labeled names that must be found: every distinct label except contact codes, plus the contact codes that were found.</summary>
+    public int Labels => RequiredLabels + FoundCodes;
+
+    /// <summary>Distinct labels that are not contact codes.</summary>
+    public int RequiredLabels { get; internal set; }
+
+    /// <summary>Labeled contact codes (2-4-2 pattern). Found when read, never a miss when unread.</summary>
+    public int ContactCodeLabels { get; internal set; }
+
+    /// <summary>Labeled contact codes that a track confirmed (or, in single image mode, that were read).</summary>
+    public int FoundCodes => Found.Keys.Count(ContactCode.IsContactCode) + ReadFrames.Keys.Count(ContactCode.IsContactCode);
 
     /// <summary>Reads (one per nameplate evaluation that read a sure enough name) that are labeled / wrong / excluded-type.</summary>
     public int Reads { get; internal set; }
@@ -136,7 +146,9 @@ public sealed class ReplayMetrics
             return null;
         if (!_groups.TryGetValue(key, out var group))
         {
-            group = new GroupMetrics { Labels = vocabulary.Distinct().Count() };
+            var distinct = vocabulary.Distinct().ToList();
+            var codes = distinct.Count(ContactCode.IsContactCode);
+            group = new GroupMetrics { RequiredLabels = distinct.Count - codes, ContactCodeLabels = codes };
             _groups[key] = group;
         }
 
@@ -328,6 +340,7 @@ public sealed class ReplayMetrics
             Number(delaysFrames.Count == 0 ? null : Program.Median(delaysFrames)), Number(delaysMs.Count == 0 ? null : Program.Median(delaysMs)),
             wrong, wrongEnd, corrections, junk, anim, unread, filtered, Number(Program.Median(allMs)), Number(Program.Percentile95(allMs))));
         text.AppendLine();
+        text.AppendLine("labels = labeled names, plus labeled contact codes that were found (a contact code that is never read is not a miss);");
         text.AppendLine("found = labeled names a track CONFIRMED (read identically several times, with exactly the labeled spelling: names match exactly, 0/O and 1/I are different);");
         text.AppendLine("delay = median, over the found names, from the first read of the name to its confirmation (frames and ms of video time; frames are native video frames, also with --fps);");
         text.AppendLine("wrong = names CONFIRMED that are not labeled, not excluded, not contact codes: the app would look them up (the target is 0); wrongEnd = the same for the name each track ended with, after corrections;");
@@ -337,7 +350,7 @@ public sealed class ReplayMetrics
         var first = true;
         foreach (var (key, g) in _groups)
         {
-            var missing = (_labels.NamesFor(key) ?? Array.Empty<string>()).Distinct().Where(n => !g.Found.ContainsKey(n)).ToList();
+            var missing = (_labels.NamesFor(key) ?? Array.Empty<string>()).Distinct().Where(n => !g.Found.ContainsKey(n) && !ContactCode.IsContactCode(n)).ToList();
             if (missing.Count == 0)
                 continue;
             if (first)
