@@ -192,14 +192,24 @@ public sealed class NameplateDetector : IDisposable
         if (score / text.Length < _settings.MinNameScore)
             return new PairEvaluation(true, null); // a nameplate, but this read is too unsure to vote
 
+        // the O/0 measurements of every row, indexed in the joined name (the evidence of the tracker's O0MultiFrame rule)
+        List<O0Glyph>? evidence = null;
+        var offset = 0;
+        foreach (var word in words)
+        {
+            foreach (var glyph in word.O0)
+                (evidence ??= new List<O0Glyph>()).Add(new O0Glyph(offset + glyph.Index, glyph.ProbabilityO));
+            offset += word.Text.Length;
+        }
+
         var color = PlateColors.Classify(words.Select(w => w.Mask), _settings.PlateColorRules);
         return new PairEvaluation(true, new NameplateDetection(
             text, score, top, bottom, distance.Value.Text, distance.Value.HasSpeedGroup,
-            rows, color?.Color, color?.Hue ?? 0.0, color?.Saturation ?? 0.0));
+            rows, color?.Color, color?.Hue ?? 0.0, color?.Saturation ?? 0.0, evidence));
     }
 
-    /// <summary>One row of a name read as one word: the characters, the sum of their log probabilities and the line mask (with the colours of its ink).</summary>
-    private sealed record NameWord(string Text, double Score, LineMask Mask);
+    /// <summary>One row of a name read as one word: the characters, the sum of their log probabilities, the line mask (with the colours of its ink) and the O/0 measurements (indexes in this row's text).</summary>
+    private sealed record NameWord(string Text, double Score, LineMask Mask, IReadOnlyList<O0Glyph> O0);
 
     /// <summary>
     /// The line in <paramref name="box"/> read with the name alphabet, when it is ONE word of name characters (A-Z, 0-9, <c>-</c>, <c>_</c>); otherwise null
@@ -222,11 +232,17 @@ public sealed class NameplateDetector : IDisposable
         var score = 0.0;
         foreach (var piece in read.Pieces)
             score += piece.Score;
+        IReadOnlyList<O0Glyph> evidence = Array.Empty<O0Glyph>();
         if (_settings.SubPixelO0Rule)
-            text = O0Rule.Correct(bgr, read, text); // the letter O or the digit 0: measured on the glyph's own pixels (names only, never distance lines)
+        {
+            var measured = new List<O0Glyph>();
+            text = O0Rule.Correct(bgr, read, text, measured); // the letter O or the digit 0: measured on the glyph's own pixels (names only, never distance lines)
+            evidence = measured;
+        }
+
         if (_settings.UnderscoreHyphenRule)
             text = UnderscoreHyphenRule.Correct(read, text); // an underscore or a hyphen: told apart by the height of the bar in the capital band (after the O/0 pass, per row)
-        return new NameWord(text, score, mask);
+        return new NameWord(text, score, mask, evidence);
     }
 
     /// <summary>The line in <paramref name="box"/> read in distance mode, when it is a distance anchor (<see cref="DistanceLineRule"/>); otherwise null.</summary>

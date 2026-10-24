@@ -13,6 +13,8 @@ namespace Iris.Core.Detection;
 /// <param name="Color">The colour class of the plate (<see cref="PlateColors"/>), null when there were too few text pixels to measure it.</param>
 /// <param name="Hue">The hue (degrees) the colour class was decided on.</param>
 /// <param name="Saturation">The saturation (0 to 1) the colour class was decided on.</param>
+/// <param name="O0Evidence">For every O or 0 glyph of the name that the O/0 rule could measure: its index in <paramref name="Name"/> (rows joined) and P(O) before the verdict (see <see cref="Letters.O0Glyph"/>).
+/// The tracker adds these up over the frames when <see cref="NameplateTrackerSettings.O0MultiFrame"/> is on. Null: none (the rule is off, or no glyph was a ring).</param>
 public sealed record NameplateDetection(
     string Name,
     double Score,
@@ -23,7 +25,8 @@ public sealed record NameplateDetection(
     IReadOnlyList<Rect>? Rows = null,
     PlateColor? Color = null,
     double Hue = 0.0,
-    double Saturation = 0.0)
+    double Saturation = 0.0,
+    IReadOnlyList<Letters.O0Glyph>? O0Evidence = null)
 {
     /// <summary>The score divided by the number of letters.</summary>
     public double MeanScore => Name.Length == 0 ? 0.0 : Score / Name.Length;

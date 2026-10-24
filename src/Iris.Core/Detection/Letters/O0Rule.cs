@@ -8,6 +8,14 @@ namespace Iris.Core.Detection.Letters;
 public readonly record struct O0Measurement(double OuterWidth, double OuterHeight, double HoleWidth, double HoleHeight);
 
 /// <summary>
+/// The O/0 evidence of one glyph the rule measured: its place in the name and P(O) BEFORE the verdict was applied (whether or not the verdict decided). The tracker adds the log odds of
+/// these over the frames (<see cref="NameplateTrackerSettings.O0MultiFrame"/>).
+/// </summary>
+/// <param name="Index">The index of the glyph's character in the text (in the joined name of a multi-row read, once the detector added the length of the rows above).</param>
+/// <param name="ProbabilityO">P(O) of the glyph, between 0 and 1 (<see cref="O0Rule.ProbabilityO"/>).</param>
+public readonly record struct O0Glyph(int Index, double ProbabilityO);
+
+/// <summary>
 /// The sub-pixel O/0 rule: the letter model cannot tell the letter O from the digit 0 at 11 to 22 pixels high (the 0 is only a little narrower), so every glyph the
 /// model read as <c>O</c> or <c>0</c> in a NAME (never in a distance line) is measured on its own pixels. A port of <c>o0_measure</c>, <c>o0_prob</c>, <c>o0_verdict</c>,
 /// <c>glyph_box</c> and <c>Reader.o0_correct</c> of <c>detector_ref.py</c> (training kit, README section "Sub-pixel O/0 rule").
@@ -275,8 +283,10 @@ public static class O0Rule
     /// The text of a NAME read with every O and 0 replaced by the verdict of the rule (<c>Reader.o0_correct</c>); no verdict (not a ring, undecided P, the cut is not one glyph) keeps the model's
     /// character. <paramref name="read"/> must have its mask and character spans (see <see cref="NameplateReader.ReadPieces(LineMask, bool[], double)"/>);
     /// when the spans do not match the text one to one the text is returned as read. Distance lines never come here.
+    /// <paramref name="evidence"/>, when given, receives (index in <paramref name="text"/>, P(O)) of every glyph that could be measured, before its verdict is applied
+    /// (<c>info["o0"]</c> of the reference); nothing for a glyph that is no ring or has no box.
     /// </summary>
-    public static string Correct(Mat bgr, PieceRead read, string text)
+    public static string Correct(Mat bgr, PieceRead read, string text, List<O0Glyph>? evidence = null)
     {
         if (read.Mask is null || read.CharacterSpans is null || read.CharacterSpans.Count != text.Length)
             return text;
@@ -301,7 +311,9 @@ public static class O0Rule
             var measurement = Measure(crop);
             if (measurement is null)
                 continue;
-            if (Verdict(ProbabilityO(measurement.Value)) is { } verdict)
+            var probability = ProbabilityO(measurement.Value);
+            evidence?.Add(new O0Glyph(k, probability));
+            if (Verdict(probability) is { } verdict)
                 chars[k] = verdict;
         }
 
