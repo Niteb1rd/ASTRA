@@ -485,13 +485,16 @@
                                        Text="{Binding Value, ElementName=PanelTopGapSlider, StringFormat='{}{0:0}%'}" />
 
                             <TextBlock Grid.Row="4" Grid.Column="0" Text="Nameplate Tracking Tickrate" VerticalAlignment="Center"
-                                       ToolTip="How many times a second the brackets are moved on screen (15 to 120). IRIS reads the screen only about 5 times a second; between two reads it moves each bracket along the speed its nameplate was seen moving at. A higher number looks smoother; it costs a little more processor and graphics work, never more screen reading." />
+                                       ToolTip="How many times a second IRIS follows each nameplate on screen (15 to 120). The names are read only about 5 times a second; between two reads IRIS follows each nameplate by matching its text in a small part of the screen, and the brackets are drawn at your monitor's refresh rate. A higher number follows fast turns more closely; it costs a little more processor and graphics work." />
                             <Slider x:Name="TrackingFpsSlider" Grid.Row="4" Grid.Column="1" Margin="0,3" VerticalAlignment="Center"
                                     TickFrequency="5" IsSnapToTickEnabled="True" SmallChange="5" LargeChange="15"
                                     ValueChanged="OnOverlaySliderChanged" />
                             <TextBlock Grid.Row="4" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center"
                                        Text="{Binding Value, ElementName=TrackingFpsSlider, StringFormat='{}{0:0} fps'}" />
                         </Grid>
+                        <CheckBox x:Name="OverlayVisibleInCaptureCheck" Content="Show overlay in screenshots and recordings" Margin="0,0,0,8"
+                                  Checked="OnSettingChanged" Unchecked="OnSettingChanged"
+                                  ToolTip="Off (the default): the brackets and the panel are left out of screenshots, screen recordings, OBS and Discord screen sharing. On: they are part of them (the brackets and panel show up in your clips). IRIS keeps the overlay out of its own reading of the screen either way. Needs Save." />
                         <Button x:Name="TestOverlayButton" Content="Show test overlay (15 s)" HorizontalAlignment="Left"
                                 Padding="12,4" Margin="0,0,0,4" Click="OnTestOverlay"
                                 ToolTip="Shows a sample overlay for 15 seconds, over the Star Citizen window if it is running, otherwise over this screen. It uses the values above even before you save them, so you can adjust and preview. Click again to stop." />

@@ -52,6 +52,9 @@ internal static class NativeMethods
     /// <summary>Windows 10 version 2004 and later: the window is left out of screen captures (Desktop Duplication, screen recorders, screenshots) and shows as nothing there.</summary>
     public const uint WdaExcludeFromCapture = 0x00000011;
 
+    /// <summary>The default: the window is part of screen captures (WDA_NONE). Used when the setting "Show overlay in screenshots and recordings" is on.</summary>
+    public const uint WdaNone = 0x00000000;
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint affinity);

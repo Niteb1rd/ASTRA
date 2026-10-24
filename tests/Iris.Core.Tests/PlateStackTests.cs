@@ -137,7 +137,7 @@ public class PlateStackTests
                     problems.Add($"{frame.File}: {expected.Name}: rows {string.Join(" ", found.NameRows)} vs Python {string.Join(" ", expectedRows)}");
                 if (found.IsMultiRow != expected.Rows.Length > 1)
                     problems.Add($"{frame.File}: {expected.Name}: IsMultiRow {found.IsMultiRow}");
-                var union = PlateGeometry.PlateBox(expectedRows, expected.DistanceBox);
+                var union = PlateBoxes.PlateBox(expectedRows, expected.DistanceBox);
                 if (!Near(found.PlateBox, union))
                     problems.Add($"{frame.File}: {expected.Name}: plate box {found.PlateBox} vs {union}");
                 if (found.Color?.ToString().ToUpperInvariant() != expected.Color)

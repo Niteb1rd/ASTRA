@@ -37,6 +37,7 @@ public sealed class OverlayCanvas : FrameworkElement
     private ToastLayout? _toastLayout;
     private string? _toastText;
     private PixelRect _origin;
+    private double _screenHeight = BracketMetrics.ReferenceScreenHeight;
 
     static OverlayCanvas()
     {
@@ -58,15 +59,17 @@ public sealed class OverlayCanvas : FrameworkElement
 
     /// <summary>
     /// Replaces what is drawn and redraws once. <paramref name="origin"/> is the top-left corner (game-window pixels) of the part of the game window that
-    /// this surface covers; only its X and Y are used.
+    /// this surface covers; only its X and Y are used. <paramref name="screenHeight"/> is the game window's height in pixels: the brackets have one fixed size,
+    /// scaled with it (<see cref="BracketMetrics"/>).
     /// </summary>
-    public void SetContent(OverlayModel model, PanelLayoutResult panel, ToastLayout? toastLayout, string? toastText, PixelRect origin = default)
+    public void SetContent(OverlayModel model, PanelLayoutResult panel, ToastLayout? toastLayout, string? toastText, PixelRect origin, double screenHeight)
     {
         _model = model;
         _panel = panel;
         _toastLayout = toastLayout;
         _toastText = toastText;
         _origin = origin;
+        _screenHeight = screenHeight;
         InvalidateVisual();
     }
 
@@ -90,7 +93,7 @@ public sealed class OverlayCanvas : FrameworkElement
             if (drawBrackets)
             {
                 foreach (var item in _model.Brackets)
-                    DrawBrackets(dc, item);
+                    DrawBrackets(dc, item, _screenHeight);
             }
 
             if (drawPanel)
@@ -110,11 +113,11 @@ public sealed class OverlayCanvas : FrameworkElement
     // Brackets
     // ---------------------------------------------------------------------------------------
 
-    private static void DrawBrackets(DrawingContext dc, BracketItem item)
+    private static void DrawBrackets(DrawingContext dc, BracketItem item, double screenHeight)
     {
-        // the sizes live in BracketMetrics, which also tells the window how much room the brackets need
+        // the sizes live in BracketMetrics, which also tells the window how much room the brackets need: one fixed size, centered on the plate, clear of its text
         var box = item.Box;
-        var m = BracketMetrics.For(box);
+        var m = BracketMetrics.For(box, screenHeight);
         var stroke = m.Stroke;
         var outline = m.Outline;                          // the dark edge sticks out this far on each side of the colored line
 

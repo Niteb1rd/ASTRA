@@ -85,6 +85,42 @@ public class LiveEngineTests : IDisposable
         Assert.Equal(30, missing.Settings.NameplateTrackingFps);
     }
 
+    // ----- overlay_visible_in_capture -----
+
+    [Fact]
+    public void OverlayVisibleInCapture_DefaultsToFalse()
+    {
+        Assert.False(new AppSettings().OverlayVisibleInCapture);
+        Assert.False(AppSettingsToml.Read("format_version = 1\n").Settings.OverlayVisibleInCapture);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void OverlayVisibleInCapture_SaveThenLoadRoundTrips(bool value)
+    {
+        var path = _dir.File("settings.toml");
+        var saved = AppSettingsToml.Save(path, new AppSettings { OverlayVisibleInCapture = value });
+        var loaded = AppSettingsToml.Load(path);
+
+        Assert.True(saved.Success, saved.Error);
+        Assert.Empty(loaded.Warnings);
+        Assert.Equal(value, loaded.Settings.OverlayVisibleInCapture);
+        Assert.Contains("overlay_visible_in_capture = " + (value ? "true" : "false"), File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void OverlayVisibleInCapture_AWrongTypeBecomesFalseWithAWarning_AndTheKeyIsKnown()
+    {
+        var known = AppSettingsToml.Read("overlay_visible_in_capture = true\n");
+        var wrong = AppSettingsToml.Read("format_version = 1\noverlay_visible_in_capture = \"yes\"\n");
+
+        Assert.Empty(known.Warnings);
+        Assert.True(known.Settings.OverlayVisibleInCapture);
+        Assert.StartsWith("overlay_visible_in_capture", Assert.Single(wrong.Warnings));
+        Assert.False(wrong.Settings.OverlayVisibleInCapture);
+    }
+
     // ----- CacheDatabase.IsOrgMember -----
 
     [Fact]
@@ -246,9 +282,37 @@ public class LiveEngineTests : IDisposable
             return new GrabResult(GrabStatus.Ok, _last);
         }
 
+        public int RegionGrabs { get; private set; }
+        private readonly List<Mat> _regionImages = new();
+
+        public GrabRegionsResult GrabRegions(IReadOnlyList<Rect> screenRegions)
+        {
+            RegionGrabs++;
+            if (Unavailable)
+                return GrabRegionsResult.Unavailable("test: no picture");
+            foreach (var old in _regionImages)
+                old.Dispose();
+            _regionImages.Clear();
+            var images = new List<Mat?>(screenRegions.Count);
+            foreach (var region in screenRegions)
+            {
+                var crop = new Rect(region.X - Origin.X, region.Y - Origin.Y, region.Width, region.Height);
+                var image = new Mat(_window, crop).Clone();
+                _regionImages.Add(image);
+                images.Add(image);
+            }
+
+            return new GrabRegionsResult(GrabStatus.Ok, images);
+        }
+
         public void Release() => Releases++;
 
-        public void Dispose() => _last?.Dispose();
+        public void Dispose()
+        {
+            _last?.Dispose();
+            foreach (var image in _regionImages)
+                image.Dispose();
+        }
     }
 
     private const int WindowX = 100;
@@ -301,6 +365,51 @@ public class LiveEngineTests : IDisposable
         // only the scan region (and its context) was asked for, in screen pixels
         Assert.Equal(engine.Geometry!.ToScreen(WindowX, WindowY), source.LastRegion);
         Assert.True((long)source.LastRegion.Width * source.LastRegion.Height < (long)frame.Width * frame.Height);
+    }
+
+    [OpenCvFact]
+    public void Process_AConfirmedPlateGetsASeedWithATemplateOfItsNameAndTheTrackerFollowsIt()
+    {
+        var frame = Frame("frame_c.png");
+        var expected = Assert.Single(frame.Default.Detections);
+        using var image = Cv2.ImRead(frame.ImagePath, ImreadModes.Color);
+        using var source = new ImageFrameSource(image, WindowX, WindowY);
+        using var engine = NewEngine(out _);
+        var config = new SocialConfig();
+        Assert.True(engine.TryGetGeometry(frame.Width, frame.Height, out var geometry));
+
+        DetectionResult? result = null;
+        for (var i = 0; i < 3; i++) // three reads confirm the name
+        {
+            result?.Dispose();
+            var grab = source.GrabRegions(new[] { geometry!.ToScreen(WindowX, WindowY) });
+            result = engine.Process(grab.Images[0]!, Window(frame), config, 1000 + 200.0 * i, out var problem);
+            Assert.Null(problem);
+        }
+
+        Assert.NotNull(result);
+        var seed = Assert.Single(result!.Seeds);
+        Assert.Equal(expected.Name, Assert.Single(result.Snapshot.Brackets).Handle);
+        Assert.NotNull(seed.Template);
+        Assert.Equal((int)seed.NameBox.Width, seed.Template!.Width);
+        Assert.Equal((int)seed.NameBox.Height, seed.Template.Height);
+        Assert.True(seed.PlateBox.Height >= seed.NameBox.Height); // the distance line is part of the plate, not of the template
+        Assert.Equal(1400, seed.AtMs);
+
+        // the tracker takes it over and finds the plate again in the same picture (the screen did not move)
+        using var tracker = new PlateTemplateTracker();
+        tracker.ApplyDetection(result, 1400);
+        var plan = tracker.Plan(1433, 33, frame.Width, frame.Height);
+        var patchPictures = plan.Select(p => (Mat?)new Mat(image, p.Patch).Clone()).ToList();
+        var tick = tracker.Update(1433, plan, patchPictures);
+        foreach (var picture in patchPictures)
+            picture!.Dispose();
+
+        Assert.Equal(1, tick.Attempts);
+        Assert.Equal(1, tick.Found);
+        var bracket = Assert.Single(tracker.Snapshot(1433).Brackets);
+        Assert.InRange(bracket.Box.X, seed.PlateBox.X - 1.0, seed.PlateBox.X + 1.0);
+        Assert.InRange(bracket.Box.Y, seed.PlateBox.Y - 1.0, seed.PlateBox.Y + 1.0);
     }
 
     [OpenCvFact]

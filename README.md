@@ -7,7 +7,7 @@ and summarizes their orgs in a side panel. See the requirements doc for the full
 
 ## Status
 
-Phase 3, step 3 makes the overlay live: DXGI screen capture of the game's scan region, a detection loop (5 reads a second) and bracket tracking between reads (see "Phase 3, step 3: live detection" below). Phase 3, step 2 added the nameplate detector and a replay tool; step 1 the nameplate letter recognizer. Phase 2: the overlay shell. IRIS runs as a tray app with a Social Overlay config window and the overlay window itself (brackets and the right-hand panel). The Settings tab has an Overlay section (including the tracking tickrate) and a "Show test overlay (15 s)" button to try it. See "Phase 2: the overlay" below.
+Phase 3, step 3 makes the overlay live: DXGI screen capture of the game's scan region, name detection 5 times a second, template tracking of the plates between detections (15 to 120 times a second) and brackets drawn at the monitor's refresh rate (see "Phase 3, step 3: live detection" below). Phase 3, step 2 added the nameplate detector and a replay tool; step 1 the nameplate letter recognizer. Phase 2: the overlay shell. IRIS runs as a tray app with a Social Overlay config window and the overlay window itself (brackets and the right-hand panel). The Settings tab has an Overlay section (including the tracking tickrate) and a "Show test overlay (15 s)" button to try it. See "Phase 2: the overlay" below.
 
 - `src/Iris.Core`: config file (TOML) read, write and validate; color and bracket rules; right-panel org line (increment 1).
 - `src/Iris.Core/Rsi`: reads robertsspaceindustries.com. Pure parsers for the player organizations page, the org page and the
@@ -18,7 +18,7 @@ Phase 3, step 3 makes the overlay live: DXGI screen capture of the game's scan r
   org-list-member lookup.
 - `src/Iris.Core/Detection`: the exclusion list (hand-editable text file plus shipped defaults), the nameplate name filter, and the
   tracker that adds names seen on two separate nameplates at once (increment 3).
-- `src/Iris.Core/Live`: the live pipeline without threads or windows: `IFrameSource`, `ScanGeometry`, `LiveDetectionEngine`, `LiveSnapshotBuilder`, `LivePredictor`, `OrgMemberLookupQueue`, `LiveStats` (Phase 3, step 3).
+- `src/Iris.Core/Live`: the live pipeline without threads or windows: `IFrameSource`, `ScanGeometry`, `LiveDetectionEngine`, `LiveSnapshotBuilder`, `LivePredictor`, `PlateTemplateTracker`, `PlateMasker`, `PlateSeedBuilder`, `DetectionMailbox`, `OrgMemberLookupQueue`, `LiveStats` (Phase 3, step 3).
 - `src/Iris.Core/Storage`: `DataPaths` (the `Data` folder and the files in it) and `SocialListStore` (loads the list file; saves it
   crash-safely through `.tmp`, keeping one `.bak`). `src/Iris.Core/Config/RowValidator.cs` checks a typed handle or SID for the
   config window: format, duplicates, cache first, then one RSI request (increment 4).
@@ -285,7 +285,7 @@ A name is not trusted from one frame. The tracker (`src/Iris.Core/Detection/Name
 outside the repository (the tool refuses to write into a folder that is inside a git repository).
 
     dotnet run --project tools/Iris.Replay -- <input> [--labels FILE] [--out FOLDER] [--annotate] [--every N] [--model FILE] [--region L,R,T,B]
-                                              [--fps N] [--image-fps N] [--confirm-reads N] [--confirm-span MS]
+                                              [--fps N] [--image-fps N] [--confirm-reads N] [--confirm-span MS] [--track]
 
 - `<input>`: a video file, a folder of images, a folder with one sub folder (or video) per clip, or one image. Videos are opened with OpenCV's `VideoCapture`; the
   `OpenCvSharp4.runtime.win` package may not include an FFmpeg backend for every codec. If a video does not open, cut it into frames
@@ -392,56 +392,77 @@ They were made by a script of the local training kit; like the letter fixtures t
 
 ## Phase 3, step 3: live detection
 
-The overlay now shows REAL detections: IRIS captures the game's screen, runs the nameplate detector and tracker over it, and draws brackets and the panel from the tracks.
+The overlay now shows REAL detections: IRIS captures the game's screen, reads the names of the nameplates (**detect**), follows each plate from picture to picture (**track**) and draws brackets and the panel from that.
 (Step 2, the detector, is described above; this is the third step of Phase 3.)
 
+**Detect, then track.** Reading names (OCR) is slow and happens 5 times a second; a plate moves much faster than that. So the two jobs are separate:
+- **Detect** (5 a second, `LiveSettings.DetectionRateHz`): the detector and the name tracker read the scan region. A name is confirmed after 3 identical reads over at least 300 ms. Every plate a detection saw gives the tracker
+  a **template** (the colour-masked text of the plate's NAME ROWS only, cut from the very picture that was read; the distance line is left out, its digits change all the time), the plate's position and its velocity.
+- **Track** (`nameplate_tracking_fps` a second, 15 to 120, default 30): for each plate the tracker looks for its template in a small patch of the screen around the **predicted** position (last tracked position plus velocity times the time since).
+  The text mask is made with the same top-hat colour rules as the detector's, per plate colour class (cyan/white, red, green; else the detector's combined mask). `Cv2.MatchTemplate` (`TM_CCORR_NORMED`) gives a score; **0.65 or more
+  (`PlateTemplateTracker.DefaultMatchThreshold`) means found**: the position is the match (to a fraction of a pixel by a parabola through the peak) and the velocity is the smoothed movement over the last 2 to 3 found ticks (at most 2000 px/s at 1440, scaled).
+  A lower score keeps the prediction. A plate **not found for 300 ms** is hidden until a detection finds it again. Tracking never reads or changes a name; **a detection always wins**: it replaces position, template and velocity.
+  The nameplate has the same pixel size at any distance, so there is no scale search. At most **24 plates** are matched (the lowest track ids first); any others only move along their velocity.
+- **The search patch** is the template's box grown on every side by `max(16, 2000 px/s x t)` pixels at 1440 high, scaled by window height / 1440, clipped to the window, where t is the larger of the tick interval (about 67 px at 30 ticks a second, 17 px at 120) and the AGE of the position the prediction starts from (a detection's picture, a run of misses), at most 500 ms.
+  A detection that arrives after the tracking has found the plate in a NEWER picture keeps the tracked position and velocity (it brings the name, colour, template and box size); one that agrees with the tracked box within 2 px (scaled) keeps the tracked box too, so a still bracket does not hop. Plates without a template count as seen when their detection arrives.
+- **What does not change:** names, colours, confirmation, the exclusion and duplicate rules and the panel all still come from the detection (`LiveDetectionEngine`, `LiveSnapshotBuilder`).
+
 **Capture: DXGI Desktop Duplication** (`src/Iris.App/Services/DxgiFrameSource.cs`, behind `IFrameSource` in `Iris.Core/Live`).
-- The monitor that holds the game window is duplicated (Windows 8 and later; the game must be borderless, which the overlay already requires). The picture stays on the GPU; only the **scan region**
-  (default x 15 to 85 %, y 10 to 70 % of the game window, plus the little context the detector wants around it) is copied into a reusable small CPU staging texture and from there into a reusable BGR `Mat`.
-  The rest of the screen is never read back.
-- Each read is `AcquireNextFrame` (waits up to 100 ms), a region copy, `ReleaseFrame` at once. "Nothing changed on screen" is not an error: the previous picture is read again. Access lost (mode change, secure desktop,
-  another full-screen program), device removed, a changed monitor or an unexpected pixel format release device, duplication and staging texture; the next read sets up again (after at most 2 s following a failed setup).
+- The monitor that holds the game window is duplicated (Windows 8 and later; the game must be borderless, which the overlay already requires). The picture stays on the GPU; only small rectangles are read back: every tracking tick the
+  tracker's **search patches**, and every 200 ms also the **scan region** (default x 15 to 85 %, y 10 to 70 % of the game window, plus the little context the detector wants), all out of **one acquired frame** (`GrabRegions`), each into
+  its own staging texture (the scan region has a dedicated one, the patches a stable pool) (sized up to a multiple of 64 px so that a patch that changes by a few pixels does not make a new texture) and its own reusable BGR `Mat`. The rest of the screen is never read back.
+- A tick is `AcquireNextFrame` (waits up to 100 ms), one region copy per rectangle, `ReleaseFrame` at once. "Nothing changed on screen" is not an error: the brackets stay where they are and the previous scan picture is read again. Access lost (mode change, secure desktop,
+  another full-screen program), device removed, a changed monitor or an unexpected pixel format release device, duplication and staging textures; the next tick sets up again (after at most 2 s following a failed setup).
 - `DuplicateOutput` always delivers 8 bit B8G8R8A8 (R8G8B8A8 is accepted as well; any other format is reported in the log as unsupported). That holds with HDR on, too: Windows converts the picture, so HDR does not stop
   the capture, but the converted colors can lower the detection quality. If detection is poor, try SDR for the game's monitor.
-- **IRIS's own overlay is kept out of its own capture.** Every overlay window (brackets, panel and confirmation text, test overlay) is set to "exclude from capture" (`SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE`),
-  otherwise the brackets and panel colors would be read as screen content. Side effect: **screen recorders, OBS, Discord screen share and screenshots do not show the overlay either** (Windows 10 version 2004 or later).
-  If Windows refuses the call, or the Windows build is older than 19041 (before version 2004, where the call would turn the window into a black box), IRIS does not rely on it: the log says so, and IRIS paints the panel and test overlay
-  windows' rectangles black in every picture it captures, before detection. For the brackets window only the outlines of the brackets are painted black (a little thicker than drawn), because its rectangle also holds nameplates.
 - New packages: `Vortice.DXGI` 3.6.2 and `Vortice.Direct3D11` 3.6.2 (MIT), in `Iris.App` only. `Iris.Core` still has no Windows or Direct3D code.
 
-**Detection loop** (`LiveDetectionService`, `LiveDetectionEngine`). A background thread ("IRIS detection", below normal priority) does **5 reads a second** (an internal default,
-`LiveSettings.DetectionRateHz`). A read is: capture, `NameplateDetector.FindCandidates`, `FrameEvaluator`, `NameplateTracker.Update` (the same shape as the replay tool), then the duplicate-name check and the new overlay snapshot.
-The detector gets the crop with its settings re-expressed for the crop (`ScanGeometry`; the pixel constants still scale with the game window's height, `NameplateDetectorSettings.ScaleHeight`), which gives the same result as a whole-frame scan of the same region.
-Every read is timed; a read that takes longer than its period is not followed by a catch-up: the slots it overran are skipped (counted in the log), reads never queue.
+**IRIS's own overlay and its own capture.** The brackets and panel colours would be read as screen content (and the brackets would break the detector's clearance check), so IRIS keeps its windows out of its own pictures:
+- **Default (setting off): excluded by Windows.** Every overlay window is set to "exclude from capture" (`SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE`, Windows 10 version 2004 or later). Side effect: **screen recorders, OBS, Discord screen share and
+  screenshots do not show the overlay either.**
+- **"Show overlay in screenshots and recordings"** (Settings > Overlay; `overlay_visible_in_capture = true`, default `false`): the windows use `WDA_NONE`, so recordings and screenshots **do** show the brackets and the panel,
+  and **IRIS masks its own drawings in its own captures** instead: the panel and test windows' rectangles are filled black and the outlines of the brackets (stroke plus outline plus 4 px) of the **newest published bracket set and of every set published within 100 ms before the captured frame** are painted
+  black (the screen may still show an earlier frame than the newest one; `CaptureExclusion` keeps a thread-safe, time-stamped `PublishedHistory`, and the sets are read right after the frame is acquired). The masks apply to every grabbed region, the tracking patches included. The setting applies to all overlay windows
+  at once when you press Save (no restart).
+- The same masking is the fallback when Windows refuses the call or the Windows build is older than 19041 (before version 2004, where the call would turn the window into a black box): the log says so. For the brackets window only the outlines are painted
+  (its rectangle also holds nameplates).
 
-**What pauses it.** Detection runs only while the overlay controller says Ready: Star Citizen is the window in front, it is borderless (`attributes.xml`), and the overlay is not disabled. Otherwise the thread
-neither captures nor reads (it only wakes to look at the gate), and the tracks are forgotten. **Disable Overlay** (button or hotkey) stops capture and OCR entirely. After 5 s of idleness the screen duplication is released as well.
-The test overlay does not start detection.
+**Threads and data flow.**
+- **Capture and tracking thread** ("IRIS tracking"): the ONLY owner of the screen duplication. Each tick (at `nameplate_tracking_fps`): take a finished detection if there is one (it wins), plan the patches, grab patches (and, every 200 ms, the scan
+  region) from one frame, hand the scan picture to the detection thread, match the templates, publish the snapshot. If the detection thread is still busy with the last picture, that slot is skipped (counted in the log): **OCR never blocks tracking**.
+- **Detection thread** ("IRIS detection", below normal priority): takes the scan picture from a one-slot mailbox (`DetectionMailbox`: the capture thread copies into the mailbox's buffer only when the thread is idle), runs `LiveDetectionEngine.Process`,
+  and posts the `DetectionResult` (snapshot plus the seeds: template, position, velocity of each plate it saw) through a one-slot `DetectionResultSlot`. A result of an earlier run (the game left the front meanwhile) is dropped by its epoch.
+- **UI thread (the renderer):** see below. **Lookup task:** `OrgMemberLookupQueue`, one RSI request at a time through the rate-limited client.
+- screen -> capture thread -> (copy) mailbox -> detection thread -> (immutable result) slot -> capture thread -> (immutable `LiveSnapshot`) `LiveSnapshotHub` -> UI thread. Nothing else is shared except immutable objects and `LiveStats` (its own lock).
+- Detection runs only while the overlay controller says Ready: Star Citizen is the window in front, it is borderless (`attributes.xml`), and the overlay is not disabled. Otherwise nothing is captured or read (the loop only wakes to look at the gate),
+  the tracks are forgotten, and after 5 s of idleness the screen duplication is released. **Disable Overlay** (button or hotkey) stops capture and OCR entirely. The test overlay does not start detection.
 
-**Tracking between reads.** The screen is read 5 times a second, but a plate moves in between. A second thread ("IRIS tracking") wakes `nameplate_tracking_fps` times a second and moves each bracket
-along the speed its plate was seen moving at (constant velocity from the tracker's last two sightings; no movement under 10 px/s, at most 500 ms and 3 box heights ahead). That is **prediction only**: no capture, no OCR; the next read puts any bracket right that guessed wrong.
-Setting `nameplate_tracking_fps` in `settings.toml`: whole number, **default 30, 15 to 120** (the slider "Nameplate Tracking Tickrate" in Settings > Overlay moves in steps of 5); out of range or not a number gives 30 and a warning.
-Cost trade-off: a higher rate only costs the (cheap) arithmetic and, when a bracket really moved by a whole pixel, one redraw of the brackets window; a still plate costs nothing. A low rate looks steppier when the camera or ship turns quickly; a high one
-costs more GPU work for the transparent window (see below). A cheap image-based re-locate between reads (matching the plate's pixels in a small area around its predicted place) is possible but is not done: tracking is prediction only.
+**Render at monitor refresh.** The brackets window hooks `CompositionTarget.Rendering` while it is shown (and unhooks when it hides): once per frame WPF composes, i.e. at the monitor's refresh rate, it moves each bracket from its last TRACKED position
+along its tracked velocity to the expected display time (now plus one refresh period of the display, 16.7 ms when unknown), **at most 50 ms ahead** (`LiveSettings.RenderExtrapolationMs`; still at most 3 box heights, and nothing under 10 px/s), and **redraws only when a bracket moved by a whole pixel**. So the brackets glide at 60, 144 or 240 Hz
+while the screen is read 15 to 120 times a second, and a stalled tracker never lets them run away (they stop after 50 ms and are hidden after 600 ms without any snapshot). The panel window is unchanged: redrawn only when its entries or the settings change.
+The UI thread is told only about structural changes (brackets appeared or all went, a new panel); movement is found by the render hook itself. A transparent window costs Windows work in proportion to its area, so the live overlay is **two small windows**:
+a brackets window sized to the union of the brackets (plus a 64 px margin so small movements do not resize it) and a panel window sized to the panel. The test overlay still uses one window of the whole size.
+
+**Bracket geometry.** The brackets have ONE fixed size: that of a one-row plate at 1440 (a 41 px high box: bracket height 41 x 1.24, width 0.24 x height, stroke max(2, height x 0.06), dark outline stroke x 0.5), scaled by the game window's height / 1440. They are
+**never taller for a multi-row plate**; they are centered vertically on the WHOLE plate box (name rows and distance line) and stand at least **10 px x (height / 1440)** from the text (the widest row; the rows are centered) to the nearest drawn pixel,
+half the stroke and the outline included (`BracketMetrics.For(plateBox, gameWindowHeight)`).
+
+**Setting `nameplate_tracking_fps`** in `settings.toml`: whole number, **default 30, 15 to 120** (the slider "Nameplate Tracking Tickrate" in Settings > Overlay moves in steps of 5); out of range or not a number gives 30 and a warning.
+It is how often each plate is matched against the screen. A higher rate follows fast turns more closely and costs a little more processor and graphics work; the brackets are drawn at the monitor's refresh rate whatever it is.
 
 **The overlay model from tracks** (`LiveSnapshotBuilder`). Brackets for CONFIRMED nameplate tracks only (a name read identically 3 times over at least 300 ms), coloured by the usual rules: `{ }` player list, `[ ]` org list,
-`< >` org attribute and No Match. A correction of the confirmed name switches colour and shape on the next read. The panel entries come from `OverlayModelBuilder` ("Orgs: not looked up" until the cache has the player).
-An expired track is gone; a track no read has seen for 600 ms is hidden, and so is everything when no read at all happened for 600 ms. Names the exclusion list or the contact-code rule ignore get no bracket (the player list wins over both); the
-session duplicate rule is fed every read (see "Duplicate names"). Players who are cached members of an org on the org list but have no cached page are looked up in the background, one at a time, through the
+`< >` org attribute and No Match. A correction of the confirmed name switches colour and shape on the next detection. The panel entries come from `OverlayModelBuilder` ("Orgs: not looked up" until the cache has the player).
+An expired track is gone; a plate the tracker has not found for 300 ms is hidden until a detection finds it, and everything is hidden when nothing at all was published for 600 ms. Names the exclusion list or the contact-code rule ignore get no bracket (the player list wins over both); the
+session duplicate rule is fed every detection (see "Duplicate names"). Players who are cached members of an org on the org list but have no cached page are looked up in the background, one at a time, through the
 rate-limited RSI client (`OrgMemberLookupQueue`, `CacheRefresher.LookupOrgListMemberAsync`), so they get the org's colour as soon as the page is read.
 
-**Render throttle.** The overlay redraws only when the model changes (not on every tick). A transparent window costs Windows work in proportion to its area, so the live overlay is **two small windows** instead of one window as big as the game: a brackets
-window sized to the union of the brackets (plus a 64 px margin so small movements do not resize it; it is shrunk again when it has become much bigger than needed), and a panel window sized to the panel. Each hides itself when it has nothing to draw.
-The test overlay still uses one window of the whole size.
+**Logging.** One line when detection starts, one when it stops, and once a minute while it runs: the reads (count, average and 95th percentile read time, skipped slots, reads without a picture, confirmed tracks) and the tracking
+(`tracking: N ticks, average X ms, p95 Y ms, Z % of M matches found`). The brackets window adds `Overlay render: N frames in 60 s, R redraws, average X ms per frame`. Nothing per frame.
 
-**Threads.** Detection thread, tracking thread, lookup task, and the UI thread. They share only immutable objects (snapshot, model, gate, settings) and one lock; UI posts are coalesced so a slow UI never builds a backlog.
+**CPU expectations** (estimates, not measured on real hardware yet): a detection of the scan region at 1440p is tens of milliseconds on one core, 5 times a second, on a below normal priority thread. A tracking tick matches one small patch per plate (the plate's name text plus the search margin) and should be well under a millisecond per plate. Look at the minute lines in the log (`average` and `p95` of both) for the real numbers on your machine. Use the replay tool's `--track` on your own clips for the tracking error and the share of frames with a bracket.
 
-**Logging.** One line when detection starts, one when it stops, and once a minute while it runs: reads, average and 95th percentile read time, skipped slots, reads without a picture, confirmed tracks. Nothing per frame.
-
-**CPU expectations** (estimates, not measured on real hardware yet): a read of the scan region at 1440p is tens of milliseconds on one core; at 5 reads a second that is a few percent of one core, on a below normal priority thread. The tracking ticks are
-microseconds each. Look at the minute lines in the log (`average` and `p95`) for the real numbers on your machine; if p95 is near 200 ms the loop is skipping slots.
-
-Tests: `LiveTrackingTests` (geometry, prediction, window fit, stats, snapshot from tracks), `LiveEngineTests` (tickrate setting, org member queue, the whole pipeline with a fake frame source over the detector fixtures).
+Tests: `LiveTrackingTests` (geometry, prediction and the 50 ms render cap, bracket metrics, window fit, stats, snapshot from tracks), `TemplateTrackingTests` (template tracking on synthetic pictures: follow, lose after 300 ms, a detection wins, the cap, colour classes;
+the mailbox, the result slot, the published history, the statistics), `LiveEngineTests` (settings, org member queue, the whole pipeline with a fake frame source over the detector fixtures), `TrackSimulationTests` (the replay tool's `--track`).
 
 ## Multi-row names, plate colour, duplicate names and the O/0 check
 
@@ -456,7 +477,7 @@ Fixtures: `tests/Iris.Core.Tests/Fixtures/plates/` (synthetic frames from `make_
 exactly as `plate_color` / `classify_color` of the reference (`PlateColors`); it is on the detection and on the track. At least 30 ink pixels are needed, otherwise there is no colour.
 
 **Duplicate names.** A player cannot be in two places at once, so one name read on two separate plates means one of the reads is wrong. In order, for every name:
-1. a name on one of your lists (player list, org list, org attribute) is **always shown and never excluded**;
+1. a name on the player list, or a member of an org on the org list, is **always shown and never excluded** (org attribute rules such as No Org or Redacted do not count);
 2. otherwise only WHITE plates count: when the same name is read on 2 or more non-overlapping white plates by both tracks in the same update, within 3 updates,
    it gets a **session exclusion**: kept in memory, it survives Reset (which happens when the game leaves the front or the overlay is disabled; there is no hotkey) and is gone when IRIS quits;
 3. a session-excluded name gets no bracket, no panel entry and no RSI lookup; the log says once per name `Session exclusion: NAME (seen on 2+ white nameplates)`.
@@ -531,7 +552,8 @@ panel_width_percent = 16       # panel width, % of the game window width; 8 to 4
 panel_text_size = 18           # panel text size in pixels at 1440p (scales with the window height); 10 to 40
 panel_right_gap_percent = 10   # space right of the panel, % of the width; 0 to 40
 panel_top_gap_percent = 15     # space above the panel, % of the height; 0 to 60
-nameplate_tracking_fps = 30    # how often the brackets are moved between screen reads; 15 to 120 (default 30)
+nameplate_tracking_fps = 30    # how often each plate is matched against the screen between name reads; 15 to 120 (default 30)
+overlay_visible_in_capture = false   # true = the overlay shows in screenshots and recordings (IRIS masks it in its own captures)
 ```
 
 A hotkey that is not valid (no key, unknown key, more than one key, wrong type) is noted in the log and becomes empty. A `panel_*` value that is out of its range (or not a whole number) is noted in the log and replaced by its default.

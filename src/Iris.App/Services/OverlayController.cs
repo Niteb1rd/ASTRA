@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using Iris.App.Views;
+using Iris.Core.Live;
 using Iris.Core.Overlay;
 using Iris.Core.Settings;
 using Iris.Core.Social;
@@ -24,9 +25,11 @@ public sealed record CaptureGate(bool Active, PixelRect Bounds)
 
 /// <summary>
 /// Decides when the overlay window is shown and what it shows. Two sources feed it:
-/// - the live model (<see cref="SetLiveModel"/>; the detection loop puts the brackets and panel of the confirmed nameplates here, up to 120 times a second),
-///   shown only while Star Citizen is in front and borderless (<see cref="GameWindowTracker"/>), the overlay is not disabled, and there is something to draw.
-///   It is drawn by two small windows, one for the brackets and one for the panel and the confirmation text (see <see cref="OverlayWindow"/>);
+/// - the live snapshot (<see cref="AttachLive"/>; the capture loop keeps the brackets and panel of the confirmed nameplates in a <see cref="LiveSnapshotHub"/>, tracked 15 to 120 times
+///   a second), shown only while Star Citizen is in front and borderless (<see cref="GameWindowTracker"/>), the overlay is not disabled, and there is something to draw.
+///   It is drawn by two small windows, one for the brackets and one for the panel and the confirmation text (see <see cref="OverlayWindow"/>). The brackets window renders at
+///   monitor refresh by itself (it asks <see cref="RenderModel"/> for the model of every frame); this class only decides which windows are shown, when the live snapshot
+///   changed in a way that matters for that (<see cref="LiveChanged"/>: brackets appeared or all went, a new panel);
 /// - the test overlay (<see cref="StartTest"/>), shown for 15 seconds whatever is in front, in one window of the whole size.
 /// "Disable Overlay" (<see cref="IsOverlayDisabled"/>) and "Disable Info Panel" (the <c>panel_enabled</c> setting) are toggled from the tray
 /// (<see cref="ToggleFromTray"/>) and from the global hotkeys (<see cref="Hotkeys"/>); the hotkeys also show a short on-screen
@@ -48,7 +51,10 @@ public sealed class OverlayController : IDisposable
     private OverlayWindow? _testWindow;
     private OverlayWindow? _bracketWindow;
     private OverlayWindow? _panelWindow;
-    private OverlayModel _liveModel = OverlayModel.Empty;
+    private OverlayModel _liveModel = OverlayModel.Empty;   // the model of the last frame (or of the last Evaluate); UI thread
+    private LiveSnapshotHub? _hub;
+    private LiveSettings _liveSettings = LiveSettings.Default;
+    private bool _evaluatePending;
     private volatile CaptureGate _gate = CaptureGate.Off; // read by the detection thread
     private bool _disposed;
 
@@ -126,13 +132,55 @@ public sealed class OverlayController : IDisposable
     }
 
     /// <summary>
-    /// Gives the overlay the detections to show while the game is in front: call it on the UI thread. The loop only calls it when the model changed (a new
-    /// instance), up to 120 times a second; the windows redraw only what changed. The empty model hides the overlay.
+    /// Connects the overlay to the capture loop's snapshots (<paramref name="hub"/>): from now on the brackets window renders them at monitor refresh. Call it on the UI thread,
+    /// once, before the capture loop starts.
     /// </summary>
-    public void SetLiveModel(OverlayModel model)
+    public void AttachLive(LiveSnapshotHub hub, LiveSettings live)
     {
+        _hub = hub;
+        _liveSettings = live;
+    }
+
+    /// <summary>
+    /// The live snapshot changed in a way the windows must hear about (the capture loop calls it, through the UI thread, only then): brackets appeared or all of them
+    /// went, or the panel's entries changed. The movement of the brackets is NOT announced: the brackets window hooks the monitor refresh and finds out by itself.
+    /// </summary>
+    public void LiveChanged() => Evaluate();
+
+    /// <summary>
+    /// The model for the moment the frame will be SHOWN from the latest snapshot: the brackets moved along their tracked velocity from where they were last tracked to the
+    /// expected display time (now plus one refresh period of the display, <see cref="DisplayTiming"/>), at most 50 ms ahead of their last tracked time.
+    /// </summary>
+    private OverlayModel ModelAtNow(OverlayModel? previous)
+    {
+        var hub = _hub;
+        return hub is null
+            ? OverlayModel.Empty
+            : LivePredictor.ModelAt(hub.Current, StopwatchClock.Shared.NowMs + DisplayTiming.RefreshPeriodMs, _liveSettings, previous);
+    }
+
+    /// <summary>
+    /// The brackets window's frame callback (monitor refresh, UI thread): the model of this frame, the same instance as <paramref name="shown"/> when no bracket moved by
+    /// a whole pixel. When the snapshot has run out (no brackets left, or stale) the windows are evaluated again so that the panel goes too.
+    /// </summary>
+    private OverlayModel RenderModel(OverlayModel shown)
+    {
+        var model = ModelAtNow(shown);
+        if (ReferenceEquals(model, _liveModel))
+            return model;
+        var emptied = model.Brackets.Count == 0 && _liveModel.Brackets.Count > 0;
         _liveModel = model;
-        Evaluate();
+        if (emptied && !_evaluatePending)
+        {
+            _evaluatePending = true;
+            _testTimer.Dispatcher.BeginInvoke(DispatcherPriority.Render, new Action(() =>
+            {
+                _evaluatePending = false;
+                Evaluate();
+            }));
+        }
+
+        return model;
     }
 
     // ---------------------------------------------------------------------------------------
@@ -338,6 +386,10 @@ public sealed class OverlayController : IDisposable
         if (_disposed)
             return;
         Hotkeys.Apply(_services.Settings);
+        // "Show overlay in screenshots and recordings": every window changes over at once, shown or not
+        var visibleInCapture = _services.Settings.OverlayVisibleInCapture;
+        foreach (var window in new[] { _testWindow, _bracketWindow, _panelWindow })
+            window?.SetVisibleInCapture(visibleInCapture);
         // the test overlay's panel follows the saved panel switch (tray state / hotkey), also when that was just flipped
         if (_testSettings is not null)
             _testSettings = _testSettings with { PanelEnabled = _services.Settings.PanelEnabled };
@@ -362,6 +414,7 @@ public sealed class OverlayController : IDisposable
 
         _testWindow?.HideOverlay();
 
+        _liveModel = ModelAtNow(_liveModel); // the snapshot may have changed since the last frame
         var snapshot = _tracker.Current;
         var settings = _services.Settings;
         var ready = snapshot.State == GameWindowState.Ready;
@@ -412,11 +465,12 @@ public sealed class OverlayController : IDisposable
 
     private void WarnWindow(string text) => _services.Log.Write(_services.Clock.UtcNow, text);
 
-    private OverlayWindow EnsureTestWindow() => _testWindow ??= new OverlayWindow(OverlayLayer.All, WarnWindow);
+    private OverlayWindow EnsureTestWindow() => _testWindow ??= new OverlayWindow(OverlayLayer.All, WarnWindow, _services.Settings.OverlayVisibleInCapture);
 
-    private OverlayWindow EnsureBracketWindow() => _bracketWindow ??= new OverlayWindow(OverlayLayer.Brackets, WarnWindow);
+    private OverlayWindow EnsureBracketWindow() =>
+        _bracketWindow ??= new OverlayWindow(OverlayLayer.Brackets, WarnWindow, _services.Settings.OverlayVisibleInCapture) { ModelProvider = RenderModel };
 
-    private OverlayWindow EnsurePanelWindow() => _panelWindow ??= new OverlayWindow(OverlayLayer.Panel, WarnWindow);
+    private OverlayWindow EnsurePanelWindow() => _panelWindow ??= new OverlayWindow(OverlayLayer.Panel, WarnWindow, _services.Settings.OverlayVisibleInCapture);
 
     public void Dispose()
     {

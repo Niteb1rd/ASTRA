@@ -81,6 +81,13 @@ public static class Program
         var model = options.ModelPath is null ? LetterModel.LoadEmbedded() : LetterModel.LoadFile(options.ModelPath);
         var reader = new NameplateReader(model);
         using var detector = new NameplateDetector(reader, options.Settings);
+        if (options.Track)
+        {
+            if (labels is not null || options.Annotate)
+                Console.Error.WriteLine("Warning: --labels and --annotate are ignored with --track.");
+            return TrackSimulation.Run(options, clips, detector);
+        }
+
         var metrics = labels is null ? null : new ReplayMetrics(labels, ReadExcludedNames());
 
         var csvPath = Path.Combine(options.OutDirectory, "detections.csv");

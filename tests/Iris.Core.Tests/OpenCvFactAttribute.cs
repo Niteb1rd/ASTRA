@@ -9,7 +9,7 @@ namespace Iris.Core.Tests;
 /// </summary>
 public sealed class OpenCvFactAttribute : FactAttribute
 {
-    private static readonly Lazy<string?> Problem = new(CheckNativeLibrary);
+    internal static readonly Lazy<string?> Problem = new(CheckNativeLibrary);
 
     /// <summary>Why the native OpenCV library cannot be used on this system, or null when it can (other test attributes use it to skip the same way).</summary>
     internal static string? NativeLibraryProblem => Problem.Value;
@@ -35,5 +35,16 @@ public sealed class OpenCvFactAttribute : FactAttribute
         {
             return $"native OpenCV library is not available on this system (the tests project carries the Windows one): {e.GetType().Name}: {e.Message}";
         }
+    }
+}
+
+/// <summary>Like <see cref="OpenCvFactAttribute"/>, for a theory: skipped when the native OpenCV library cannot be loaded.</summary>
+public sealed class OpenCvTheoryAttribute : TheoryAttribute
+{
+    public OpenCvTheoryAttribute()
+    {
+        var problem = OpenCvFactAttribute.Problem.Value;
+        if (problem is not null)
+            Skip = problem;
     }
 }

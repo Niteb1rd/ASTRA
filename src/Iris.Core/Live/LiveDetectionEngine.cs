@@ -40,6 +40,7 @@ public sealed class LiveDetectionEngine : IDisposable
     private readonly NameplateDetectorSettings _baseDetectorSettings;
     private readonly NameplateTrackerSettings _trackerSettings;
     private readonly LiveSnapshotBuilder _builder;
+    private readonly PlateSeedBuilder _seedBuilder;
     private readonly Dictionary<string, (double AtMs, IReadOnlyList<OrgMembership>? Orgs)> _orgMemo = new(StringComparer.OrdinalIgnoreCase);
 
     private NameplateDetector? _detector;
@@ -84,6 +85,7 @@ public sealed class LiveDetectionEngine : IDisposable
         _baseDetectorSettings = detectorSettings ?? NameplateDetectorSettings.Default;
         _trackerSettings = trackerSettings ?? NameplateTrackerSettings.Default;
         _builder = new LiveSnapshotBuilder(exclusions, MemoizedOrgs, _settings);
+        _seedBuilder = new PlateSeedBuilder(_baseDetectorSettings);
         _tracker = new NameplateTracker(_trackerSettings, _session);
     }
 
@@ -107,7 +109,6 @@ public sealed class LiveDetectionEngine : IDisposable
     public StepResult Step(IFrameSource source, PixelRect window, SocialConfig config, double nowMs)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        _memoNowMs = nowMs;
 
         var width = (int)Math.Round(window.Width);
         var height = (int)Math.Round(window.Height);
@@ -122,15 +123,57 @@ public sealed class LiveDetectionEngine : IDisposable
         var grab = source.Grab(region);
         if (grab.Status == GrabStatus.Unavailable || grab.Image is null)
             return new StepResult(StepStatus.Skipped, _snapshot, grab.Message ?? "no picture");
-        var image = grab.Image;
+
+        var result = Process(grab.Image, window, config, nowMs, out var problem, buildSeeds: false);
+        return result is null
+            ? new StepResult(StepStatus.Skipped, _snapshot, problem)
+            : new StepResult(StepStatus.Read, result.Snapshot);
+    }
+
+    /// <summary>
+    /// The geometry (what to copy, and the detector settings for the copy) for a game window of this size, or false when the window is too small. It does not
+    /// depend on anything the engine has seen, so the capture loop can ask for it before the first read.
+    /// </summary>
+    public bool TryGetGeometry(int windowWidth, int windowHeight, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ScanGeometry? geometry) =>
+        ScanGeometry.TryCreate(windowWidth, windowHeight, _baseDetectorSettings, out geometry);
+
+    /// <summary>
+    /// One read of a picture that is already there: <paramref name="image"/> is the scan region's crop of the game window (<see cref="ScanGeometry.Capture"/>,
+    /// the size <see cref="TryGetGeometry"/> gives), taken at <paramref name="captureMs"/> on the loop's monotonic clock (the tracker's time base: it must not go back
+    /// between reads). The detector, the tracker, the duplicate-name check and the snapshot as in <see cref="Step"/>; and, with <paramref name="buildSeeds"/>, the
+    /// <see cref="PlateSeed"/> of every confirmed plate this picture showed (its template cut out of <paramref name="image"/>), for the template tracking.
+    /// Returns null, and says why in <paramref name="problem"/>, when the picture cannot be used (a window too small to scan, a picture of the wrong size).
+    /// The caller owns the result (dispose it, or hand it to <see cref="PlateTemplateTracker.ApplyDetection"/>, which takes over its seeds).
+    /// </summary>
+    public DetectionResult? Process(Mat image, PixelRect window, SocialConfig config, double captureMs, out string? problem, bool buildSeeds = true, int epoch = 0)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        problem = null;
+        _memoNowMs = captureMs;
+
+        var width = (int)Math.Round(window.Width);
+        var height = (int)Math.Round(window.Height);
+        if (_geometry is null || !_geometry.Matches(width, height))
+        {
+            if (!SetGeometry(width, height))
+            {
+                problem = $"the game window ({width}x{height}) is too small to scan";
+                return null;
+            }
+        }
+
+        var geometry = _geometry!;
         if (image.Width != geometry.Capture.Width || image.Height != geometry.Capture.Height)
-            return new StepResult(StepStatus.Skipped, _snapshot, $"the picture is {image.Width}x{image.Height}, expected {geometry.Capture.Width}x{geometry.Capture.Height}");
+        {
+            problem = $"the picture is {image.Width}x{image.Height}, expected {geometry.Capture.Width}x{geometry.Capture.Height}";
+            return null;
+        }
 
         _frame++;
         var detector = _detector!;
         var candidates = detector.FindCandidates(image);
         var evaluator = detector.CreateEvaluator(image, candidates);
-        var update = _tracker.Update(_frame, nowMs, evaluator.TrackCandidates(), (top, bottom) =>
+        var update = _tracker.Update(_frame, captureMs, evaluator.TrackCandidates(), (top, bottom) =>
         {
             var evaluation = evaluator.Evaluate(top, bottom);
             var detection = evaluation.Detection;
@@ -141,17 +184,26 @@ public sealed class LiveDetectionEngine : IDisposable
             _log.Write(_clock.UtcNow, $"Session exclusion: {name} (seen on 2+ white nameplates)");
 
         // a session-excluded name gets no bracket, no panel entry and no lookup (a name on one of the user's lists is never excluded)
-        IReadOnlyList<NameplateTrack> shown = _tracker.Tracks;
+        IReadOnlyList<NameplateTrack> visible = _tracker.Tracks;
         if (_session.Count > 0)
-            shown = _tracker.Tracks.Where(t => t.ConfirmedName is not { } confirmed || !_session.Contains(confirmed) || IsListed(confirmed, config)).ToList();
-        _snapshot = _builder.Build(shown, config, geometry.Capture.X, geometry.Capture.Y, nowMs, _snapshot);
+            visible = _tracker.Tracks.Where(t => t.ConfirmedName is not { } confirmed || !_session.Contains(confirmed) || IsListed(confirmed, config)).ToList();
+        _snapshot = _builder.Build(visible, config, geometry.Capture.X, geometry.Capture.Y, captureMs, _snapshot);
         if (_lookups is not null)
         {
             foreach (var bracket in _snapshot.Brackets)
-                _lookups.Consider(bracket.Handle, config, nowMs);
+                _lookups.Consider(bracket.Handle, config, captureMs);
         }
 
-        return new StepResult(StepStatus.Read, _snapshot);
+        IReadOnlyList<PlateSeed> seeds = Array.Empty<PlateSeed>();
+        if (buildSeeds && _snapshot.Brackets.Count > 0)
+        {
+            var shown = new HashSet<int>(_snapshot.Brackets.Select(b => b.TrackId));
+            seeds = _seedBuilder.Build(
+                _tracker.Tracks, shown, image, geometry.Capture.X, geometry.Capture.Y, geometry.WindowHeight, captureMs,
+                _settings.MaxPredictionMs, _settings.MaxTrackedPlates);
+        }
+
+        return new DetectionResult(_snapshot, seeds, captureMs, width, height, epoch);
     }
 
     /// <summary>
@@ -174,6 +226,7 @@ public sealed class LiveDetectionEngine : IDisposable
         _disposed = true;
         _detector?.Dispose();
         _detector = null;
+        _seedBuilder.Dispose();
     }
 
     private bool SetGeometry(int width, int height)

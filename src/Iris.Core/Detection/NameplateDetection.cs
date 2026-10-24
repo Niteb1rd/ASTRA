@@ -35,7 +35,7 @@ public sealed record NameplateDetection(
     public bool IsMultiRow => Rows is { Count: > 1 };
 
     /// <summary>The whole plate: the union of the name rows and the distance line.</summary>
-    public Rect PlateBox => PlateGeometry.PlateBox(NameRows, DistanceBox);
+    public Rect PlateBox => PlateBoxes.PlateBox(NameRows, DistanceBox);
 }
 
 /// <summary>The rows a name stands on and what stands above them (see <see cref="NameplateDetector.FindCandidates"/>).</summary>
@@ -45,7 +45,7 @@ public sealed record NameplateDetection(
 public sealed record PlateStack(IReadOnlyList<Rect> Rows, IReadOnlyList<Rect> Blockers);
 
 /// <summary>Box arithmetic of a plate.</summary>
-public static class PlateGeometry
+public static class PlateBoxes
 {
     /// <summary>The smallest box that holds all the <paramref name="rows"/> and the <paramref name="distance"/> line.</summary>
     public static Rect PlateBox(IEnumerable<Rect> rows, Rect distance)

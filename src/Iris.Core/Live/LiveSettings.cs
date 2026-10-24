@@ -25,10 +25,36 @@ public sealed record LiveSettings
     public double StaleHideMs { get; init; } = 600.0;
 
     /// <summary>
-    /// Brackets are predicted at most this far ahead of the last time their plate was seen (the tracker uses the same 500 ms for its velocity,
-    /// <see cref="Iris.Core.Detection.NameplateTrackerSettings.MaxSpeedDtMs"/>). Beyond it they stand still.
+    /// A velocity is only taken from two sightings at most this far apart (the tracker uses the same 500 ms for its velocity,
+    /// <see cref="Iris.Core.Detection.NameplateTrackerSettings.MaxSpeedDtMs"/>), and the template tracking never predicts a position further ahead
+    /// than this from the last time it knew one.
     /// </summary>
     public double MaxPredictionMs { get; init; } = 500.0;
+
+    /// <summary>
+    /// Rendering at monitor refresh: each frame the brackets are moved from their last TRACKED position along their tracked velocity to "now", but at most
+    /// this far ahead of that position's time (<see cref="LivePredictor.Shift"/>). The tracking ticks keep the tracked positions fresh (15 to 120 a second),
+    /// so this only fills the gap up to the next tick and never runs away when tracking stalls.
+    /// </summary>
+    public double RenderExtrapolationMs { get; init; } = 50.0;
+
+    /// <summary>Template tracking: the best match score (TM_CCORR_NORMED, 0 to 1) from which a plate counts as found in a tick.</summary>
+    public double TrackMatchThreshold { get; init; } = PlateTemplateTracker.DefaultMatchThreshold;
+
+    /// <summary>Template tracking: a plate not found for this long is hidden until a detection finds it again.</summary>
+    public double TrackLostMs { get; init; } = 300.0;
+
+    /// <summary>Template tracking: at most this many plates get a template and are matched every tick (the others are moved by their velocity only).</summary>
+    public int MaxTrackedPlates { get; init; } = 24;
+
+    /// <summary>Template tracking: the search patch is the template box grown by at least this many pixels on every side (at 1440 high, scaled with the window height).</summary>
+    public double TrackMinMarginPx { get; init; } = 16.0;
+
+    /// <summary>Template tracking: the fastest a plate is assumed to move, in pixels a second at 1440 high (scaled with the window height); it sets the search margin (speed times tick) and caps velocities.</summary>
+    public double TrackMaxSpeedPxPerSec { get; init; } = 2000.0;
+
+    /// <summary>Template tracking: the velocity of a plate is taken from its last this-many tracked positions (2 to 3 ticks are smoothed).</summary>
+    public int TrackVelocitySamples { get; init; } = 3;
 
     /// <summary>
     /// A track slower than this (pixels per millisecond: 10 px a second) is taken as standing still: a plate at rest is read at the same place give or take a
@@ -57,6 +83,12 @@ public sealed record LiveSettings
             return "DetectionRateHz must be above 0 and at most 60.";
         if (StaleHideMs < 0 || MaxPredictionMs < 0 || MinSpeedPxPerMs < 0 || MaxShiftBoxHeights < 0 || OrgCacheMs < 0 || IdleReleaseMs < 0 || SummaryEveryMs <= 0)
             return "The times and limits must not be negative (SummaryEveryMs must be positive).";
+        if (RenderExtrapolationMs < 0 || TrackLostMs < 0 || TrackMinMarginPx < 0 || TrackMaxSpeedPxPerSec < 0)
+            return "The render and tracking times and distances must not be negative.";
+        if (!(TrackMatchThreshold > 0 && TrackMatchThreshold <= 1))
+            return "TrackMatchThreshold must be above 0 and at most 1.";
+        if (MaxTrackedPlates < 1 || TrackVelocitySamples < 2)
+            return "MaxTrackedPlates must be at least 1 and TrackVelocitySamples at least 2.";
         return null;
     }
 }

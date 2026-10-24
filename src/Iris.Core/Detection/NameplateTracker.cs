@@ -204,7 +204,7 @@ public sealed class NameplateTrack
     public IReadOnlyList<Rect> Rows { get; private set; }
 
     /// <summary>The whole plate: the union of the name rows and the line below them.</summary>
-    public Rect PlateBox => PlateGeometry.PlateBox(Rows, Bottom);
+    public Rect PlateBox => PlateBoxes.PlateBox(Rows, Bottom);
 
     /// <summary>The colour class reported with the track's last counted vote; null before the first vote or when it could not be measured.</summary>
     public PlateColor? Color { get; internal set; }
