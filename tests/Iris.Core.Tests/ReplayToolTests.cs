@@ -19,7 +19,7 @@ public class ReplayToolTests
     public void Options_ReadEverything()
     {
         var options = ReplayOptions.Parse(
-            new[] { "clips", "--labels", "clips.txt", "--out", "somewhere", "--annotate", "--every", "5", "--region", "0.1, 0.9, 0.2, 0.8" }, out var error);
+            new[] { "clips", "--labels", "clips.txt", "--out", "somewhere", "--annotate", "--every", "5", "--region", "0.1, 0.9, 0.2, 0.8", "--fps", "5", "--image-fps", "25" }, out var error);
 
         Assert.Null(error);
         Assert.NotNull(options);
@@ -28,6 +28,8 @@ public class ReplayToolTests
         Assert.Equal("somewhere", options.OutDirectory);
         Assert.True(options.Annotate);
         Assert.Equal(5, options.Every);
+        Assert.Equal(5.0, options.SampleFps);
+        Assert.Equal(25.0, options.ImageFps);
         Assert.Equal(0.1, options.Settings.RegionLeft);
         Assert.Equal(0.9, options.Settings.RegionRight);
         Assert.Equal(0.2, options.Settings.RegionTop);
@@ -41,6 +43,8 @@ public class ReplayToolTests
 
         Assert.Null(error);
         Assert.Equal(1, options!.Every);
+        Assert.Null(options.SampleFps);   // every frame
+        Assert.Equal(10.0, options.ImageFps);
         Assert.False(options.Annotate);
         Assert.Null(options.LabelsPath);
         Assert.Equal(NameplateDetectorSettings.Default, options.Settings);
@@ -55,6 +59,10 @@ public class ReplayToolTests
         new[] { "a", "--every" },
         new[] { "a", "--every", "0" },
         new[] { "a", "--every", "x" },
+        new[] { "a", "--fps" },
+        new[] { "a", "--fps", "0" },
+        new[] { "a", "--fps", "x" },
+        new[] { "a", "--image-fps", "0" },
         new[] { "a", "--region", "0.1,0.2" },
         new[] { "a", "--region", "0.9,0.1,0.1,0.7" },
         new[] { "a", "--bogus" },
@@ -126,7 +134,7 @@ public class ReplayToolTests
         var metrics = new ReplayMetrics(labels, new[] { "Stanton", "UNKNOWN" });
 
         metrics.AddReads("clip1", "f1", 1, new[] { Detection("ALPHA_ONE"), Detection("UNKNOWN") }, out var m1);
-        metrics.AddReads("clip1", "f2", 2, new[] { Detection("ALPHA_0NE"), Detection("ZZZZZZZZ") }, out var m2);   // look-alike, wrong
+        metrics.AddReads("clip1", "f2", 2, new[] { Detection("ALPHA_0NE"), Detection("ZZZZZZZZ") }, out var m2);   // a 0 for the O is another name: both wrong
         metrics.AddReads("clip1", "f3", 3, Array.Empty<NameplateDetection>(), out _);
         metrics.AddReads("clip1", "f4", 4, new[] { Detection("BRAVO-TWO"), Detection("PA-5968-XF") }, out _);    // a contact code is ignored by name
         metrics.AddReads("other", "g1", 1, new[] { Detection("ALPHA_ONE") }, out var m3);                        // clip without labels
@@ -135,14 +143,12 @@ public class ReplayToolTests
         Assert.Equal(2, g.Labels);
         Assert.Equal(6, g.Reads);   // 2 + 2 + 0 + 2 (the clip without labels is not counted)
         Assert.Equal(2, g.ExcludedReads);
-        Assert.Equal(1, g.WrongReads);
-        Assert.Equal(2, g.ExactFrames.Count);
-        Assert.Equal(2, g.FuzzyFrames.Count);
-        Assert.Equal(new HashSet<int> { 1 }, g.ExactFrames["ALPHA_ONE"]);
-        Assert.Equal(new HashSet<int> { 1, 2 }, g.FuzzyFrames["ALPHA_ONE"]);
-        Assert.Equal(("ALPHA_ONE", true), m1[0]);
-        Assert.Equal(("ALPHA_ONE", false), m2[0]);
-        Assert.Null(m2[1].Label);
+        Assert.Equal(2, g.WrongReads);
+        Assert.Equal(2, g.ReadFrames.Count);
+        Assert.Equal(new HashSet<int> { 1 }, g.ReadFrames["ALPHA_ONE"]);   // frame 2 read ALPHA_0NE: not ALPHA_ONE
+        Assert.Equal("ALPHA_ONE", m1[0]);
+        Assert.Null(m2[0]);
+        Assert.Null(m2[1]);
         Assert.Empty(m3);
         Assert.DoesNotContain("other", metrics.Groups.Keys);
     }
@@ -196,10 +202,11 @@ public class ReplayToolTests
         var g = metrics.Groups["clip1"];
         var found = Assert.Single(g.Found);
         Assert.Equal("ALPHA_ONE", found.Key);
-        Assert.True(found.Value.Exact);
         Assert.Equal(1, found.Value.DelayFrames);
         Assert.Equal(100.0, found.Value.DelayMs);
         Assert.Equal(new[] { "ZZZZZZZZ" }, g.WrongConfirmed);
+        Assert.Equal(new[] { "ZZZZZZZZ" }, g.WrongFinal);
+        Assert.Equal(0, g.Corrections);
         Assert.Equal(new[] { "UNKNOWN" }, g.FilteredConfirmed);
         Assert.Equal(6, g.NameplateTracks);
         Assert.Equal(1, g.AnimationTracks);
@@ -215,7 +222,7 @@ public class ReplayToolTests
     }
 
     [Fact]
-    public void Metrics_ALookAlikeConfirmation_IsFoundButNotExact()
+    public void Metrics_ALookAlikeConfirmation_IsWrong_NotFound()
     {
         var labels = ClipLabels.ParseClipList("clip1: ALPHA_ONE\n");
         var metrics = new ReplayMetrics(labels, Array.Empty<string>());
@@ -223,8 +230,33 @@ public class ReplayToolTests
             metrics.AddTrack("clip1", track);
 
         var g = metrics.Groups["clip1"];
-        Assert.False(g.Found["ALPHA_ONE"].Exact);
-        Assert.Empty(g.WrongConfirmed);
+        Assert.Empty(g.Found);   // names match exactly: the zero is not an O
+        Assert.Equal(new[] { "ALPHA_0NE" }, g.WrongConfirmed);
+    }
+
+    [Fact]
+    public void Metrics_CountCorrections_AndTheWrongNamesThatRemain()
+    {
+        var labels = ClipLabels.ParseClipList("clip1: ALPHA_ONE\n");
+        var metrics = new ReplayMetrics(labels, Array.Empty<string>());
+        // confirmed ZZZZZZZZ at frame 1; a confirmed track is read once a second, then ALPHA_ONE is read three times (frames 11 to 13) and corrects it
+        var reads = new string?[14];
+        reads[0] = reads[1] = "ZZZZZZZZ";
+        reads[11] = reads[12] = reads[13] = "ALPHA_ONE";
+        var track = Assert.Single(Tracks((100, reads)));
+        Assert.Equal("ALPHA_ONE", track.ConfirmedName);
+        Assert.Single(track.Corrections);
+
+        metrics.AddTrack("clip1", track);
+
+        var g = metrics.Groups["clip1"];
+        Assert.Equal(1, g.Corrections);
+        Assert.Equal(new[] { "ZZZZZZZZ" }, g.WrongConfirmed);   // it was shown for a while
+        Assert.Empty(g.WrongFinal);                              // but it is not what the track ended with
+        var found = g.Found["ALPHA_ONE"];
+        Assert.Equal(2, found.DelayFrames);                      // first read at frame 11, confirmed at frame 13
+        Assert.Equal(200.0, found.DelayMs);
+        Assert.Contains("corr", metrics.Format());
     }
 
     [Fact]
@@ -238,7 +270,7 @@ public class ReplayToolTests
         metrics.AddFrame("Names", "shot2.jpg", 5.0);
         metrics.AddReads("Names", "shot2.jpg", 2, new[] { Detection("ALPHA_ONE") }, out _);   // not expected there: wrong
 
-        Assert.Single(metrics.Groups["shot1.jpg"].ExactFrames);
+        Assert.Single(metrics.Groups["shot1.jpg"].ReadFrames);
         Assert.Equal(1, metrics.Groups["shot2.jpg"].WrongReads);
         Assert.Equal(0, metrics.Groups["shot2.jpg"].Labels);
         Assert.Contains("TOTAL", metrics.Format());
@@ -251,6 +283,124 @@ public class ReplayToolTests
     public void EditDistance_IsTheLevenshteinDistance(string a, string b, int expected)
     {
         Assert.Equal(expected, ReplayMetrics.EditDistance(a, b));
+    }
+
+    // ------------------------------------------------------------------------------------------------ sampling by time
+
+    /// <summary>Which of the frames of a video of the given rate a sampler keeps (frame numbers from 0), as the replay loop uses it.</summary>
+    private static List<int> Kept(double videoFps, int frames, double? sampleFps)
+    {
+        var sampler = new FrameSampler(sampleFps);
+        var kept = new List<int>();
+        for (var n = 0; n < frames; n++)
+        {
+            var time = n * 1000.0 / videoFps;
+            if (!sampler.Due(time))
+                continue;
+            sampler.Kept(time);
+            kept.Add(n);
+        }
+
+        return kept;
+    }
+
+    [Fact]
+    public void Sampler_WithoutARate_KeepsEveryFrame()
+    {
+        Assert.Equal(Enumerable.Range(0, 50), Kept(60.0, 50, null));
+    }
+
+    [Theory]
+    [InlineData(60.0, 12)]    // 200 ms is 12 frames of 60 fps
+    [InlineData(120.0, 24)]
+    [InlineData(30.0, 6)]
+    [InlineData(144.0, 29)]   // 28.8 frames: the 29th frame is the first one 200 ms later
+    public void Sampler_KeepsOneFrameEvery200Ms_At5Fps(double videoFps, int every)
+    {
+        var kept = Kept(videoFps, 600, 5.0);
+
+        Assert.Equal(Enumerable.Range(0, 600).Where(n => n % every == 0), kept);
+        for (var i = 1; i < kept.Count; i++)
+            Assert.True((kept[i] - kept[i - 1]) * 1000.0 / videoFps >= 200.0 - 0.001);
+    }
+
+    [Fact]
+    public void Sampler_ByTime_NotByFrameCount()
+    {
+        // 7 fps is 142.86 ms: 60 fps frames are 16.67 ms apart, so the 9th frame (150 ms) is the first that is due
+        Assert.Equal(new[] { 0, 9, 18, 27 }, Kept(60.0, 28, 7.0));
+    }
+
+    [Fact]
+    public void Sampler_AFasterRateThanTheVideo_KeepsEveryFrame()
+    {
+        Assert.Equal(Enumerable.Range(0, 20), Kept(10.0, 20, 30.0));
+        Assert.Equal(Enumerable.Range(0, 20), Kept(10.0, 20, 10.0));
+    }
+
+    [Fact]
+    public void Sampler_DueDoesNotChangeIt_OnlyKeptDoes()
+    {
+        var sampler = new FrameSampler(5.0);
+        Assert.True(sampler.Due(0));
+        Assert.True(sampler.Due(0));
+        sampler.Kept(0);
+        Assert.False(sampler.Due(199.0));
+        Assert.False(sampler.Due(199.0));
+        Assert.True(sampler.Due(200.0));
+        sampler.Kept(210.0);   // the next one is due 200 ms after the frame that was kept, not after the grid
+        Assert.False(sampler.Due(400.0));
+        Assert.True(sampler.Due(410.0));
+    }
+
+    [Fact]
+    public void FpsIsIgnoredForSingleImages_AndTheToolSaysSo()
+    {
+        var oneImage = new[] { new ClipInput("shot", null, new[] { "shot.png" }) };
+        var video = new[] { new ClipInput("clip", "clip.mp4", Array.Empty<string>()) };
+        var folder = new[] { new ClipInput("frames", null, new[] { "f1.png", "f2.png" }) };
+
+        Assert.Null(Program.FpsIgnoredWarning(null, true, oneImage));             // no --fps: nothing to say
+        Assert.Null(Program.FpsIgnoredWarning(5.0, false, video));                // a video is sampled
+        Assert.Null(Program.FpsIgnoredWarning(5.0, false, folder));               // so is a folder of frames
+        Assert.Contains("--fps is ignored", Program.FpsIgnoredWarning(5.0, false, oneImage));  // one image as the input
+        Assert.Contains("--fps is ignored", Program.FpsIgnoredWarning(5.0, true, folder));     // screenshot labels: every image alone
+    }
+
+    [Fact]
+    public void Sampler_RefusesARateOfZero()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FrameSampler(0.0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FrameSampler(-5.0));
+    }
+
+    [OpenCvFact]
+    public void ImageFrames_AreSampledByTime()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "iris-replay-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            for (var i = 1; i <= 10; i++)
+                File.Copy(Path.Combine(DetectorFixtures.Dir, "frame_d.png"), Path.Combine(root, $"f{i}.png"));
+            var clip = Assert.Single(FrameSources.Discover(root));
+
+            var numbers = new List<int>();
+            var times = new List<double>();
+            foreach (var frame in FrameSources.Frames(clip, 1, null, 10.0, new FrameSampler(5.0)))
+            {
+                using var image = frame.Image;
+                numbers.Add(frame.Number);
+                times.Add(frame.TimeMs);
+            }
+
+            Assert.Equal(new[] { 1, 3, 5, 7, 9 }, numbers);   // 10 fps images, 5 fps wanted: every second one
+            Assert.Equal(new[] { 0.0, 200.0, 400.0, 600.0, 800.0 }, times);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
     }
 
     // ------------------------------------------------------------------------------------------------ files

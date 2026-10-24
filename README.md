@@ -37,8 +37,8 @@ named constants at the top of each parser. Capture the fixtures and run the test
 
 ## Player handles and the exclusion list
 
-A player handle is 4 to 25 characters: letters, digits, `-` and `_` only. Anything else read from a nameplate is ignored
-(and a player list entry that breaks the rule is rejected). The limits are fixed in the program (`RsiNames.MinHandleLength` and
+A player handle is 4 to 64 characters: letters, digits, `-` and `_` only. Anything else read from a nameplate is ignored (and a player list entry that breaks the rule is rejected).
+A name read from a nameplate may in addition not start or end with `-` (detection rule 6 below: such a read is an animation stage or a misread); a listed or RSI handle may, because older accounts might have one. The limits are fixed in the program (`RsiNames.MinHandleLength` and
 `MaxHandleLength`).
 
 The exclusion list is a plain text file, `exclusions.txt`: names that appear on screen but are not players (stars, planets, stations...).
@@ -170,8 +170,8 @@ The overlay text uses the font **Quantico** (Bold), licensed under the SIL Open 
 Phase 3 reads real nameplates from the screen. Step 1 is the reader itself, without screen capture yet: it is given an image and the box of one
 nameplate line and returns the name. It lives in `src/Iris.Core/Detection/Letters/`:
 
-- `LetterModel`: the trained classifier (a small neural network: 388 numbers describing one letter in, a log probability for each of the 41 characters
-  `A-Z 0-9 _ -` and, for distance lines, `. k m` out). Its weights are the file `letters-model.bin`, embedded in `Iris.Core` as the resource `Iris.Core.Detection.Letters.letters-model.bin`. The file contains numbers only; it was trained from the developer's own
+- `LetterModel`: the trained classifier (a small neural network: 388 numbers describing one letter in, a log probability for each of the 43 characters
+  `A-Z 0-9 _ -` and, for distance lines, `. k m` and the brackets `[ ]` of the speed readout out). Its weights are the file `letters-model.bin`, embedded in `Iris.Core` as the resource `Iris.Core.Detection.Letters.letters-model.bin`. The file contains numbers only; it was trained from the developer's own
   gameplay clips with a separate local training kit that is not part of this repository.
 - `NameplateFeatures`: the image side. Crop to a 4x text mask (local contrast on the brightest colour channel, so cyan, white, red and green text all work,
   with an automatic contrast threshold), the capital band, cuts at blank columns, and the 388-number letter description.
@@ -200,9 +200,9 @@ megabytes (the Windows x64 build) and `IRIS.exe`'s folder to grow by a similar a
 | --- | --- | --- |
 | magic | 8 bytes | `IRISLM01` |
 | version | uint32 | 1 |
-| charset | uint32 byte length N, then N bytes UTF-8 | the characters, in output order: output unit i is `charset[i]` (`-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_km`, 41 characters: the letters of names, plus the decimal point and the lower case `k` and `m` of distance lines) |
+| charset | uint32 byte length N, then N bytes UTF-8 | the characters, in output order: output unit i is `charset[i]` (`-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ[]_km`, 43 characters: the letters of names, plus the decimal point and the lower case `k` and `m` of distance lines, and the square brackets `[` and `]` of the speed readout) |
 | input size | uint32 | 388 (a 16x24 picture of the letter plus width, height, top and bottom offset relative to the capital height, each times 4) |
-| layer count | uint32 | L (currently 2: 388 to 256 to 41) |
+| layer count | uint32 | L (currently 2: 388 to 256 to 43) |
 | each layer | uint32 rows (inputs), uint32 cols (outputs), float32 weights row-major (`weight[i][j]` connects input i to output j), float32 biases (cols values) | |
 
 ReLU follows every layer except the last; softmax follows the last. The reader clips each probability to at least 1e-6 and takes its logarithm.
@@ -219,19 +219,21 @@ missed ones, so a text line is only a nameplate when it has the distance line th
 1. **Cheap pass.** Colour mask (top-hat 11x11 per colour channel, then the cyan/white, red and green rules), tall blobs (over 22 px) dropped, text lines by dilation 7x1 and
    size/fill filters. Default scan region x 15-85 %, y 10-70 % of the frame (`NameplateDetectorSettings`; the replay tool takes `--region`).
 2. **Distance anchor.** A line is a distance only if it reads as a number from 0 to 1000, a period, **exactly one digit**, then lower case `m` or `km`, and nothing after it
-   (`DistanceLineRule`). A distance without a decimal is ignored. The line is read with the letter model restricted to `0-9 . k m` and the digit look-alikes below; the read must be sure
+   (`DistanceLineRule`); one word gap after the unit may be followed by the `[` of a speed readout, which ends the line for the rule (see "Speed readout" below). A distance without a decimal is ignored. The line is read with the letter model restricted to `0-9 . k m` and the digit look-alikes below; the read must be sure
    (mean score and the gap to the model's free best), and no gap inside the line may be wider than a word gap. Unsure end pieces (specks next to the line) are trimmed first.
    Nothing may touch the line, and 3 line-box heights (`ClearLines`; the height of the line's bounding box, which is about one character width) must be clear on both sides, small specks tolerated
    (the one exception is the crowd exception, rule 4).
-3. **Name.** The line directly above the anchor (the gap between the two lines is at most 1.4 line-box heights; the lines are about equally high), a **single word** of 4 to 25 characters `A-Z 0-9 - _`, read with the score per letter at least -0.20.
-   It must be centred over the distance (the game centres a name over its distance), left-aligned pairs are rejected (the left edges equal within 2 px while the widths differ by 8 px or more:
+3. **Name.** The line directly above the anchor (the gap between the two lines is at most 1.4 line-box heights; the lines are about equally high), a **single word** of 4 to 64 characters `A-Z 0-9 - _` (not starting or ending with `-`, rule 6), read with the score per letter at least -0.20.
+   It must be centred over the distance line (the game centres a name over its distance line; with a speed readout over the whole line, speed group included), left-aligned pairs are rejected (the left edges equal within 2 px while the widths differ by 8 px or more:
    HUD label columns such as `R-ALT` over `VSI`), and 3 line-box heights must be clear on both sides.
 4. **Isolation: strict, crowd and loose pairs.** A pair whose lines are both isolated is a *strict* pair. A pair whose lines fail only the isolation test is a *loose* pair: it may only continue a track
    that already is a nameplate, never start one (hysteresis). **Crowd exception:** nameplates drift next to each other, so ink beside a line does not count against it when ALL of that ink lies inside the boxes of
    other text lines that are themselves part of another candidate pair (a line over a line). Such a *crowd* pair is treated as strict, but only when every one of those neighbouring pairs also reads as a
    real nameplate (a valid distance anchor under one word of name characters; `FrameEvaluator`); a ring, a ship, a HUD arc, a panel, or text that is not part of a valid nameplate beside the line still
    rejects it (it stays loose, or is rejected). `NameplateDetectorSettings.CrowdException` (default on) switches the exception off.
-5. **Contact codes.** A name of the shape `XX-1234-XX` (2 letters, 4 digits, 2 letters, each hyphen optional, with the accuracy look-alikes) is ignored unless it is on the player list (`ContactCode`, `NameFilter`).
+5. **Contact codes.** A name of the exact shape `XX-XXXX-XX` (2 characters, hyphen, 4 characters, hyphen, 2 characters, each character a letter or a digit) is ignored unless it is on the player list (`ContactCode`, `NameFilter`). New RSI handles can't contain hyphens, so the two hyphens make the shape unambiguous and fast to check. A code read without its hyphens, or with a hyphen misread, is not ignored (it gets the No Match bracket).
+6. **Names read from the screen do not start or end with `-`** (the handles RSI hands out today do not; `_` may start and end a name, `QUARTZ_` is valid). A read such as `-PIL0TFISH` is an animation stage or a misread, not a name: the pair is still a nameplate (it has its distance anchor), but the read is no vote (`NameShape.HasValidEdges`, used by the detector and the tracker only). A hyphen inside a name is fine (`CINDER-404`). The rule is **not** part of `RsiNames.IsValidHandle` (RSI page parsing, member lists, the player list, handles you type): an older RSI account might have a handle with a hyphen at an edge, so those only need 4 to 64 characters of `A-Z a-z 0-9 - _`.
+7. **Line width.** The cheap pass accepts text lines up to `NameplateDetector.MaxLineWidth` = **832 px at 1440** (scaled with the frame height; it was 400): a 64 character name must fit. A letter advances 10.1 px on average at 1440 (2801 reads of labeled names of 6 or more letters: median 10.0, 95th percentile 11.0, widest 11.7, the same at every line height), so 64 letters are about 650 px, 750 px with only wide letters; 832 = 64 x 13 leaves 11 % over the widest advance seen. The reader's work limits (`MaxPieceCaps` = 8 capital heights, `MaxSplitSpans` = 1500) apply per run of touching ink, not per line, so a long word is not rejected by them; the time per line grows linearly with its length.
 
 There is no stacked rule any more (v1 accepted a plate above a confirmed one without its own distance).
 Noise protection: a run of ink wider than 8 capital heights, or a cut search of more than 1500 candidate spans, is not cut: that run reads as nothing and scores -50.
@@ -244,10 +246,14 @@ Two lists, in one documented class, used for different things:
 | List | Groups | Used for |
 | --- | --- | --- |
 | **Efficiency** | `0 O Q D`, `1 I 7`, `5 S`, `8 B`, `6 G`, `2 Z` | only the digits of the distance line: a letter the model sees where a digit must be counts as that digit |
-| **Accuracy** | `0 O`, `1 I` only | matching names against the player list, matching against the exclusion list, and (ready, step 5, not yet wired in) the hotkey look-alike retry (`LookAlikes.NameVariants`); everything else must match exactly |
+| **Accuracy** | none (the list is empty) | nothing: **names match exactly**, ignoring only upper/lower case (handles are case-insensitive on the RSI site) |
 
-`NameMatcher` accepts only the accuracy look-alikes (it used to use a weighted edit distance with seven confusable groups; that was too generous). The exclusion list is look-alike
-tolerant in the same way (`HURST0N` is `Hurston`).
+Wherever two names are compared (the player list, the exclusion list, the colour lookup, the replay tool's labels) the characters must be the same: `N1TEBIRD` is not `Nitebird`, `UNKN0WN` is not
+the excluded `UNKNOWN`, and a confirmed `PIL0TFISH` is a wrong name, not a found `PILOTFISH`. A wrong name is worse than a missed one (it is looked up on the RSI site and shown on screen).
+`NameMatcher` (a developer tool for scoring reads against labels) is exact in the same way; it used to use a weighted edit distance with seven confusable groups, then only 0/O and 1/I.
+
+**There is no character-swap retry of a lookup.** A name that RSI does not know is remembered by the negative cache (`not_found`, 30 days, `CacheSettings.NotFoundRetention`), so a name read the same way
+again is not asked again. A different read is a different name and may be asked. A misread such as a `0` for an `O` is fixed with better training data (more samples of that letter in the training kit), not with tolerance.
 
 ### Nameplate tracker (`NameplateTracker`, no WPF)
 
@@ -260,9 +266,19 @@ A name is not trusted from one frame. The tracker (`src/Iris.Core/Detection/Name
   line has its size, it continues that track however far it jumped (a track is claimed once per frame, the most recently seen and then the nearest first). Otherwise it starts a new track.
 - **Sticky verdict** per track: `Nameplate` (it passed the distance anchor) or `NotNameplate`. A `NotNameplate` track is not read again every frame, only every 3 s (`RecheckMs`) or when its box size changes
   notably (width by 15 %, height by 2 px or 15 %). A `Nameplate` track that fails 3 evaluations in a row becomes `NotNameplate`.
-- **Voting.** Every evaluation that reads the name surely enough is a vote. A name is **confirmed** after being read identically `ConfirmReads` times (default **3**), more often than any rival,
-  and the identical reads must span at least `ConfirmSpanMs` (default **300 ms**): the game types or scrambles a name when a plate appears (`ORBI`, `STELLARK`, `UNKN0WN3`), and a stage of that animation
-  can be read twice in a row; a real name stays. A rival that catches up takes the confirmation back. "Delay over wrong."
+- **Voting.** Every evaluation that reads the name surely enough (and that does not start or end with `-`) is a vote. A name is **confirmed** after being read identically `ConfirmReads` times (default **3**),
+  more often than any rival, and the identical reads must span at least `ConfirmSpanMs` (default **300 ms**): the game types or scrambles a name when a plate appears (`ORBI`, `STELLARK`, `UNKN0WN3`), and a stage of that
+  animation can be read twice in a row; a real name stays. "Delay over wrong." Before the first confirmation only the votes of the last 4 x `ConfirmSpanMs` (1.2 s; `PreConfirmationWindowMs`) count, older ones are
+  dropped (a confirmation needs reads that span `ConfirmSpanMs`, so older votes cannot be part of one, and a plate that never confirms must not keep every vote it ever got; with `ConfirmSpanMs` 0 there is no cap).
+- **Stable box.** The identical reads that confirm a name must also have the same name-line **width**, within `StableWidthPx` (default **3 px** on a frame 1440 px high, scaled by `frame height / 1440`; pass the
+  frame height to `Update`): while a plate types its name the box grows by a letter (about 9 px) per stage. Why 3 px: on the 13 clips, for the labeled names a track read at least twice, the widths of those reads
+  spread (max minus min) by 0 or 1 px in 92 % of the cases, by 2 px in 4 % and by 3 px or more in 4 % (a plate that moves toward the camera changes size a little: `TITANIUM` read at 69, 73 and 72 px in three frames,
+  which 2 px rejected). 3 px is a third of a letter.
+- **Corrections.** A confirmed name is never withdrawn, but it is **corrected**: once a name is confirmed only the votes of the last `CorrectionWindowMs` (default 4 s) count, and when another name meets the
+  confirmation rule there (enough identical reads at one width, spread over `ConfirmSpanMs`) and has more votes in that window than ANY other name has (the confirmed name included), `ConfirmedName` switches to it. A confirmed track whose
+  latest read disagrees with its name is read at every frame (not once a second) until it settles; an evaluation that finds the nameplate but gives no vote (too unsure, or a `-` at an edge) ends that state. The change is exposed: `TrackerUpdate.Corrected` lists the tracks that switched in this frame (they are in
+  `Confirmed` too, so a panel that shows `ConfirmedName` follows), `NameplateTrack.Corrections` lists every switch (`From`, `To`, frame, ms), `IsDisputed` says that the latest read disagrees (it is cleared again by a nameplate evaluation without a vote). A tie changes nothing.
+  The replay tool counts them (`corr`, and `corrections` / `corrected` in `tracks.csv`). On the clips corrections happen when a plate is reused for another player (`CINDER-404` to `ICE_HARRIER`) or after an animation stage was confirmed.
 - The confirmed name is exposed with the frame of the first read and of the confirmation. Tracks expire after 1 s unseen. A confirmed track is read again once a second.
 
 ### Replay tool (developer tool)
@@ -271,52 +287,108 @@ A name is not trusted from one frame. The tracker (`src/Iris.Core/Detection/Name
 outside the repository (the tool refuses to write into a folder that is inside a git repository).
 
     dotnet run --project tools/Iris.Replay -- <input> [--labels FILE] [--out FOLDER] [--annotate] [--every N] [--model FILE] [--region L,R,T,B]
-                                              [--fps N] [--confirm-reads N] [--confirm-span MS]
+                                              [--fps N] [--image-fps N] [--confirm-reads N] [--confirm-span MS]
 
 - `<input>`: a video file, a folder of images, a folder with one sub folder (or video) per clip, or one image. Videos are opened with OpenCV's `VideoCapture`; the
   `OpenCvSharp4.runtime.win` package may not include an FFmpeg backend for every codec. If a video does not open, cut it into frames
-  (`ffmpeg -i clip.mp4 -vf fps=10 frames\%05d.jpg`) and give the folder. Frames of a clip run through the tracker in order; `--fps` (default 10) is the rate that the numbers in image file names stand for.
+  (`ffmpeg -i clip.mp4 -vf fps=10 frames\%05d.jpg`) and give the folder. Frames of a clip run through the tracker in order; `--image-fps` (default 10) is the rate that the numbers in image file names stand for (it was `--fps` before `--fps` became the sampling rate).
 - `--labels`: `clips.txt` (`clip: NAME1, NAME2`) runs the tracker and prints, **per clip**:
-  - `found`: labeled names a track confirmed (`exact`: with exactly the labeled spelling; the accuracy look-alikes count as found);
+  - `found`: labeled names a track confirmed, with exactly the labeled spelling (no look-alike tolerance: a `0` for an `O` is a wrong name);
   - `delay`: the median, over the found names, from the first read of the name to its confirmation (frames and ms);
-  - `wrong`: names **confirmed** that are no label, no excluded name and no contact code, listed under the table (the target is 0);
+  - `wrong`: names **confirmed** that are no label, no excluded name and no contact code, listed under the table (the target is 0); `wrongEnd`: the same for the name each track ended with, after corrections;
+  - `corr`: confirmed names that were corrected (a track switched to another name);
   - `junk`, `anim`, `unread`, `ignrd`: nameplate tracks whose best read is none of the known names, a stage or near miss of a known name (the typing animation), nothing readable, or an excluded name / contact code;
   - `ms med`, `ms p95`: milliseconds per frame (cheap pass, reads and tracker).
 
-  `screenshots.csv` (`file,expected_players,notes`, names separated by `;`) reads every image once, without the tracker, and prints names read exactly / close and wrong reads per image.
-- `--out`: default `%LOCALAPPDATA%\Iris\replay`. It gets `detections.csv` (`source,frame,track,verdict,confirmed,name,score,x,y,w,h,distance,...,match,exact`: one row per evaluation that read a name, with the track,
-  the track's verdict and its confirmed name so far) and `tracks.csv` (one row per track: first frame, evaluations, best name, confirmed names, all reads with counts).
+  `screenshots.csv` (`file,expected_players,notes`, names separated by `;`) reads every image once, without the tracker, and prints names read (exactly) and wrong reads per image.
+- `--out`: default `%LOCALAPPDATA%\Iris\replay`. It gets `detections.csv` (`source,frame,track,verdict,confirmed,name,score,x,y,w,h,distance,...,match`: one row per evaluation that read a name, with the track,
+  the track's verdict and its confirmed name so far) and `tracks.csv` (one row per track: first frame, evaluations, best name, confirmed names, number of corrections and the corrections as `FROM>TO`, all reads with counts).
   With `--annotate` it also gets PNGs in `annotated\<clip>\`: **confirmed tracks green, nameplates not yet confirmed yellow, rejected pairs red**.
 - `--confirm-reads N` and `--confirm-span MS` override the tracker defaults (3 and 300).
 - `--every N` uses every Nth frame (the tracker's clock follows the frame times). A video that does not open does not stop the run: it is reported as skipped.
+- `--fps N` samples the frames **by time**: a frame is kept when its timestamp has advanced at least 1000/N ms since the last kept one (the first frame is always kept; default: every frame; applied after `--every`).
+  A video of 60 or 120 fps is read much more often than the app will read (**5 times a second, planned**), and many reads a second let a short-lived misread reach three identical reads inside 300 ms, so a run over every frame is a
+  stress test, and **`--fps 5` mirrors the planned app rate**. Use it for the numbers that matter for the app; frames that are skipped are not converted to images (a video is still decoded in full).
+  **Frame numbers are native video frames** (or the numbers in image file names) also when `--fps` samples: the `frame` column of `detections.csv`, `first_frame` of `tracks.csv` and `delay fr` of the table are not counts of the sampled frames.
+  With `--fps 5` on a 60 fps video three reads are at least 24 frames apart, so `delay fr` is 24 or more where `delay ms` says 400; compare `delay ms` with the app. `--fps` is **ignored for single images** (a `screenshots.csv` run, or an image given as the input):
+  every image is read once, and the tool says so on stderr.
 
 ### Detector v2 results on the developer's own clips
 
 Python reference (`detector_ref.py` plus `tracker_ref.py`) on all 5718 frames of 13 clips, 60 labeled names (the labels say who appears in a clip, not in which frames). "v2-fixed" is the current code: crowd exception,
 tracker with prediction and identical-read association, `AMMUNITON` on the exclusion list:
 
-| | v1 (replay-v1) | v2, tracker K=3 over 300 ms | v2-fixed |
-| --- | --- | --- | --- |
-| labeled names found | 60/60 | 51/60 | 55/60 |
-| detections (v1) / false detections | 50191 / 27424 | n/a (tracks are what counts) | n/a |
-| wrong names confirmed | n/a | 1 (a stable misread: `AMMUNITON`) | 0 |
-| junk nameplate tracks | n/a | 39 (plus 195 stages of the typing animation, 42 unread, 293 excluded or contact code) | 28 (plus 180 animation stages, 38 unread, 94 excluded or contact code) |
-| nameplate tracks | n/a | 1323 | 574 |
-| median delay to the confirmed name | n/a | 3 frames (0.3 s at 10 fps) | 3 frames |
+| | v1 (replay-v1) | v2, tracker K=3 over 300 ms | v2-fixed | v2-fixed + speed readout (model v3) |
+| --- | --- | --- | --- | --- |
+| labeled names found | 60/60 | 51/60 | 55/60 | 55/60 |
+| detections (v1) / false detections | 50191 / 27424 | n/a (tracks are what counts) | n/a | n/a |
+| wrong names confirmed | n/a | 1 (a stable misread: `AMMUNITON`) | 0 | 0 |
+| junk nameplate tracks | n/a | 39 (plus 195 stages of the typing animation, 42 unread, 293 excluded or contact code) | 28 (plus 180 animation stages, 38 unread, 94 excluded or contact code) | 29 (plus 189 animation stages, 40 unread, 94 excluded or contact code) |
+| nameplate tracks | n/a | 1323 | 574 | 592 |
+| median delay to the confirmed name | n/a | 3 frames (0.3 s at 10 fps) | 3 frames | 3 frames |
 
 The 5 labeled names that are still not confirmed: three contact codes (`AB-1234-CD`, `EF-5678-GH`, `JK-9012-LM`: they are single line plates the app ignores by name anyway) and `ZANTHOR` and `PIXEL4821`
 (a crowded clip start in front of a station: `ZANTHOR` has one clean read in the whole clip, `PIXEL4821` three clean reads in frames 1 to 3 that span only 200 ms, less than the 300 ms rule asks for).
 The two NPC names `VIXEN` and `WARLORD` are now found, but they are on the exclusion list, so the app ignores them.
 
+### Tracker tuning: exact names, stable box, corrections, hyphen rule, 64 characters
+
+Why: a run over every native frame (60 to 120 fps, median 10.7 ms per frame) confirmed 8 wrong names (`UNKNOWK_`, `UNKEOWN`, `UNKNO`, `SECURI`, `FN-84`, `H-LVORIN`, `MARGU1SPELICAM`, `-PIL0TFISH`):
+the app will read 5 times a second (planned), a replay of every frame reads 12 to 24 times as often, and a short-lived misread reaches three identical reads inside 300 ms. Use `--fps 5` to mirror the planned rate.
+Python reference, 13 clips (5718 frames at 10 fps, 60 labeled names), names compared EXACTLY. **Before** = the branch before this work (look-alikes 0/O and 1/I counted as found, line filter 400 px, names up to 25
+characters, no edge rule, a rival that catches up withdraws the confirmation); **after** = this work. The 5 fps rows take every second frame (two phases, A and B), which is what the planned 5 reads a second see.
+
+| 13 clips | before 10 fps | after 10 fps | before 5 fps (A / B) | after 5 fps (A / B) |
+| --- | --- | --- | --- | --- |
+| labeled names confirmed (exact) | 55/60 | 56/60 | 52 / 52 | 52 / 52 |
+| wrong names confirmed (ever) | 1 (`PIL0TFISH`) | 1 (`PIL0TFISH`) | 1 / 1 | 1 / 1 |
+| corrections (a confirmed name replaced by another) | 0 | 4 | 0 / 0 | 1 / 0 |
+| junk tracks (plus animation stages, unread) | 30 (199, 40) | 28 (193, 48) | 15 (126, 31) / 20 (131, 29) | 15 (120, 37) / 18 (129, 33) |
+| median delay from the first read to the confirmation | 300 ms | 300 ms | 400 ms | 400 ms |
+
+The 10 fps run is also the dense stress check (every frame the training kit has). The 4 names still missing at 10 fps: `HV-5192-DB`, `BN-3816-RZ`, `HALVORIN`, `OTTER2231`. The 4 corrections are plates that were reused for
+another player (`KT-7301-MN` to `PL-2468-WS`, `CINDER-404` to `ICE_HARRIER`, `T4PIR_220` to `ICE_HARRIER`, ...): the panel now follows. The line filter and name length changes did not raise the junk tracks (28 against 30).
+
+**Native 60 fps** (`name1`, `name3`, `name11`, `name12`, `name13`, all frames of the videos, 34 labeled names):
+
+| 5 clips, 60 fps | before, every frame | after, every frame | before, every 12th frame (5 fps, A / B) | after, every 12th frame (5 fps, A / B) |
+| --- | --- | --- | --- | --- |
+| labeled names confirmed | 30/34 | 31/34 | 29 / 28 | 29 / 28 |
+| wrong names confirmed (ever) / still shown at the end | 7 / 6 | 7 / 4 | 1 / 2 and 1 / 1 | 1 / 2 and 1 / 1 |
+| corrections | 0 | 5 | 0 | 1 / 2 |
+
+At 5 fps the only wrong name is `PIL0TFISH` (below). Every frame still confirms 4 wrong names that are never corrected, and the causes are not in the tracker:
+- `PIL0TFISH` (`name3`, 5 tracks): the letter model reads the `O` of `PILOTFISH` as `0`, stably. It was hidden while 0/O counted as a look-alike. A training data problem (more samples of `O` and `0` in this font).
+- `UNKAOWN` (`name11`): the glitch animation of the excluded word `UNKNOWN` dwells 300 ms on one scrambled stage (8 identical reads at one width); the plate is gone before the real word is read often enough to correct it.
+- `FN-84` (`name11`): a typing stage of `FN-8420-TC` that stays 350 ms; the plate is lost before the next stages (`FN-842`) can correct it.
+- `MARGU1SPELICAM` (`name13`, a 21 px high close plate of `MARQUISPELICAN`): a stable misread of several letters.
+`ConfirmSpanMs` 500 would remove two of them at the price of 2 of 56 names at 10 fps (700: 4; 1000: 9); it is left at 300 because the app will read 5 times a second (planned). `ICE_` and `KEST` (typing stages) were confirmed and then corrected to `ICE_HARRIER` / `KESTREL9`.
+Corrections win: a stage that is confirmed wrongly is replaced as soon as the plate shows the real name often enough.
+
 Times per frame depend on the machine (v1 median was 19.9 ms per frame in C#).
 Single screenshots without the tracker find fewer names (hard cases: red hostile targets, bright moons, stacked plates, plates without a distance line): 5 of the 17 labeled names are read in one frame
 by `detect()` (`evaluate_screenshots_v2.py`), with no wrong name. The letter model v2 reads held-out clips' letters at 98.1 %, the 14 labeled screenshot crops exactly 11/14, and held-out distance lines exactly 98.4 % (the anchor rule passes 98.7 %).
 
-A targeted nameplate also prints its speed on its distance line (`4.4km [268m/s]`). That line does not read as a distance (the `[268m/s]` part is a second word) and its first part has ink beside it,
-so such frames are not nameplates for IRIS; a plate is usually read in the frames before it is targeted. Reading the speed as part of the distance line is a possible later feature.
+**Speed readout.** A targeted nameplate prints its closing speed after its distance: `9.0km [-29m/s]`, `4.4km [268m/s]`, `15.6km [1km/s]` (lower case `m/s` or `km/s`, a space before `[`,
+a minus sign for a closing speed). The distance anchor accepts it: after the unit, **one word gap and a `[`** may follow, and everything from the bracket on is ignored (not read, not scored, not validated;
+the speed itself is not used). The line is judged on the pieces before the gap (`DistanceLineRule`, `HasSpeedGroup`). The bracket is recognized by the letter model (model v3 has the two characters `[` and `]`):
+the piece after the gap must be read as `[` when the model may choose among **all** of its characters, with a log probability of at least `BracketMinScore` (-0.7). The distance part is still read with the
+distance alphabet only, so no digit can be read as a bracket. Rejected, as before: a speed first (`VELOCITY 225M/S (1.12KM)`, `209M/S (59.06KM)`: upper case and parentheses, the part before the gap is not a distance),
+a speed group without a distance before it, a gap that is not followed by `[` (a minus sign, text), a second gap before the bracket.
 
-**Parity fixtures.** `tests/Iris.Core.Tests/Fixtures/detector/` has five synthetic frames (fake nameplates in the game's colours with made-up names, plus decoys: label columns, single lines, speed lines,
-a crowded plate, bars, stars; the fifth frame holds nameplates side by side, a plate beside a HUD word pair and a plate beside a ring) and `detector.json` with the stages (boxes, strict, crowd and loose pairs,
+- **Centering.** The game centres the name over the WHOLE line, speed group included (measured on the 13 clips: the centre of the whole line is within 0.5 px of the name centre in every frame where
+  the name is complete; the distance part alone is tens of pixels off). The pairing therefore uses the full extent of the line.
+- **Joined or split.** Usually the 7 px line joiner puts the whole line into one box. When the gap after the unit is wider (`SpeedJoinGap`, up to 1.5 line heights) and the speed group is a box of its own,
+  the box to the right (same row, similar height, at most `SpeedJoinMaxLines` = 8 line heights wide) is joined to the distance box as one extra candidate line (`SpeedUnions`); it can only be the lower line of a pair.
+- **Clearance.** The 3 line heights of free space on both sides apply to the whole line: after the `]`, not after the unit.
+- **Model v3.** `[` and `]` were added to model v2 by training only two new output units on v2's hidden layer (training kit: `extend_model.py`; samples from Tesseract-labelled speed lines, 68 `[` and 58 `]`).
+  Everything else the model knows is unchanged (a full retrain from scratch re-draws every weight; on the clips it gave one stable misread that was then confirmed as a wrong name, `UNKAOWN`, and 12 more junk tracks, none of it related to brackets).
+  Held-out clips (`name3`, `name7`): letter accuracy 98.1 % (as v2), 67 of 67 held-out brackets recognized (fitted on the other clips only), 1 of 12 514 other held-out letters read as a bracket; screenshot exam 11/14 as before.
+- **Effect on the clips** (Python reference): the labeled names found stay 55/60 and no wrong name is confirmed; `ORBITAL_WREN` (a targeted plate) is confirmed at frame 45 instead of 480, `KESTREL9` has 38 instead of 11 frames with a name
+  vote (27 of them on speed lines), `ICE_HARRIER` 190 instead of 123. The price is 18 more nameplate tracks (18 more animation stages, unread tracks and junk tracks in total: the name types in while a plate is targeted) and 1 more junk track.
+
+**Parity fixtures.** `tests/Iris.Core.Tests/Fixtures/detector/` has six synthetic frames (fake nameplates in the game's colours with made-up names, plus decoys: label columns, single lines, speed lines,
+a crowded plate, bars, stars; the fifth frame holds nameplates side by side, a plate beside a HUD word pair and a plate beside a ring; the sixth has speed readouts `x.ykm [-nnm/s]`, joined and split into two boxes, and their decoys) and `detector.json` with the stages (boxes, strict, crowd and loose pairs,
 evaluations, detections) of the Python reference. `NameplateDetectorTests` compare the C# detector with it.
 They were made by a script of the local training kit; like the letter fixtures they check agreement with the reference, not accuracy on real footage.
 

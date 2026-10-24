@@ -29,15 +29,18 @@ public class NameFilterTests : IDisposable
         Assert.True(NameFilter.ShouldIgnore(name, ListWith("Other"), PlayersOnly()));
 
     [Fact]
-    public void LengthBoundaries_Are4To25()
+    public void LengthBoundaries_Are4To64()
     {
         var list = ListWith("Other");
         var config = PlayersOnly();
 
         Assert.True(NameFilter.ShouldIgnore(new string('a', 3), list, config));
         Assert.False(NameFilter.ShouldIgnore(new string('a', 4), list, config));
-        Assert.False(NameFilter.ShouldIgnore(new string('a', 25), list, config));
-        Assert.True(NameFilter.ShouldIgnore(new string('a', 26), list, config));
+        Assert.False(NameFilter.ShouldIgnore(new string('a', 64), list, config));
+        Assert.True(NameFilter.ShouldIgnore(new string('a', 65), list, config));
+        Assert.False(NameFilter.ShouldIgnore("-abcd", list, config));   // the edge rule is the detector's (NameShape), not the filter's
+        Assert.False(NameFilter.ShouldIgnore("abcd-", list, config));
+        Assert.False(NameFilter.ShouldIgnore("_abcd_", list, config));
     }
 
     [Fact]
@@ -71,7 +74,6 @@ public class NameFilterTests : IDisposable
 
     [Theory]
     [InlineData("PA-5968-XF")]
-    [InlineData("PA5968XF")]
     [InlineData("pa-5968-xf")]
     public void ContactCodes_AreIgnored_UnlessOnThePlayerList(string handle)
     {
@@ -81,24 +83,29 @@ public class NameFilterTests : IDisposable
     }
 
     [Fact]
-    public void ContactCodeOnThePlayerList_IsKept_AlsoWithLookAlikes()
+    public void ContactCodeOnThePlayerList_IsKept_OnlyWhenTheNameIsTheSame()
     {
         var list = ListWith("Other");
 
-        // the handle of a real player that has the shape of a code; the read has a zero where the handle has an O
-        Assert.False(NameFilter.ShouldIgnore("0A-5968-XF", list, PlayersOnly("OA-5968-XF")));
-        Assert.True(NameFilter.ShouldIgnore("0A-5968-XF", list, PlayersOnly("OA-5968-XX")));
+        // the handle of a real player that has the shape of a code
+        Assert.False(NameFilter.ShouldIgnore("OA-5968-XF", list, PlayersOnly("oa-5968-xf")));   // case does not matter
+        Assert.True(NameFilter.ShouldIgnore("0A-5968-XF", list, PlayersOnly("OA-5968-XF")));    // a code shape, and not that player (a zero is not an O)
+        Assert.False(NameFilter.ShouldIgnore("PA5968XF", list, PlayersOnly()));                   // without its hyphens it is no code: a possible handle
+        Assert.True(NameFilter.ShouldIgnore("OA-5968-XF", list, PlayersOnly("OA-5968-XX")));
     }
 
     [Fact]
-    public void ExcludedNames_AreMatchedWithLookAlikes_ButNothingElse()
+    public void ExcludedNames_AreMatchedExactly_IgnoringOnlyTheCase()
     {
         var list = ListWith("Hurston", "Lorville");
 
-        Assert.True(NameFilter.ShouldIgnore("HURST0N", list, PlayersOnly()));     // 0 for O
-        Assert.True(NameFilter.ShouldIgnore("L0RV1LLE", list, PlayersOnly()));    // 0 for O, 1 for I
-        Assert.False(NameFilter.ShouldIgnore("HURSTQN", list, PlayersOnly()));    // Q is not a look-alike of O for names
-        Assert.True(NameFilter.ShouldIgnore("HURST0N", list, PlayersOnly("Nitebird")));
-        Assert.False(NameFilter.ShouldIgnore("HURST0N", list, PlayersOnly("Hurston")));   // the player list wins, also through a look-alike
+        Assert.True(NameFilter.ShouldIgnore("HURSTON", list, PlayersOnly()));
+        Assert.True(NameFilter.ShouldIgnore("lorville", list, PlayersOnly()));
+        Assert.False(NameFilter.ShouldIgnore("HURST0N", list, PlayersOnly()));    // 0 is not O: no longer the excluded name
+        Assert.False(NameFilter.ShouldIgnore("L0RV1LLE", list, PlayersOnly()));
+        Assert.False(NameFilter.ShouldIgnore("HURSTQN", list, PlayersOnly()));
+        Assert.True(NameFilter.ShouldIgnore("HURSTON", list, PlayersOnly("Nitebird")));
+        Assert.False(NameFilter.ShouldIgnore("HURSTON", list, PlayersOnly("Hurston")));   // the player list wins
+        Assert.True(NameFilter.ShouldIgnore("HURSTON", list, PlayersOnly("Hurst0n")));    // ... only for the same name
     }
 }

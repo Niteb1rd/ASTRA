@@ -11,7 +11,7 @@ public readonly record struct DetectedNameplate(string Name, int X, int Y, int W
 /// Finds names that are not players by watching for impossible repeats: a player cannot be in two places at once,
 /// so a name that keeps showing up on two separate nameplates in the same frame is probably a sign, a station, a ship...
 ///
-/// For every frame, each valid handle (4 to 25 characters) found on TWO OR MORE separate nameplates counts one "frame" for that name.
+/// For every frame, each valid handle (4 to 64 characters) found on TWO OR MORE separate nameplates counts one "frame" for that name.
 /// Rectangles that touch or overlap count as the same nameplate, because the detector sometimes reports one nameplate twice.
 /// Counts are kept in the cache database, so they add up across sessions. When a name reaches
 /// <see cref="FramesNeeded"/> frames it is added to the exclusion list (<see cref="ExclusionList.AddAutomatic"/>)

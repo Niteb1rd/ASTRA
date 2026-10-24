@@ -4,7 +4,7 @@ using OpenCvSharp;
 namespace Iris.Core.Tests;
 
 /// <summary>What the Python reference detector found in one synthetic frame, for one set of settings.</summary>
-public sealed record ExpectedDetection(string Name, double Score, Rect NameBox, Rect DistanceBox, string DistanceText);
+public sealed record ExpectedDetection(string Name, double Score, Rect NameBox, Rect DistanceBox, string DistanceText, bool SpeedGroup);
 
 /// <summary>
 /// What evaluating one candidate pair gave in the reference. <paramref name="Kind"/> is "strict", "crowd" or "loose"; <paramref name="PairIsNameplate"/> is the
@@ -12,7 +12,7 @@ public sealed record ExpectedDetection(string Name, double Score, Rect NameBox, 
 /// nameplates); the name is set when the read was sure enough.
 /// </summary>
 public sealed record ExpectedEvaluation(
-    Rect Top, Rect Bottom, string Kind, bool PairIsNameplate, bool IsNameplate, string? Name, double Score, string DistanceText);
+    Rect Top, Rect Bottom, string Kind, bool PairIsNameplate, bool IsNameplate, string? Name, double Score, string DistanceText, bool SpeedGroup);
 
 public sealed record ExpectedCrowdPair(int Top, int Bottom, int[] Neighbours);
 
@@ -69,11 +69,13 @@ public static class DetectorFixtures
             v.GetProperty("is_nameplate").GetBoolean(),
             v.GetProperty("name").ValueKind == JsonValueKind.Null ? null : v.GetProperty("name").GetString(),
             v.GetProperty("score").GetDouble(),
-            v.GetProperty("dist_text").GetString()!)).ToArray(),
+            v.GetProperty("dist_text").GetString()!,
+            v.GetProperty("speed_group").GetBoolean())).ToArray(),
         e.GetProperty("detections").EnumerateArray().Select(d => new ExpectedDetection(
             d.GetProperty("name").GetString()!,
             d.GetProperty("score").GetDouble(),
             ReadRect(d.GetProperty("name_box")),
             ReadRect(d.GetProperty("dist_box")),
-            d.GetProperty("dist_text").GetString()!)).ToArray());
+            d.GetProperty("dist_text").GetString()!,
+            d.GetProperty("speed_group").GetBoolean())).ToArray());
 }

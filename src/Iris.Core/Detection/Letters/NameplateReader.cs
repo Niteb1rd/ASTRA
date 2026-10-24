@@ -288,6 +288,26 @@ public sealed class NameplateReader
     }
 
     /// <summary>
+    /// True when the model reads the columns [<paramref name="start"/>, <paramref name="end"/>) of the mask as the opening bracket <c>[</c>: its best
+    /// character among ALL of its characters is <c>[</c>, with a log probability of at least <paramref name="minScore"/>. False when the columns hold
+    /// no ink or the model has no <c>[</c>. The detector asks this of the piece after the word gap that follows the unit of a distance line
+    /// (the speed readout <c>9.0km [-29m/s]</c>). Port of <c>Reader.is_open_bracket</c> of the Python reference.
+    /// </summary>
+    public bool IsOpenBracket(LineMask m, int start, int end, double minScore)
+    {
+        var bracket = _model.Charset.IndexOf('[');
+        if (bracket < 0)
+            return false;
+        var band = NameplateFeatures.FindCapBand(m);
+        var vector = NameplateFeatures.GlyphVector(m, start, end, band);
+        if (vector is null)
+            return false;
+        var lp = _model.PredictLogProbs(vector);
+        var best = ArgMax(lp, null);
+        return best == bracket && lp[best] >= minScore;
+    }
+
+    /// <summary>
     /// Index of the first largest value (numpy.argmax), among the entries that <paramref name="allowed"/> lets through (null: all).
     /// Callers check that at least one entry is allowed.
     /// </summary>

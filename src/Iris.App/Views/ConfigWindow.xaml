@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:Iris.App.Converters"
         xmlns:vm="clr-namespace:Iris.App.ViewModels"
+        xmlns:rsi="clr-namespace:Iris.Core.Rsi;assembly=Iris.Core"
         xmlns:local="clr-namespace:Iris.App.Views"
         Title="IRIS &#8211; Companion App for Star Citizen"
         Width="760" Height="520"
@@ -153,7 +154,7 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="34" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBox Grid.Column="0" Margin="0,0,8,0" VerticalAlignment="Top" MaxLength="40"
+                                        <TextBox Grid.Column="0" Margin="0,0,8,0" VerticalAlignment="Top" MaxLength="{x:Static rsi:RsiNames.MaxHandleLength}"
                                                  Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
                                                  LostKeyboardFocus="OnValueLostFocus"
                                                  PreviewKeyDown="OnNameKeyDown" />

@@ -288,8 +288,9 @@ public class ConfigTomlTests
     [InlineData(3, false)]
     [InlineData(4, true)]
     [InlineData(25, true)]
-    [InlineData(26, false)]
-    public void Read_PlayerHandleLengthMustBe4To25(int length, bool valid)
+    [InlineData(64, true)]
+    [InlineData(65, false)]
+    public void Read_PlayerHandleLengthMustBe4To64(int length, bool valid)
     {
         var text = "format = \"sc-social-overlay\"\nformat_version = 1\n\n[[players]]\nhandle = \""
                    + new string('a', length) + "\"\ncolor = \"Cyan\"\n";
@@ -297,7 +298,7 @@ public class ConfigTomlTests
 
         Assert.Equal(valid, r.IsValid);
         if (!valid)
-            Assert.Contains(r.Errors, e => e.StartsWith("players[1].handle") && e.Contains("4 to 25 characters"));
+            Assert.Contains(r.Errors, e => e.StartsWith("players[1].handle") && e.Contains("4 to 64 characters"));
     }
 
     [Fact]

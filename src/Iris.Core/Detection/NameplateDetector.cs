@@ -11,12 +11,14 @@ namespace Iris.Core.Detection;
 /// <item><b>Cheap pass</b> (<see cref="FindCandidates"/>). Crop to the scan region (<see cref="NameplateDetectorSettings"/>). Color mask: a pixel is
 /// text when it is locally brighter than its 11x11 surroundings (top-hat of its channel) AND cyan or white, red (hostile) or green
 /// (friendly) in hue. Drop shapes taller than a letter, join the letters of a word with a 7x1 dilation, keep the connected shapes that look
-/// like a text line (10 to 22 pixels high, 24 to 400 wide, partly filled). A line is ISOLATED when there is no ink (other than specks) within
+/// like a text line (10 to 22 pixels high, 24 to <see cref="MaxLineWidth"/> = 832 wide, partly filled). A line is ISOLATED when there is no ink (other than specks) within
 /// <see cref="NameplateDetectorSettings.ClearLines"/> line heights to its left and right. A pair is an isolated line directly above another
-/// isolated line (gap up to 1.4 line heights), about as high, centered on it, and not a left aligned label column.</item>
+/// isolated line (gap up to 1.4 line heights), about as high, centered on it, and not a left aligned label column. A targeted nameplate prints
+/// its speed after the distance (<c>9.0km [-29m/s]</c>); the whole line is centered under the name. When the line joiner leaves the speed group as a
+/// box of its own, the two boxes are also offered as one joined line (<see cref="SpeedUnions"/>), which can only be the lower line of a pair.</item>
 /// <item><b>Evaluate</b> (<see cref="Evaluate"/>). The lower line is read in DISTANCE MODE (the characters 0-9 . k m and the digit look-alikes;
 /// the period is not dropped as noise) and must be exactly <c>number.digit</c> + <c>m</c> or <c>km</c>, see <see cref="DistanceLineRule"/>: the
-/// ANCHOR. Only then the upper line is read with the name alphabet; it must be ONE word of 4 to 25 characters A-Z 0-9 - _. If it is also read
+/// ANCHOR (one word gap after the unit may be followed by the <c>[</c> of a speed group, which is then ignored). Only then the upper line is read with the name alphabet; it must be ONE word of 4 to 64 characters A-Z 0-9 - _ that does not start or end with - (such a read is a nameplate without a vote; "_" may stand anywhere). If it is also read
 /// surely enough (score per letter at least <see cref="NameplateDetectorSettings.MinNameScore"/>) the evaluation carries a
 /// <see cref="NameplateDetection"/>, which is one vote for that name.</item>
 /// <item><b>Track</b> (<see cref="NameplateTracker"/>). Reads are not trusted one by one: the tracker confirms a name after it was read identically
@@ -32,6 +34,14 @@ public sealed class NameplateDetector : IDisposable
     // Top-hat thresholds and color rules of the text mask (0 to 255 intensities, not pixel sizes: not scaled).
     private const double TopHatMin = 28;
     private const double GreenTopHatMin = 20;
+
+    /// <summary>
+    /// The widest text line, in pixels of a frame 1440 high (scaled with the frame height), that the cheap pass accepts: 832 = 64 characters (the
+    /// longest handle) at 13 px each. A letter advances 10.1 px on average at 1440 (measured on 2801 reads of labeled names of 6 or more letters:
+    /// median 10.0, 95th percentile 11.0, widest 11.7, the same at every line height from 11 to 22 px), so a 64 character name is about 650 px wide
+    /// and 750 px even with only wide letters; 832 leaves 11 % over the widest advance seen. It was 400 (about 40 characters).
+    /// </summary>
+    public const int MaxLineWidth = 832;
 
     /// <summary>The characters a name is read with.</summary>
     public const string NameAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
@@ -117,8 +127,13 @@ public sealed class NameplateDetector : IDisposable
     public PairEvaluation Evaluate(Mat bgr, Rect top, Rect bottom)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var distanceRead = _reader.ReadPieces(bgr, bottom, _distanceAlphabet, _settings.DistanceMinInk);
-        var distance = DistanceLineRule.Evaluate(distanceRead, _settings);
+        var maskOrNull = NameplateFeatures.CreateMask(bgr, bottom);
+        if (maskOrNull is null)
+            return PairEvaluation.No;
+        LineMask distanceMask = maskOrNull;
+        var distanceRead = _reader.ReadPieces(distanceMask, _distanceAlphabet, _settings.DistanceMinInk);
+        var distance = DistanceLineRule.Evaluate(
+            distanceRead, _settings, piece => _reader.IsOpenBracket(distanceMask, piece.Start, piece.End, _settings.BracketMinScore));
         if (distance is null)
             return PairEvaluation.No;
 
@@ -132,10 +147,12 @@ public sealed class NameplateDetector : IDisposable
             score += piece.Score;
         if (!IsOneWord(nameRead) || !IsName(text))
             return PairEvaluation.No;
+        if (!NameShape.HasValidEdges(text))
+            return new PairEvaluation(true, null); // a nameplate, but a name may not start or end with -: no vote
         if (score / text.Length < _settings.MinNameScore)
             return new PairEvaluation(true, null); // a nameplate, but this read is too unsure to vote
 
-        return new PairEvaluation(true, new NameplateDetection(text, score, top, bottom, distance.Value.Text));
+        return new PairEvaluation(true, new NameplateDetection(text, score, top, bottom, distance.Value.Text, distance.Value.HasSpeedGroup));
     }
 
     /// <summary>
@@ -179,11 +196,16 @@ public sealed class NameplateDetector : IDisposable
         if (local.Count == 0)
             return empty;
 
+        // lines whose speed readout the line joiner left apart (a gap wider than its 7 pixels after the unit) are also offered as ONE line
+        // (distance + speed group); these joined boxes come after the real lines and can only be the lower line of a pair
+        var realCount = local.Count;
+        local.AddRange(SpeedUnions(local, height));
+
         var clear = new bool[local.Count];
         for (var i = 0; i < clear.Length; i++)
             clear[i] = IsClear(local[i], height);
 
-        var (pairs, loose, crowd) = SortPairs(local, clear, PairLines(local, height));
+        var (pairs, loose, crowd) = SortPairs(local, clear, PairLines(local, height, realCount), realCount);
         var boxes = new Rect[local.Count];
         for (var i = 0; i < boxes.Length; i++)
             boxes[i] = new Rect(local[i].X + px0, local[i].Y + y0, local[i].Width, local[i].Height);
@@ -289,7 +311,7 @@ public sealed class NameplateDetector : IDisposable
         var maxHeight = Scaled(frameHeight, 22);
         var minHeight = Scaled(frameHeight, 10);
         var minWidth = Scaled(frameHeight, 24);
-        var maxWidth = Scaled(frameHeight, 400);
+        var maxWidth = Scaled(frameHeight, MaxLineWidth);
         var speck = Math.Max(1, (int)Math.Floor(_settings.SpeckArea * Math.Pow(frameHeight / (double)_settings.ReferenceHeight, 2) + 0.5));
 
         var boxes = new List<Rect>();
@@ -404,20 +426,68 @@ public sealed class NameplateDetector : IDisposable
         return Cv2.CountNonZero(roi) > 0;
     }
 
+    /// <summary>
+    /// Candidate "distance + speed group" lines whose two parts the line joiner left apart: for every line, the nearest line to its right in
+    /// the same row (centers within a quarter line height or 3 pixels), about as high, with a gap of at least 1 pixel and at most
+    /// <see cref="NameplateDetectorSettings.SpeedJoinGap"/> line heights, and at most <see cref="NameplateDetectorSettings.SpeedJoinMaxLines"/> line heights
+    /// wide, gives one joined box (the two boxes' union). Whether the right part starts with "[" is decided when the line is read
+    /// (<see cref="DistanceLineRule"/>). Port of <c>speed_unions</c> of the Python reference.
+    /// </summary>
+    private List<Rect> SpeedUnions(List<Rect> boxes, int frameHeight)
+    {
+        var heightTolerance = Scaled(frameHeight, 4);
+        var rowTolerance = Scaled(frameHeight, 3);
+        var unions = new List<Rect>();
+        for (var l = 0; l < boxes.Count; l++)
+        {
+            var left = boxes[l];
+            var best = -1;
+            var bestGap = 0;
+            for (var r = 0; r < boxes.Count; r++)
+            {
+                if (r == l)
+                    continue;
+                var right = boxes[r];
+                var gap = right.X - (left.X + left.Width);
+                if (!(gap >= 1 && gap <= _settings.SpeedJoinGap * left.Height) || right.Width > _settings.SpeedJoinMaxLines * left.Height)
+                    continue;
+                if (Math.Abs(right.Height - left.Height) > Math.Max(heightTolerance, left.Height * 0.45))
+                    continue;
+                if (Math.Abs(right.Y + right.Height / 2.0 - (left.Y + left.Height / 2.0)) > Math.Max(rowTolerance, 0.25 * left.Height))
+                    continue;
+                if (best < 0 || gap < bestGap)
+                {
+                    best = r;
+                    bestGap = gap;
+                }
+            }
+
+            if (best >= 0)
+            {
+                var right = boxes[best];
+                var top = Math.Min(left.Y, right.Y);
+                var bottom = Math.Max(left.Y + left.Height, right.Y + right.Height);
+                unions.Add(new Rect(left.X, top, right.X + right.Width - left.X, bottom - top));
+            }
+        }
+
+        return unions;
+    }
+
     // ------------------------------------------------------------------------------------------------ stage 3: pairs
 
     /// <summary>
     /// A name line above a distance line: centered on each other, the same height, the gap up to 1.4 line heights, and not a left aligned
     /// label column (equal left edges while the widths differ). Every such pair is returned, whether or not its lines are isolated.
     /// </summary>
-    private List<(int Top, int Bottom)> PairLines(List<Rect> boxes, int frameHeight)
+    private List<(int Top, int Bottom)> PairLines(List<Rect> boxes, int frameHeight, int realCount)
     {
         var heightTolerance = Scaled(frameHeight, 4);
         var centerTolerance = Scaled(frameHeight, _settings.CenterTolerance);
         var leftTolerance = Scaled(frameHeight, _settings.LeftTolerance);
         var leftWidthDifference = Scaled(frameHeight, _settings.LeftWidthDifference);
         var pairs = new List<(int, int)>();
-        for (var t = 0; t < boxes.Count; t++)
+        for (var t = 0; t < realCount; t++) // the joined distance + speed boxes after realCount are never the upper line
         {
             var top = boxes[t];
             var topCenter = top.X + top.Width / 2.0;
@@ -450,7 +520,7 @@ public sealed class NameplateDetector : IDisposable
     /// (<see cref="FrameEvaluator"/>). LOOSE: everything else.
     /// </summary>
     private (List<(int Top, int Bottom)> Strict, List<(int Top, int Bottom)> Loose, List<CrowdPair> Crowd) SortPairs(
-        List<Rect> boxes, bool[] clear, List<(int Top, int Bottom)> all)
+        List<Rect> boxes, bool[] clear, List<(int Top, int Bottom)> all, int realCount)
     {
         var strict = new List<(int, int)>();
         var loose = new List<(int, int)>();
@@ -482,7 +552,7 @@ public sealed class NameplateDetector : IDisposable
                 foreach (var line in new[] { t, b })
                 {
                     if (!neighbourCache.TryGetValue(line, out var near))
-                        neighbourCache[line] = near = clear[line] ? new List<int>() : Neighbours(boxes, line);
+                        neighbourCache[line] = near = clear[line] ? new List<int>() : Neighbours(boxes, line, realCount);
                     if (near is null)
                     {
                         blocked = true;
@@ -515,7 +585,7 @@ public sealed class NameplateDetector : IDisposable
     /// line <paramref name="index"/> (in the rows of the line), sorted; empty when there is no such ink; null when some of that ink lies outside every
     /// other line's box (a ship, a HUD arc, a panel: the line is not isolated for good).
     /// </summary>
-    private List<int>? Neighbours(List<Rect> boxes, int index)
+    private List<int>? Neighbours(List<Rect> boxes, int index, int realCount)
     {
         var box = boxes[index];
         var reach = (int)Math.Ceiling(_settings.ClearLines * box.Height);
@@ -538,7 +608,7 @@ public sealed class NameplateDetector : IDisposable
             if (Cv2.CountNonZero(window) == 0)
                 continue;
             using var rest = window.Clone();
-            for (var k = 0; k < boxes.Count; k++)
+            for (var k = 0; k < realCount; k++) // joined distance + speed boxes (after realCount) are not neighbours
             {
                 if (k == index)
                     continue;
@@ -576,7 +646,7 @@ public sealed class NameplateDetector : IDisposable
         return true;
     }
 
-    /// <summary>The structure of a handle: 4 to 25 characters of A-Z, 0-9, "-" and "_".</summary>
+    /// <summary>The structure of a handle: 4 to 64 characters of A-Z, 0-9, "-" and "_" (the edge rule is <see cref="NameShape"/>).</summary>
     private bool IsName(string text)
     {
         if (text.Length < _settings.MinNameLength || text.Length > _settings.MaxNameLength)

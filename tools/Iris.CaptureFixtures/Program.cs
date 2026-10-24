@@ -17,6 +17,7 @@
 // The saved files are copies of third-party pages: they are git-ignored and must not be committed.
 
 using System.Text;
+using Iris.Core.Config;
 using Iris.Core.Rsi;
 
 const string Host = "robertsspaceindustries.com";
@@ -52,7 +53,7 @@ bool defaultSet = players.Count == 0 && orgs.Count == 0 && orgsOf.Count == 0;
 
 // names must be valid before any URL is built
 foreach (var p in players.Concat(orgsOf))
-    if (!RsiNames.IsValidHandle(p)) { Console.Error.WriteLine($"\"{p}\" is not a valid handle (letters, digits, - and _ only)."); return 1; }
+    if (!RsiNames.IsValidHandle(p)) { Console.Error.WriteLine($"\"{p}\" is not a valid handle. {RowValidator.InvalidHandleMessage}."); return 1; }
 foreach (var o in orgs)
     if (!RsiNames.IsValidSid(o)) { Console.Error.WriteLine($"\"{o}\" is not a valid org SID (letters, digits, - and _ only)."); return 1; }
 

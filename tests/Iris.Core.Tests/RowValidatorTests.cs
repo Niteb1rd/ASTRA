@@ -22,7 +22,7 @@ public class RowValidatorTests : IDisposable
     [InlineData("")]
     [InlineData("   ")]
     [InlineData("abc")]                        // 3 characters
-    [InlineData("abcdefghijklmnopqrstuvwxyz")] // 26 characters
+    [InlineData("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklm")] // 65 characters
     [InlineData("has space")]
     [InlineData("bad/../name")]
     public async Task Player_BadFormat_IsInvalidFormat_WithoutAnyRequest(string text)
@@ -30,7 +30,7 @@ public class RowValidatorTests : IDisposable
         var result = await Validator().ValidatePlayerAsync(text, NoOthers);
 
         Assert.Equal(RowCheckState.InvalidFormat, result.State);
-        Assert.Equal("Handles are 4 to 25 characters: letters, digits, - and _", result.Message);
+        Assert.Equal("Handles are 4 to 64 characters: letters, digits, - and _", result.Message);
         Assert.Empty(_env.Rsi.Calls);
     }
 

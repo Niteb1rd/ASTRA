@@ -34,7 +34,7 @@ public sealed record ColorMatch(MatchKind Kind, OverlayColor Color, string? Deci
 
 /// <summary>
 /// Applies the requirement's color rules, in order:
-/// 1. player list (no tiebreak needed; the handle is compared like <see cref="NameFilter"/> does, ignoring case and the look-alikes 0/O and 1/I, so a read such as N1TEBIRD finds Nitebird);
+/// 1. player list (no tiebreak needed; the handle is compared like <see cref="NameFilter"/> does: exactly, ignoring only upper/lower case, so a read such as N1TEBIRD does NOT find Nitebird);
 /// 2. org list: lowest priority number wins, ties go to the org listed first;
 /// 3. org-attribute rules: lowest priority number wins, ties go to the rule listed first;
 /// 4. nothing matches: the permanent No Match rule (<see cref="NoMatchRule"/>) gives the player its color (<see cref="MatchKind.NoMatch"/>), with the bracket &lt; &gt;

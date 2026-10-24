@@ -6,7 +6,8 @@ namespace Iris.Core.Detection;
 /// <param name="Text">The line as read, look-alike letters already turned into digits: <c>835.5m</c>.</param>
 /// <param name="Value">The number in front of the unit: 835.5, 9.0.</param>
 /// <param name="Kilometers">True for <c>km</c>, false for <c>m</c>.</param>
-public readonly record struct DistanceReading(string Text, double Value, bool Kilometers);
+/// <param name="HasSpeedGroup">True when the line goes on after the unit with a speed group opened by <c>[</c> (<c>9.0km [-29m/s]</c>). The group itself is not read.</param>
+public readonly record struct DistanceReading(string Text, double Value, bool Kilometers, bool HasSpeedGroup = false);
 
 /// <summary>
 /// The distance ANCHOR rule: decides from the model's restricted read of a line whether it is the distance line of a nameplate.
@@ -15,7 +16,9 @@ public readonly record struct DistanceReading(string Text, double Value, bool Ki
 /// <item>number: 1 to 4 digits, at most <see cref="NameplateDetectorSettings.MaxDistanceValue"/> (0 to 1000);</item>
 /// <item>a period, then exactly one digit (distances without a decimal are ignored);</item>
 /// <item>the unit, lower case <c>m</c> or <c>km</c>, and nothing after it;</item>
-/// <item>no gap wider than a word gap (<see cref="NameplateDetectorSettings.WordGap"/> capital heights) between two pieces of the line;</item>
+/// <item>no gap wider than a word gap (<see cref="NameplateDetectorSettings.WordGap"/> capital heights) between two pieces of the line, except ONE
+/// gap right after the unit followed by a piece that reads as <c>[</c>: the speed readout of a targeted nameplate (<c>9.0km [-29m/s]</c>).
+/// Everything from the bracket onward is ignored (not read, not scored, not validated); the line is judged on the pieces before the gap;</item>
 /// <item>the read must be sure: mean log probability per character at least <see cref="NameplateDetectorSettings.MinDistanceScore"/>, and the
 /// model's own opinion (best over all characters) may not be too far from the restricted read (mean gap at most
 /// <see cref="NameplateDetectorSettings.MaxDistanceGap"/> over the first 6 pieces).</item>
@@ -29,7 +32,10 @@ public static class DistanceLineRule
     public static string Alphabet { get; } = "0123456789.km" + LookAlikes.EfficiencyLetters;
 
     /// <summary>Evaluates a read; null when the line is not a distance anchor.</summary>
-    public static DistanceReading? Evaluate(PieceRead? read, NameplateDetectorSettings settings)
+    /// <param name="read">The line read with <see cref="Alphabet"/>.</param>
+    /// <param name="settings">The detector settings.</param>
+    /// <param name="isOpenBracket">Tells whether a piece of the line reads as <c>[</c>; null: no speed group is accepted.</param>
+    public static DistanceReading? Evaluate(PieceRead? read, NameplateDetectorSettings settings, Func<ReadPiece, bool>? isOpenBracket = null)
     {
         if (read is null || read.Pieces.Count == 0)
             return null;
@@ -45,6 +51,19 @@ public static class DistanceLineRule
             first++;
         if (first != 0 || last != pieces.Count - 1)
             pieces = pieces.Skip(first).Take(last - first + 1).ToList();
+
+        // a word gap inside the line is allowed once, when the piece after the FIRST gap is the "[" of a speed group; the rest is ignored
+        var speedGroup = false;
+        for (var i = 0; i + 1 < pieces.Count; i++)
+        {
+            if (pieces[i + 1].Start - pieces[i].End <= settings.WordGap * cap)
+                continue;
+            if (isOpenBracket is null || !isOpenBracket(pieces[i + 1]))
+                return null; // a space inside the line: not one distance
+            pieces = pieces.Take(i + 1).ToList();
+            speedGroup = true;
+            break;
+        }
 
         var text = new System.Text.StringBuilder();
         var chars = 0;
@@ -65,14 +84,11 @@ public static class DistanceLineRule
             gapSum += (pieces[i].FreeScore - pieces[i].Score) / Math.Max(1, pieces[i].Text.Length);
         var gap = gapSum / count;
 
-        for (var i = 0; i + 1 < pieces.Count; i++)
-            if (pieces[i + 1].Start - pieces[i].End > settings.WordGap * cap)
-                return null; // a space inside the line: not one distance
-
         if (mean < settings.MinDistanceScore || gap > settings.MaxDistanceGap)
             return null;
 
-        return Parse(text.ToString(), settings.MaxDistanceValue);
+        var parsed = Parse(text.ToString(), settings.MaxDistanceValue);
+        return parsed is { } reading ? reading with { HasSpeedGroup = speedGroup } : null;
     }
 
     /// <summary>

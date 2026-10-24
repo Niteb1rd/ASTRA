@@ -2,10 +2,9 @@ namespace Iris.Core.Detection;
 
 /// <summary>
 /// Comparison of a read name with the names that are known to be on screen, as a developer tool for judging the reader (the replay
-/// tool uses it to score a read against a label list; the app itself looks names up exactly; the hotkey look-alike retry
-/// with <see cref="LookAlikes.NameVariants"/> is ready but not wired in yet, step 5). A read matches a name when the two are equal except for upper/lower case and the accuracy
-/// look-alikes <c>0/O</c> and <c>1/I</c> (<see cref="LookAlikes"/>). There is NO other edit tolerance: a name with one wrong, missing
-/// or extra letter does not match.
+/// tool uses it to score a read against a label list; the app itself looks names up exactly). A read matches a name only when the two
+/// are the same name: equal except for upper/lower case. There is NO look-alike tolerance (the accuracy list of <see cref="LookAlikes"/>
+/// is empty) and no edit tolerance: a name with one wrong, missing or extra character does not match.
 /// </summary>
 public static class NameMatcher
 {
@@ -14,19 +13,19 @@ public static class NameMatcher
 
     /// <summary>
     /// The first name of <paramref name="vocabulary"/> that <paramref name="text"/> matches (see <see cref="Matches"/>), or null.
-    /// Names that match exactly (same characters, same case) are preferred over names that need a look-alike swap.
+    /// A name that matches in the same case is preferred over one that differs in case.
     /// </summary>
     public static string? BestMatch(string text, IEnumerable<string> vocabulary)
     {
-        string? swapped = null;
+        string? otherCase = null;
         foreach (var candidate in vocabulary)
         {
-            if (string.Equals(candidate, text, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(candidate, text, StringComparison.Ordinal))
                 return candidate;
-            if (swapped is null && Matches(text, candidate))
-                swapped = candidate;
+            if (otherCase is null && Matches(text, candidate))
+                otherCase = candidate;
         }
 
-        return swapped;
+        return otherCase;
     }
 }
