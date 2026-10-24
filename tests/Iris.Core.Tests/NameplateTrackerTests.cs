@@ -72,10 +72,10 @@ public class NameplateTrackerTests
         d.Next(Pair(Top(w: 82)));  // 2 px wider: the same thing
         Assert.Equal(1, d.Evaluations);
 
-        d.Next(Pair(Top(w: 92)));  // 15% wider: not the same thing
+        d.Next(Pair(Top(w: 96)));  // 16 px wider (more than 15 % of 80 plus 1 px): not the same thing
         Assert.Equal(2, d.Evaluations);
 
-        d.Next(Pair(Top(w: 92, h: 15))); // taller by 3 px (of a 12 px line) is notable too
+        d.Next(Pair(Top(w: 96, h: 15))); // taller by 3 px (of a 12 px line) is notable too
         Assert.Equal(3, d.Evaluations);
         Assert.Single(d.Tracker.Tracks); // still one track
     }
@@ -249,16 +249,21 @@ public class NameplateTrackerTests
     public void TwoCandidates_AreMatchedToTheirOwnTracks()
     {
         var d = new Driver();
-        d.Evaluate = (top, _) => new TrackEvaluation(true, top.Y < 600 ? "UPPER_ONE" : "LOWER_ONE");
+        d.Evaluate = (top, _) => new TrackEvaluation(true, top.Y < 510 ? "UPPER_ONE" : "LOWER_ONE");
         var a = Pair(Top(y: 500));
         var b = Pair(Top(y: 520)); // 20 px below: 1.7 line heights, closer than the move limit to each other's old place
         d.Next(a, b);
         d.Next(b, a); // the candidates arrive in the other order: each still finds its own track
         d.Next(a, b);
 
+        // each track read its own name twice (and was confirmed): a swapped match would have mixed the names and confirmed nothing
         Assert.Equal(2, d.Tracker.Tracks.Count);
-        Assert.All(d.Tracker.Tracks, t => Assert.Equal(3, t.Evaluations));
-        Assert.Equal(new[] { "UPPER_ONE", "UPPER_ONE" }.Length, d.Tracker.Tracks.Count);
+        var upper = Assert.Single(d.Tracker.Tracks, t => t.Top.Y == 500);
+        var lower = Assert.Single(d.Tracker.Tracks, t => t.Top.Y == 520);
+        Assert.Equal("UPPER_ONE", upper.ConfirmedName);
+        Assert.Equal("LOWER_ONE", lower.ConfirmedName);
+        Assert.Equal(2, upper.ReadCount);
+        Assert.Equal(2, lower.ReadCount);
     }
 
     [Fact]
@@ -306,6 +311,146 @@ public class NameplateTrackerTests
         Assert.Empty(d.Tracker.Tracks);
     }
 
+    // ------------------------------------------------------------------------------------------------ fast movers
+
+    private static Func<Rect, Rect, TrackEvaluation> Reads(string name) => (_, _) => new TrackEvaluation(true, name);
+
+    /// <summary>
+    /// A plate that moves 45 px per frame (more than the 36 px resting gate of a 12 px line) is followed: the first jump is recognised by its
+    /// identical read, the next ones by the position the track is expected at (constant velocity), and it is confirmed.
+    /// </summary>
+    [Fact]
+    public void AFastMovingNameplate_KeepsItsTrackAndIsConfirmed()
+    {
+        var d = new Driver();
+        d.Evaluate = Reads("SYNTH_ALPHA");
+
+        for (var i = 0; i < 6; i++)
+            d.Next(Pair(Top(x: 1000 + 45 * i)));
+
+        var track = Assert.Single(d.Tracker.Tracks);
+        Assert.Equal("SYNTH_ALPHA", track.ConfirmedName);
+        Assert.Equal(1, track.ConfirmedFrame);
+        Assert.Equal(1, track.Jumps);          // only the first step needed the identical read; the others were predicted
+        Assert.Equal(2, track.Evaluations);    // confirmed after two reads, then read again only once a second
+        Assert.Equal(1000 + 45 * 5, track.Top.X);
+    }
+
+    /// <summary>Without the prediction and the identical-read rule (the old tracker) the same plate makes a new track every frame.</summary>
+    [Fact]
+    public void WithoutPredictionAndIdenticalReads_AFastPlateMakesANewTrackEveryFrame()
+    {
+        var d = new Driver(Fast with { SpeedGain = 0, IdenticalMs = 0 });
+        d.Evaluate = Reads("SYNTH_ALPHA");
+
+        for (var i = 0; i < 6; i++)
+            d.Next(Pair(Top(x: 1000 + 45 * i)));
+
+        Assert.Equal(6, d.Tracker.Tracks.Count);
+    }
+
+    [Fact]
+    public void AnIdenticalRead_ContinuesATrackOnlyWithinTheTime()
+    {
+        NameplateTracker Run(int framesBetween, out int tracks)
+        {
+            var d = new Driver();
+            d.Evaluate = Reads("SYNTH_ALPHA");
+            d.Next(Pair(Top(x: 1000)));
+            for (var i = 1; i < framesBetween; i++)
+                d.Next();
+            d.Next(Pair(Top(x: 1400))); // 400 px away
+            tracks = d.Tracker.Tracks.Count;
+            return d.Tracker;
+        }
+
+        var soon = Run(4, out var soonTracks);   // 400 ms later: still the same plate
+        Assert.Equal(1, soonTracks);
+        Assert.Equal(1, soon.Tracks[0].Jumps);
+        Assert.Equal(2, soon.Tracks[0].ReadCount);
+
+        Run(7, out var lateTracks);              // 700 ms later (more than IdenticalMs): a new plate
+        Assert.Equal(2, lateTracks);
+    }
+
+    [Fact]
+    public void AnIdenticalRead_NeedsTheSameSizeAndTheSameName()
+    {
+        var sized = new Driver();
+        sized.Evaluate = Reads("SYNTH_ALPHA");
+        sized.Next(Pair(Top(x: 1000)));
+        sized.Next(Pair(Top(x: 1400, w: 120))); // far away and a much wider line: another plate
+        Assert.Equal(2, sized.Tracker.Tracks.Count);
+
+        var named = new Driver();
+        var names = new Queue<string>(new[] { "AAAA_ONE", "BBBB_TWO" });
+        named.Evaluate = (_, _) => new TrackEvaluation(true, names.Dequeue());
+        named.Next(Pair(Top(x: 1000)));
+        named.Next(Pair(Top(x: 1400))); // far away, another name: another plate
+        Assert.Equal(2, named.Tracker.Tracks.Count);
+    }
+
+    /// <summary>A track that is not a nameplate is never continued by an identical read (there is no read to compare with).</summary>
+    [Fact]
+    public void AJumpIsNotFollowed_WhenTheTrackIsNoNameplate()
+    {
+        var d = new Driver(); // evaluations say "no nameplate"
+        d.Next(Pair(Top(x: 1000)));
+        d.Next(Pair(Top(x: 1400)));
+
+        Assert.Equal(2, d.Tracker.Tracks.Count);
+        Assert.All(d.Tracker.Tracks, t => Assert.Equal(0, t.Jumps));
+    }
+
+    /// <summary>Two plates with the same read jump at once: each detection continues one track, the nearest first, and no track is used twice.</summary>
+    [Fact]
+    public void TwoJumpingPlates_WithTheSameRead_ClaimOneTrackEach()
+    {
+        var d = new Driver();
+        d.Evaluate = Reads("SAME_NAME");
+        d.Next(Pair(Top(x: 300)), Pair(Top(x: 800)));
+        Assert.Equal(new[] { 1, 2 }, d.Tracker.Tracks.Select(t => t.Id));
+
+        d.Next(Pair(Top(x: 520)), Pair(Top(x: 1060)));
+
+        Assert.Equal(2, d.Tracker.Tracks.Count); // no new track
+        var first = d.Tracker.Tracks.Single(t => t.Id == 1);
+        var second = d.Tracker.Tracks.Single(t => t.Id == 2);
+        Assert.Equal(520, first.Top.X);   // 220 px from track 1, 280 from track 2: nearest wins
+        Assert.Equal(1060, second.Top.X); // track 1 is taken, so the other detection continues track 2
+        Assert.Equal(1, first.Jumps);
+        Assert.Equal(1, second.Jumps);
+    }
+
+    /// <summary>The gate around the expected position grows with the speed of the track (a step a little larger than predicted is still the same plate), up to MaxGateLines.</summary>
+    [Fact]
+    public void TheGate_GrowsWithTheSpeedOfTheTrack_ButIsBounded()
+    {
+        int TracksAfter(NameplateTrackerSettings settings)
+        {
+            var d = new Driver(settings);
+            // 30 px per frame (inside the resting gate of 36 px), then a step of 90 px: 60 px from the expected place, gate 36 + 30
+            foreach (var x in new[] { 1000, 1030, 1060, 1150 })
+                d.Next(Pair(Top(x: x)));
+            return d.Tracker.Tracks.Count;
+        }
+
+        Assert.Equal(1, TracksAfter(Fast));
+        Assert.Equal(2, TracksAfter(Fast with { SpeedGain = 0 }));      // no growth: the old gate
+        Assert.Equal(2, TracksAfter(Fast with { MaxGateLines = 4 }));   // bounded to 48 px
+    }
+
+    /// <summary>The expected position needs two associations: a track seen once has no velocity and gets only the resting gate.</summary>
+    [Fact]
+    public void ATrackSeenOnce_HasNoVelocity()
+    {
+        var d = new Driver();
+        d.Next(Pair(Top(x: 1000)));
+        d.Next(Pair(Top(x: 1045))); // 45 px: outside the resting gate, nothing to predict from
+
+        Assert.Equal(2, d.Tracker.Tracks.Count);
+    }
+
     [Fact]
     public void Defaults_AreThreeReadsOverThreeHundredMilliseconds()
     {
@@ -337,6 +482,10 @@ public class NameplateTrackerTests
         Assert.NotNull((NameplateTrackerSettings.Default with { ExpireMs = -1 }).Validate());
         Assert.NotNull((NameplateTrackerSettings.Default with { MaxTracks = 0 }).Validate());
         Assert.NotNull((NameplateTrackerSettings.Default with { MoveLines = 0 }).Validate());
+        Assert.NotNull((NameplateTrackerSettings.Default with { SpeedGain = -1 }).Validate());
+        Assert.NotNull((NameplateTrackerSettings.Default with { MaxGateLines = 0 }).Validate());
+        Assert.NotNull((NameplateTrackerSettings.Default with { IdenticalMs = -1 }).Validate());
+        Assert.NotNull((NameplateTrackerSettings.Default with { MaxSpeedDtMs = -1 }).Validate());
         Assert.Throws<ArgumentException>(() => new NameplateTracker(NameplateTrackerSettings.Default with { ConfirmReads = 0 }));
     }
 }

@@ -45,8 +45,30 @@ public sealed record NameplateTrackerSettings
     /// <summary>This many evaluations in a row that say "no nameplate" turn a Nameplate track into NotNameplate.</summary>
     public int MaxFailStreak { get; init; } = 3;
 
-    /// <summary>A track moves at most this many line heights between two frames.</summary>
+    /// <summary>A track at rest moves at most this many line heights between two frames (the resting gate around its last position).</summary>
     public double MoveLines { get; init; } = 3.0;
+
+    /// <summary>
+    /// The gate around the position a track is expected at (its last position plus its last velocity times the time since it was seen)
+    /// is <see cref="MoveLines"/> plus this factor times the distance the track is expected to have moved: a fast track gets a wider gate.
+    /// </summary>
+    public double SpeedGain { get; init; } = 1.0;
+
+    /// <summary>The gate never grows beyond this many line heights.</summary>
+    public double MaxGateLines { get; init; } = 10.0;
+
+    /// <summary>
+    /// The prediction looks ahead at most this long, and the velocity of a track is taken only from two associations at most this far
+    /// apart in time (otherwise it counts as standing still).
+    /// </summary>
+    public double MaxSpeedDtMs { get; init; } = 500.0;
+
+    /// <summary>
+    /// A candidate that no track's gate holds but that reads the same name as a Nameplate track seen within this long, and has the size of
+    /// that track's name line, continues that track however far it jumped (a fast mover, a camera cut): the same text on the same sized
+    /// plate is the same plate.
+    /// </summary>
+    public double IdenticalMs { get; init; } = 500.0;
 
     /// <summary>Same object: the name line's width differs by at most this fraction (plus half a line height), its height by at most max(2 px, 25 %).</summary>
     public double WidthTolerance { get; init; } = 0.25;
@@ -71,6 +93,8 @@ public sealed record NameplateTrackerSettings
             return "MaxFailStreak, MaxTracks and MaxEvaluationsPerFrame must be at least 1.";
         if (MoveLines <= 0 || WidthTolerance < 0 || SizeChange < 0)
             return "MoveLines must be positive and the tolerances must not be negative.";
+        if (SpeedGain < 0 || MaxGateLines <= 0 || MaxSpeedDtMs < 0 || IdenticalMs < 0)
+            return "SpeedGain, MaxSpeedDtMs and IdenticalMs must not be negative and MaxGateLines must be positive.";
         return null;
     }
 }
@@ -187,6 +211,38 @@ public sealed class NameplateTrack
     /// <summary>Per name: the frame of its first vote.</summary>
     public IReadOnlyDictionary<string, long> FirstReadFrame => _firstReadFrame;
 
+    /// <summary>How often a candidate with the same read, far from the track's gate, was continued as this track (<see cref="NameplateTrackerSettings.IdenticalMs"/>).</summary>
+    public int Jumps { get; internal set; }
+
+    // The two last associations (time, center of the name line): the constant velocity prediction comes from them.
+    private bool _hasLast;
+    private bool _hasPrevious;
+    private (double Ms, double X, double Y) _last;
+    private (double Ms, double X, double Y) _previous;
+
+    internal void NotePosition(double timeMs, Rect top)
+    {
+        _previous = _last;
+        _hasPrevious = _hasLast;
+        _last = (timeMs, top.X + top.Width / 2.0, top.Y + top.Height / 2.0);
+        _hasLast = true;
+    }
+
+    internal bool HasLastPosition => _hasLast;
+
+    internal double LastPositionMs => _last.Ms;
+
+    /// <summary>Pixels per millisecond from the last two associations; (0, 0) when unknown or when they are more than <paramref name="maxDtMs"/> apart.</summary>
+    internal (double X, double Y) Velocity(double maxDtMs)
+    {
+        if (!_hasPrevious || !_hasLast)
+            return (0.0, 0.0);
+        var dt = _last.Ms - _previous.Ms;
+        if (dt <= 0 || dt > maxDtMs)
+            return (0.0, 0.0);
+        return ((_last.X - _previous.X) / dt, (_last.Y - _previous.Y) / dt);
+    }
+
     internal double CenterX => Top.X + Top.Width / 2.0;
 
     internal double CenterY => Top.Y + Top.Height / 2.0;
@@ -243,8 +299,12 @@ public sealed record TrackerUpdate(IReadOnlyList<NameplateTrack> Confirmed, IRea
 /// Follows candidate pairs from frame to frame, keeps a sticky verdict per track and lets the reads of a nameplate vote on its
 /// name. A port of <c>tracker_ref.py</c>; no OpenCV image work and no WPF, so it is testable with fake evaluations.
 /// <list type="bullet">
-/// <item>A candidate is matched to the nearest track of about the same size (closest first); otherwise it starts a new track and is
-/// evaluated at once. Only strict candidates (both lines isolated) start tracks; a non-strict one can only continue a Nameplate track.</item>
+/// <item>A candidate is matched to the nearest track of about the same size (closest first, one candidate per track, nearest to the track's
+/// PREDICTED position first: constant velocity from its last two positions, with a gate that grows with the track's speed). A candidate that
+/// matches no track is evaluated at once; if it reads the same name as a Nameplate track seen within
+/// <see cref="NameplateTrackerSettings.IdenticalMs"/> on a name line of the same size, it continues that track (however far it jumped), otherwise it
+/// starts a new track. Only strict candidates (both lines isolated, or isolated but for the text of other nameplates) start tracks; a non-strict
+/// one can only continue a Nameplate track.</item>
 /// <item>A <see cref="TrackVerdict.NotNameplate"/> track is not evaluated again until <see cref="NameplateTrackerSettings.RecheckMs"/> have
 /// passed or its box size changed notably. Junk that stays on screen (HUD word pairs, signs) is read once, not every frame.</item>
 /// <item>A <see cref="TrackVerdict.Nameplate"/> track is evaluated every frame until it has a confirmed name, then every
@@ -290,7 +350,7 @@ public sealed class NameplateTracker
             {
                 if (!candidates[c].Strict && _tracks[t].Verdict != TrackVerdict.Nameplate)
                     continue;
-                var d = SameObject(_tracks[t], candidates[c].Top);
+                var d = SameObject(_tracks[t], candidates[c].Top, timeMs);
                 if (d is not null)
                     matches.Add((d.Value, c, t));
             }
@@ -314,6 +374,7 @@ public sealed class NameplateTracker
             trackUsed.Add(t);
         }
 
+        var existing = _tracks.Count;
         for (var c = 0; c < candidates.Count; c++)
         {
             var top = candidates[c].Top;
@@ -322,6 +383,7 @@ public sealed class NameplateTracker
             {
                 var track = _tracks[index];
                 track.LastSeenMs = timeMs;
+                track.NotePosition(timeMs, top);
                 var sizeChanged = SizeChanged(track, top);
                 track.Top = top;
                 track.Bottom = bottom;
@@ -338,16 +400,36 @@ public sealed class NameplateTracker
                 if (evaluations >= _settings.MaxEvaluationsPerFrame)
                     continue;
                 evaluations++;
-                Evaluate(track, frame, timeMs, evaluate, confirmedNow);
+                Evaluate(track, frame, timeMs, evaluate, confirmedNow, null);
             }
             else
             {
                 if (!candidates[c].Strict || evaluations >= _settings.MaxEvaluationsPerFrame)
                     continue;
                 evaluations++;
-                var track = new NameplateTrack(_nextId++, top, bottom, frame, timeMs);
-                _tracks.Add(track);
-                Evaluate(track, frame, timeMs, evaluate, confirmedNow);
+                var result = evaluate(top, bottom);
+                var readName = result.Name;
+                var lost = result.IsNameplate && readName is not null ? FindLostTrack(readName, top, timeMs, existing, trackUsed) : -1;
+                NameplateTrack track;
+                if (lost >= 0)
+                {
+                    // the same read on a plate of the same size soon after the track was lost: it jumped, continue the track
+                    track = _tracks[lost];
+                    trackUsed.Add(lost);
+                    track.Jumps++;
+                    track.LastSeenMs = timeMs;
+                    track.NotePosition(timeMs, top);
+                    track.Top = top;
+                    track.Bottom = bottom;
+                }
+                else
+                {
+                    track = new NameplateTrack(_nextId++, top, bottom, frame, timeMs);
+                    track.NotePosition(timeMs, top);
+                    _tracks.Add(track);
+                }
+
+                Evaluate(track, frame, timeMs, evaluate, confirmedNow, result);
             }
         }
 
@@ -372,13 +454,42 @@ public sealed class NameplateTracker
         return all;
     }
 
-    private void Evaluate(NameplateTrack track, long frame, double timeMs, Func<Rect, Rect, TrackEvaluation> evaluate, List<NameplateTrack> confirmedNow)
+    /// <summary>
+    /// A Nameplate track made before this frame, not matched in it, seen within <see cref="NameplateTrackerSettings.IdenticalMs"/>, whose best
+    /// read is <paramref name="name"/> and whose name line has the size of <paramref name="top"/>: the most recently seen, then the nearest.
+    /// Returns its index, or -1. A track is claimed once per frame.
+    /// </summary>
+    private int FindLostTrack(string name, Rect top, double timeMs, int existing, HashSet<int> trackUsed)
+    {
+        var best = -1;
+        (double Negative, double Distance) bestKey = default;
+        var cx = top.X + top.Width / 2.0;
+        var cy = top.Y + top.Height / 2.0;
+        for (var t = 0; t < existing; t++)
+        {
+            var track = _tracks[t];
+            if (trackUsed.Contains(t) || track.Verdict != TrackVerdict.Nameplate || timeMs - track.LastSeenMs > _settings.IdenticalMs)
+                continue;
+            if (!string.Equals(track.BestName, name, StringComparison.Ordinal) || !SameSize(track, top))
+                continue;
+            var key = (-track.LastSeenMs, (cx - track.CenterX) * (cx - track.CenterX) + (cy - track.CenterY) * (cy - track.CenterY));
+            if (best < 0 || key.Item1 < bestKey.Negative || (key.Item1 == bestKey.Negative && key.Item2 < bestKey.Distance))
+            {
+                best = t;
+                bestKey = key;
+            }
+        }
+
+        return best;
+    }
+
+    private void Evaluate(NameplateTrack track, long frame, double timeMs, Func<Rect, Rect, TrackEvaluation> evaluate, List<NameplateTrack> confirmedNow, TrackEvaluation? known)
     {
         track.Evaluations++;
         track.LastCheckedMs = timeMs;
         track.CheckedWidth = track.Top.Width;
         track.CheckedHeight = track.Top.Height;
-        var result = evaluate(track.Top, track.Bottom);
+        var result = known ?? evaluate(track.Top, track.Bottom);
         if (!result.IsNameplate)
         {
             if (track.Verdict == TrackVerdict.Nameplate)
@@ -401,18 +512,46 @@ public sealed class NameplateTracker
             confirmedNow.Add(track);
     }
 
-    /// <summary>Distance of the track's name line to <paramref name="top"/> when it can be the same object, null when it cannot.</summary>
-    private double? SameObject(NameplateTrack track, Rect top)
+    /// <summary>The name line has about the size of the track's: height within max(2 px, 25 %), width within the tolerance (plus half a line height).</summary>
+    private bool SameSize(NameplateTrack track, Rect top)
     {
         var th = track.Top.Height;
         if (Math.Abs(top.Height - th) > Math.Max(2.0, 0.25 * th))
+            return false;
+        return Math.Abs(top.Width - track.Top.Width) <= _settings.WidthTolerance * track.Top.Width + 0.5 * th;
+    }
+
+    /// <summary>
+    /// The distance (pixels) at which <paramref name="top"/> can be the track's name line, or null when it cannot. It must have the size of
+    /// the track's line and lie either within the resting gate (<see cref="NameplateTrackerSettings.MoveLines"/> line heights) of the track's last
+    /// position, or within the wider gate of the position expected from the constant velocity of the track's last two associations
+    /// (the gate grows with the distance the track is expected to have moved, up to <see cref="NameplateTrackerSettings.MaxGateLines"/> line heights).
+    /// The smaller of the two distances is returned.
+    /// </summary>
+    private double? SameObject(NameplateTrack track, Rect top, double timeMs)
+    {
+        if (!SameSize(track, top))
             return null;
-        if (Math.Abs(top.Width - track.Top.Width) > _settings.WidthTolerance * track.Top.Width + 0.5 * th)
-            return null;
+        var th = track.Top.Height;
         var cx = top.X + top.Width / 2.0;
         var cy = top.Y + top.Height / 2.0;
-        var distance = Math.Sqrt((cx - track.CenterX) * (cx - track.CenterX) + (cy - track.CenterY) * (cy - track.CenterY));
-        return distance <= _settings.MoveLines * th ? distance : null;
+        var dLast = Math.Sqrt((cx - track.CenterX) * (cx - track.CenterX) + (cy - track.CenterY) * (cy - track.CenterY));
+        var rest = _settings.MoveLines * th;
+        double? best = dLast <= rest ? dLast : null;
+        if (track.HasLastPosition)
+        {
+            var (vx, vy) = track.Velocity(_settings.MaxSpeedDtMs);
+            var dt = Math.Min(Math.Max(0.0, timeMs - track.LastPositionMs), _settings.MaxSpeedDtMs);
+            var px = track.CenterX + vx * dt;
+            var py = track.CenterY + vy * dt;
+            var moved = Math.Sqrt((vx * dt) * (vx * dt) + (vy * dt) * (vy * dt));
+            var gate = Math.Min(rest + _settings.SpeedGain * moved, _settings.MaxGateLines * th);
+            var dPred = Math.Sqrt((cx - px) * (cx - px) + (cy - py) * (cy - py));
+            if (dPred <= gate && (best is null || dPred < best))
+                best = dPred;
+        }
+
+        return best;
     }
 
     private bool SizeChanged(NameplateTrack track, Rect top) =>
