@@ -11,7 +11,7 @@ public sealed class ReplayOptions
 
         Usage:
           Iris.Replay <input> [--labels FILE] [--out FOLDER] [--annotate] [--every N] [--model FILE] [--region L,R,T,B]
-                              [--fps N] [--image-fps N] [--confirm-reads N] [--confirm-span MS]
+                              [--fps N] [--image-fps N] [--confirm-reads N] [--confirm-span MS] [--track]
 
           <input>      a video file (mp4, mkv, mov, avi, webm), a folder of frame images (png, jpg, bmp, tif),
                        a folder with one such sub folder (or video) per clip, or a single image
@@ -33,6 +33,13 @@ public sealed class ReplayOptions
                        brings its own (this was --fps before --fps became the sampling rate)
           --confirm-reads N   a name is confirmed after N identical reads (default 3)
           --confirm-span MS   ... spread over at least this many milliseconds (default 300)
+          --track      simulate the app's detect-then-track instead of reading every sampled frame: the detector runs at --fps (default 5 a
+                       second) and gives the template tracker the name rows' text, position and speed of every confirmed plate; on all the other
+                       frames, at the video's own frame rate, the tracker follows the plates by template matching. Reports, per clip, the
+                       distance (median and 95th percentile, pixels) between the tracked bracket and the fresh detection of the same plate at each
+                       detection, the share of frames with a tracked bracket shown (between the first and the last detection that saw a plate),
+                       the share of plates still shown at the next detection, the share of template matches found and the cost of a tracking
+                       tick; the comparisons go to tracking.csv in FOLDER. --labels and --annotate are ignored
 
         Frames of a clip are run through the tracker in order. With screenshot labels (--labels file.csv) every image stands alone and
         is read once, without the tracker.
@@ -62,6 +69,9 @@ public sealed class ReplayOptions
     /// <summary>Sampling rate in frames a second (<c>--fps</c>): frames are kept by time, 1000/N ms apart at least. Null keeps every frame.</summary>
     public double? SampleFps { get; private set; }
 
+    /// <summary>Simulate detect-then-track (<c>--track</c>) instead of the plain replay.</summary>
+    public bool Track { get; private set; }
+
     public bool ShowHelp { get; private set; }
 
     public static string DefaultOutDirectory() =>
@@ -85,6 +95,9 @@ public sealed class ReplayOptions
                     return options;
                 case "--annotate":
                     options.Annotate = true;
+                    break;
+                case "--track":
+                    options.Track = true;
                     break;
                 case "--labels":
                 case "--out":
