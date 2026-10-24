@@ -31,6 +31,30 @@ public sealed record NameplateDetectorSettings
     /// </summary>
     public int ReferenceHeight { get; init; } = 1440;
 
+    /// <summary>
+    /// The frame height that the pixel constants are scaled with (see <see cref="ReferenceHeight"/>). 0, the default, means the height of the image
+    /// given to the detector, which is right for a whole frame. The live loop gives the detector only a CROP of the screen (the scan region plus the
+    /// <see cref="ContextPadding"/> around it) and sets this to the height of the game window, so that the constants are scaled by the real screen
+    /// and not by the crop. Everything else (the scan region fractions) stays relative to the image given.
+    /// </summary>
+    public int ScaleHeight { get; init; }
+
+    /// <summary>The height the pixel constants are scaled with for an image <paramref name="imageHeight"/> pixels high (<see cref="ScaleHeight"/> or the image's).</summary>
+    public int EffectiveScaleHeight(int imageHeight) => ScaleHeight > 0 ? ScaleHeight : imageHeight;
+
+    /// <summary>
+    /// Pixels of context the cheap pass looks at beside the scan region (to see obstacles next to a line near the region's edge): three of the
+    /// tallest letter lines plus 4 plus 2, scaled with <paramref name="scaleHeight"/> (the height of the whole frame or window). A caller that
+    /// crops the frame itself must keep this much around the region, otherwise the lines at the region's edge are judged on less context than in a whole frame.
+    /// </summary>
+    public int ContextPadding(int scaleHeight) => 3 * Scale(scaleHeight, 22) + Scale(scaleHeight, 4) + 2;
+
+    /// <summary>
+    /// Pixels of context needed above and below the scan region: the colour mask's morphological kernel (about 11 pixels at the reference height) reads
+    /// the pixels just outside the region (OpenCV looks past the edge of a sub-image), so a caller that crops must keep half a kernel plus a margin there.
+    /// </summary>
+    public int VerticalContextPadding(int scaleHeight) => Scale(scaleHeight, 11) + 2;
+
     /// <summary>A name read from a nameplate has 4 to 64 characters (letters, digits, "-" and "_"); a read that starts or ends with "-" is no vote (<see cref="NameShape"/>).</summary>
     public int MinNameLength { get; init; } = 4;
 
@@ -135,6 +159,8 @@ public sealed record NameplateDetectorSettings
             return "The scan region needs 0 <= top < bottom <= 1.";
         if (ReferenceHeight <= 0)
             return "ReferenceHeight must be positive.";
+        if (ScaleHeight < 0)
+            return "ScaleHeight must not be negative (0 = the height of the image).";
         if (MinNameLength < 1 || MaxNameLength < MinNameLength)
             return "The name length limits are not usable.";
         if (MaxCandidateTopsPerFrame < 1)

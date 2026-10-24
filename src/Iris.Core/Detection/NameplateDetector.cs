@@ -167,6 +167,8 @@ public sealed class NameplateDetector : IDisposable
 
         var width = bgr.Width;
         var height = bgr.Height;
+        // the pixel constants follow the height of the whole screen when the caller gives a crop (see NameplateDetectorSettings.ScaleHeight)
+        var scaleHeight = _settings.EffectiveScaleHeight(height);
         // same arithmetic as the Python reference: int(fraction * size), truncating
         var x0 = (int)(_settings.RegionLeft * width);
         var x1 = Math.Min(width, (int)(_settings.RegionRight * width));
@@ -178,13 +180,13 @@ public sealed class NameplateDetector : IDisposable
 
         // The mask is made a little wider than the region (room to look for obstacles beside lines near the region's edge);
         // only lines that lie completely inside the region itself are candidates.
-        var pad = 3 * Scaled(height, 22) + Scaled(height, 4) + 2;
+        var pad = _settings.ContextPadding(scaleHeight);
         var px0 = Math.Max(0, x0 - pad);
         var px1 = Math.Min(width, x1 + pad);
 
         using var region = new Mat(bgr, new Rect(px0, y0, px1 - px0, y1 - y0));
-        BuildColorMask(region, ScaledOdd(height, 11));
-        var lines = FindTextLines(height);
+        BuildColorMask(region, ScaledOdd(scaleHeight, 11));
+        var lines = FindTextLines(scaleHeight);
         if (lines.Count == 0)
             return empty;
 
@@ -199,13 +201,13 @@ public sealed class NameplateDetector : IDisposable
         // lines whose speed readout the line joiner left apart (a gap wider than its 7 pixels after the unit) are also offered as ONE line
         // (distance + speed group); these joined boxes come after the real lines and can only be the lower line of a pair
         var realCount = local.Count;
-        local.AddRange(SpeedUnions(local, height));
+        local.AddRange(SpeedUnions(local, scaleHeight));
 
         var clear = new bool[local.Count];
         for (var i = 0; i < clear.Length; i++)
-            clear[i] = IsClear(local[i], height);
+            clear[i] = IsClear(local[i], scaleHeight);
 
-        var (pairs, loose, crowd) = SortPairs(local, clear, PairLines(local, height, realCount), realCount);
+        var (pairs, loose, crowd) = SortPairs(local, clear, PairLines(local, scaleHeight, realCount), realCount);
         var boxes = new Rect[local.Count];
         for (var i = 0; i < boxes.Length; i++)
             boxes[i] = new Rect(local[i].X + px0, local[i].Y + y0, local[i].Width, local[i].Height);

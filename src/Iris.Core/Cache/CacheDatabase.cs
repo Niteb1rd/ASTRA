@@ -228,6 +228,16 @@ public sealed class CacheDatabase : IDisposable
     }
 
     /// <summary>
+    /// True when <paramref name="handle"/> is in the cached member list of the org <paramref name="sid"/> (case-insensitive, an indexed lookup of
+    /// the primary key). False when the org has no cached member list.
+    /// </summary>
+    public bool IsOrgMember(string sid, string handle)
+    {
+        lock (_gate)
+            return ScalarText("SELECT 1 FROM org_members WHERE sid = $sid AND handle = $handle LIMIT 1", ("$sid", sid), ("$handle", handle)) is not null;
+    }
+
+    /// <summary>
     /// Org-list caching: stores the org's long name and replaces its member list. Nothing else.
     /// Attribute columns of an existing row are left alone. The source becomes 'org_list'.
     /// </summary>
