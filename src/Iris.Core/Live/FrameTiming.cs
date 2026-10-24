@@ -2,14 +2,21 @@ namespace Iris.Core.Live;
 
 /// <summary>
 /// The cap of the tracking, as a pure decision (no clock, no threads): the capture loop wakes for every NEW frame of the game and asks whether this frame is to be tracked.
-/// The cap is met ON AVERAGE by a running schedule: a frame is tracked when it is not earlier than the next allowed time (less <see cref="SlackMs"/> for jitter), and the next
+/// The cap is met ON AVERAGE by a running schedule: a frame is tracked when it is not earlier than the next allowed time (less a small slack for jitter, see <see cref="SlackMs"/>), and the next
 /// allowed time then moves one period on from where it was (so a frame that came a little early or late does not shift the whole rhythm), but never more than one period
 /// behind the frame (a long gap does not buy a burst). With no cap (Max) every new frame is tracked.
 /// </summary>
 public sealed class TrackingSchedule
 {
-    /// <summary>A frame this much short of the next allowed time still counts: frame times jitter by a fraction of a millisecond, and a 60 fps game at a cap of 60 must track every frame.</summary>
+    /// <summary>
+    /// A frame this much short of the next allowed time still counts: at least <see cref="SlackMs"/>, or <see cref="SlackFraction"/> of the period when that is more
+    /// (2.5 ms at a cap of 60). Frame times jitter by a millisecond or two, and a 60 fps game at a cap of 60 must still be tracked on every frame; the running schedule
+    /// keeps the average at the cap whatever the slack.
+    /// </summary>
     public const double SlackMs = 1.0;
+
+    /// <summary>The slack as a share of the period (see <see cref="SlackMs"/>).</summary>
+    public const double SlackFraction = 0.15;
 
     private double _nextAllowed = double.NaN;
 
@@ -38,7 +45,7 @@ public sealed class TrackingSchedule
             return true;
         }
 
-        if (frameMs < _nextAllowed - SlackMs)
+        if (frameMs < _nextAllowed - Math.Max(SlackMs, period * SlackFraction))
             return false;
         _nextAllowed = Math.Max(_nextAllowed + period, frameMs - period);
         return true;
