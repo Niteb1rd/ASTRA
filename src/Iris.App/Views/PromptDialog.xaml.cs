@@ -71,10 +71,10 @@ public partial class PromptDialog : Window
         return dialog._yes;
     }
 
-    /// <summary>Shows a message with an OK button.</summary>
-    public static void Tell(string message, string balloonText, Action<string>? notify, Window? owner, bool userJustActed = false)
+    /// <summary>Shows a message with a single button: OK, or <paramref name="okText"/> ("Close", say). It is modal; closing the window counts as pressing it.</summary>
+    public static void Tell(string message, string balloonText, Action<string>? notify, Window? owner, bool userJustActed = false, string okText = "OK")
     {
-        var dialog = new PromptDialog(message, yesNo: false, defaultYes: true);
+        var dialog = new PromptDialog(message, yesNo: false, defaultYes: true, okText);
         DialogHelper.PrepareBackgroundDialog(dialog, owner, balloonText, notify, userJustActed);
         ShowCounted(dialog);
     }

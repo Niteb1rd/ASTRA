@@ -1019,6 +1019,22 @@ public partial class ConfigWindow : Window, IImportHost
         _overlay.UpdateTestSettings(BuildSettings());
     }
 
+    /// <summary>The tip shown when the user ticks "Show overlay in screenshots and recordings".</summary>
+    internal const string RecordingTip =
+        "Recording software must be set to capture desktop to record the IRIS overlay. If set to capture Star Citizen, the overlay will not be captured.";
+
+    /// <summary>
+    /// "Show overlay in screenshots and recordings" was clicked. <c>Click</c> is raised only by the user (mouse, or Space on the focused box), never when the box is filled in from the
+    /// saved settings (loading the window, discarding edits) or changed by code, so this tells the user once per tick, and only when the box has just become checked. The box stays checked;
+    /// the pop-up is a modal message with a single Close button, owned by this window.
+    /// </summary>
+    private void OnVisibleInCaptureClick(object sender, RoutedEventArgs e)
+    {
+        if (OverlayVisibleInCaptureCheck.IsChecked != true)
+            return;
+        PromptDialog.Tell(RecordingTip, balloonText: string.Empty, notify: null, owner: this, userJustActed: true, okText: "Close");
+    }
+
     /// <summary>"Show test overlay (15 s)": shows or stops the sample overlay, using the values on screen (saved or not).</summary>
     private void OnTestOverlay(object sender, RoutedEventArgs e)
     {
