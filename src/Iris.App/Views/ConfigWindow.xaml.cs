@@ -882,6 +882,7 @@ public partial class ConfigWindow : Window, IImportHost
         PanelRightGapSlider.Value = settings.PanelRightGapPercent;
         PanelTopGapSlider.Value = settings.PanelTopGapPercent;
         TrackingFpsSlider.Value = settings.NameplateTrackingFps;
+        OverlayVisibleInCaptureCheck.IsChecked = settings.OverlayVisibleInCapture;
         LogEnabledCheck.IsChecked = settings.SessionLogEnabled;
         CheckUpdatesCheck.IsChecked = settings.CheckForUpdates;
         HostedUrlBox.Text = settings.HostedConfigUrl;
@@ -907,6 +908,7 @@ public partial class ConfigWindow : Window, IImportHost
         PanelRightGapPercent = (int)Math.Round(PanelRightGapSlider.Value),
         PanelTopGapPercent = (int)Math.Round(PanelTopGapSlider.Value),
         NameplateTrackingFps = (int)Math.Round(TrackingFpsSlider.Value),
+        OverlayVisibleInCapture = OverlayVisibleInCaptureCheck.IsChecked == true,
         SessionLogEnabled = LogEnabledCheck.IsChecked == true,
         CheckForUpdates = CheckUpdatesCheck.IsChecked == true,
         HostedConfigUrl = HostedUrlBox.Text.Trim(),

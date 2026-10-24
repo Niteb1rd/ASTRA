@@ -12,21 +12,25 @@ using Vx = Vortice.DXGI;
 namespace Iris.App.Services;
 
 /// <summary>
-/// Captures a rectangle of the screen with DXGI Desktop Duplication (Windows 8 and later; IRIS targets Windows 11). The picture stays on the GPU until the
-/// wanted rectangle (only the scan region, a fraction of the screen) is copied into a small CPU-readable staging texture and from there into a reusable
-/// BGR <see cref="Mat"/>; the rest of the screen is never read back.
+/// Captures rectangles of the screen with DXGI Desktop Duplication (Windows 8 and later; IRIS targets Windows 11). The picture stays on the GPU until the
+/// wanted rectangles (the scan region, a fraction of the screen, and the small search patches of the tracking) are copied into small CPU-readable staging textures and
+/// from there into reusable BGR <see cref="Mat"/>s; the rest of the screen is never read back.
 /// <list type="bullet">
-/// <item>The output (monitor) is the one that holds the region (<see cref="NativeMethods.TryGetMonitorForRect"/>, matched with the output's monitor handle); the Direct3D 11
+/// <item>The output (monitor) is the one that holds the regions (<see cref="NativeMethods.TryGetMonitorForRect"/>, matched with the output's monitor handle); the Direct3D 11
 /// device is created on that output's adapter, as duplication requires.</item>
-/// <item>One call = <c>AcquireNextFrame</c> (wait up to <see cref="AcquireTimeoutMs"/>), <c>CopySubresourceRegion</c> of the region, <c>ReleaseFrame</c> at once (the frame is
-/// never held across reads), map, convert. A wait that times out (nothing changed on screen) is <see cref="GrabStatus.NoNewFrame"/>: the previous picture is still in the Mat.</item>
+/// <item>One call = <c>AcquireNextFrame</c> (wait up to <see cref="AcquireTimeoutMs"/>), one <c>CopySubresourceRegion</c> for EACH region out of that one frame,
+/// <c>ReleaseFrame</c> at once (the frame is never held across calls), then for each region: map, convert. Every region has its own slot (its own staging texture, whose size
+/// is rounded up to <see cref="StagingBucket"/> pixels so that a patch that changes by a few pixels does not make a new texture, and its own BGR Mat). A wait that times out
+/// (nothing changed on screen) is <see cref="GrabStatus.NoNewFrame"/>: a region that is still where it was keeps its previous picture, any other has none.</item>
 /// <item>Anything else that goes wrong (access lost: a mode change, another full-screen program, the secure desktop; device removed or reset; the monitor of the game window
-/// changed; an unexpected pixel format) releases everything (device, duplication, staging texture) and the next grab sets up again, no sooner than a short pause after a
-/// failed setup (<see cref="RetryAfterFailureMs"/>). The staging texture is made again when the region's size changes.</item>
+/// changed; an unexpected pixel format) releases everything (device, duplication, staging textures) and the next grab sets up again, no sooner than a short pause after a
+/// failed setup (<see cref="RetryAfterFailureMs"/>).</item>
+/// <item>Every returned picture has IRIS's own overlay windows painted black where Windows does not leave them out of the capture itself (<see cref="CaptureExclusion"/>):
+/// the panel rectangle and the bracket outlines of the last 3 published sets.</item>
 /// </list>
 /// <c>DuplicateOutput</c> always delivers 8 bit B8G8R8A8, also while HDR is on for the monitor (Windows then converts the picture; the 16 bit float formats need
 /// <c>DuplicateOutput1</c>, which IRIS does not use). So HDR does not stop the capture, but the converted colors can lower the detection quality. R8G8B8A8 is accepted too,
-/// although <c>DuplicateOutput</c> is not known to produce it; any other format is reported as unsupported. Not thread safe: one thread (the detection loop) calls everything.
+/// although <c>DuplicateOutput</c> is not known to produce it; any other format is reported as unsupported. Not thread safe: ONE thread (the capture loop) calls everything.
 /// The Vortice calls are the only place IRIS touches Direct3D or DXGI.
 /// </summary>
 public sealed class DxgiFrameSource : IFrameSource
@@ -37,29 +41,56 @@ public sealed class DxgiFrameSource : IFrameSource
     /// <summary>After a setup that failed, the next try is made no sooner than this (milliseconds).</summary>
     public const long RetryAfterFailureMs = 2000;
 
+    /// <summary>The staging textures are as wide and high as the region rounded UP to a multiple of this (pixels).</summary>
+    public const int StagingBucket = 64;
+
+    /// <summary>One region of a call: its staging texture, its picture, and what the picture is of.</summary>
+    private sealed class Slot
+    {
+        public Vd.ID3D11Texture2D? Staging;
+        public int StagingWidth;   // bucketed
+        public int StagingHeight;
+        public Vx.Format Format;
+        public Mat? Bgr;           // exactly Region's size
+        public Rect Region;        // where Bgr was taken (screen pixels)
+        public bool HasPicture;    // Bgr holds a picture of the current setup and of Region
+    }
+
+    private readonly List<Slot> _slots = new();
     private Vd.ID3D11Device? _device;
     private Vd.ID3D11DeviceContext? _context;
     private Vx.IDXGIOutputDuplication? _duplication;
-    private Vd.ID3D11Texture2D? _staging;
-    private int _stagingWidth;
-    private int _stagingHeight;
-    private Vx.Format _stagingFormat;
     private IntPtr _monitor;
     private PixelRect _outputBounds;
-    private Mat? _bgr;
-    private bool _hasPicture; // _bgr holds a picture of the current setup (false after Release and after the staging texture was made again)
     private long _retryAtTick;
     private bool _disposed;
 
     /// <inheritdoc />
     public GrabResult Grab(Rect screenRegion)
     {
+        var result = GrabRegions(new[] { screenRegion });
+        var image = result.Images.Count > 0 ? result.Images[0] : null;
+        if (result.Status == GrabStatus.NoNewFrame && image is null)
+            return new GrabResult(GrabStatus.NoNewFrame, null, result.Message ?? "waiting for the first screen picture");
+        return new GrabResult(result.Status, image, result.Message);
+    }
+
+    /// <inheritdoc />
+    public GrabRegionsResult GrabRegions(IReadOnlyList<Rect> screenRegions)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var region = new PixelRect(screenRegion.X, screenRegion.Y, screenRegion.Width, screenRegion.Height);
-        if (!NativeMethods.TryGetMonitorForRect(region, out var monitor, out var bounds))
-            return GrabResult.Unavailable("the scan region is not on any screen");
-        if (region.X < bounds.X || region.Y < bounds.Y || region.Right > bounds.Right || region.Bottom > bounds.Bottom)
-            return GrabResult.Unavailable("the scan region is not completely on one screen");
+        if (screenRegions.Count == 0)
+            return new GrabRegionsResult(GrabStatus.Ok, Array.Empty<Mat?>());
+
+        var first = ToPixelRect(screenRegions[0]);
+        if (!NativeMethods.TryGetMonitorForRect(first, out var monitor, out var bounds))
+            return GrabRegionsResult.Unavailable("the scan region is not on any screen");
+        foreach (var region in screenRegions)
+        {
+            var rect = ToPixelRect(region);
+            if (rect.X < bounds.X || rect.Y < bounds.Y || rect.Right > bounds.Right || rect.Bottom > bounds.Bottom)
+                return GrabRegionsResult.Unavailable("a capture region is not completely on one screen");
+        }
 
         // the game window moved to another screen, or the screen's mode changed: set up again
         if (_duplication is not null && (monitor != _monitor || bounds != _outputBounds))
@@ -70,35 +101,39 @@ public sealed class DxgiFrameSource : IFrameSource
             if (_duplication is null)
             {
                 if (Environment.TickCount64 < _retryAtTick)
-                    return GrabResult.Unavailable("screen capture is waiting to retry after a failed setup");
+                    return GrabRegionsResult.Unavailable("screen capture is waiting to retry after a failed setup");
                 var problem = SetUp(monitor, bounds);
                 if (problem is not null)
                 {
                     Release();
                     _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
-                    return GrabResult.Unavailable(problem);
+                    return GrabRegionsResult.Unavailable(problem);
                 }
             }
 
-            return CopyRegion(screenRegion, bounds);
+            return CopyRegions(screenRegions, bounds);
         }
         catch (SharpGenException ex)
         {
             // for example DXGI_ERROR_ACCESS_LOST or DEVICE_REMOVED thrown by a call that checks its result, or DuplicateOutput refused
             Release();
             _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
-            return GrabResult.Unavailable("screen capture failed and will be set up again: " + ex.Message);
+            return GrabRegionsResult.Unavailable("screen capture failed and will be set up again: " + ex.Message);
         }
     }
 
     /// <inheritdoc />
     public void Release()
     {
-        _staging?.Dispose();
-        _staging = null;
-        _stagingWidth = 0;
-        _stagingHeight = 0;
-        _hasPicture = false;
+        foreach (var slot in _slots)
+        {
+            slot.Staging?.Dispose();
+            slot.Staging = null;
+            slot.StagingWidth = 0;
+            slot.StagingHeight = 0;
+            slot.HasPicture = false;
+        }
+
         _duplication?.Dispose(); // disposing the duplication also gives up a frame that may still be held
         _duplication = null;
         _context?.Dispose();
@@ -114,10 +149,17 @@ public sealed class DxgiFrameSource : IFrameSource
         if (_disposed)
             return;
         Release();
-        _bgr?.Dispose();
-        _bgr = null;
+        foreach (var slot in _slots)
+        {
+            slot.Bgr?.Dispose();
+            slot.Bgr = null;
+        }
+
+        _slots.Clear();
         _disposed = true;
     }
+
+    private static PixelRect ToPixelRect(Rect rect) => new(rect.X, rect.Y, rect.Width, rect.Height);
 
     /// <summary>Finds the output of <paramref name="monitor"/>, creates the device on its adapter and duplicates the output. Returns null, or why it failed.</summary>
     private string? SetUp(IntPtr monitor, PixelRect bounds)
@@ -162,7 +204,7 @@ public sealed class DxgiFrameSource : IFrameSource
         return null;
     }
 
-    private GrabResult CopyRegion(Rect region, PixelRect outputBounds)
+    private GrabRegionsResult CopyRegions(IReadOnlyList<Rect> regions, PixelRect outputBounds)
     {
         var duplication = _duplication!;
         // Depending on the Vortice version AcquireNextFrame returns the Result or throws a SharpGenException for a failed one (a timeout included): both are handled here.
@@ -181,10 +223,16 @@ public sealed class DxgiFrameSource : IFrameSource
         if (acquired == Vx.ResultCode.WaitTimeout)
         {
             resource?.Dispose();
-            // nothing changed on screen: the previous picture stands, but only if there is one of this setup
-            if (_hasPicture && _bgr is { IsDisposed: false } && !_bgr.Empty())
-                return new GrabResult(GrabStatus.NoNewFrame, _bgr);
-            return new GrabResult(GrabStatus.NoNewFrame, null, "waiting for the first screen picture");
+            // nothing changed on screen: a region that is where it was keeps its previous picture of this setup, any other has none
+            var previous = new List<Mat?>(regions.Count);
+            for (var i = 0; i < regions.Count; i++)
+            {
+                var slot = i < _slots.Count ? _slots[i] : null;
+                var keep = slot is { HasPicture: true, Bgr: { IsDisposed: false } bgr } && slot.Region == regions[i] && !bgr.Empty();
+                previous.Add(keep ? slot!.Bgr : null);
+            }
+
+            return new GrabRegionsResult(GrabStatus.NoNewFrame, previous, previous.Exists(m => m is not null) ? null : "waiting for the first screen picture");
         }
 
         if (acquired.Failure || resource is null)
@@ -194,7 +242,7 @@ public sealed class DxgiFrameSource : IFrameSource
             var lost = acquired == Vx.ResultCode.AccessLost;
             Release();
             _retryAtTick = Environment.TickCount64 + (lost ? 0 : RetryAfterFailureMs);
-            return GrabResult.Unavailable(lost ? "screen capture was lost and is being set up again" : "screen capture failed: " + acquired);
+            return GrabRegionsResult.Unavailable(lost ? "screen capture was lost and is being set up again" : "screen capture failed: " + acquired);
         }
 
         try
@@ -206,45 +254,67 @@ public sealed class DxgiFrameSource : IFrameSource
                 // start from scratch at the next grab (no sooner than the retry pause, so this cannot loop tightly)
                 Release();
                 _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
-                return GrabResult.Unavailable($"the screen picture is {description.Width}x{description.Height}, not the {(int)outputBounds.Width}x{(int)outputBounds.Height} of the monitor (a rotated screen is not supported)");
+                return GrabRegionsResult.Unavailable($"the screen picture is {description.Width}x{description.Height}, not the {(int)outputBounds.Width}x{(int)outputBounds.Height} of the monitor (a rotated screen is not supported)");
             }
 
             if (description.Format != Vx.Format.B8G8R8A8_UNorm && description.Format != Vx.Format.R8G8B8A8_UNorm)
             {
                 Release();
                 _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
-                return GrabResult.Unavailable($"the screen picture has pixel format {description.Format}, which IRIS cannot read (only 8 bit B8G8R8A8 and R8G8B8A8 are supported)");
+                return GrabRegionsResult.Unavailable($"the screen picture has pixel format {description.Format}, which IRIS cannot read (only 8 bit B8G8R8A8 and R8G8B8A8 are supported)");
             }
 
-            EnsureStaging(region.Width, region.Height, description.Format);
-            var left = region.X - (int)outputBounds.X;
-            var top = region.Y - (int)outputBounds.Y;
-            // Vortice 3.x keeps Box in Vortice.Mathematics (int fields), not in Vortice.Direct3D11.
-            var box = new Vortice.Mathematics.Box(left, top, 0, left + region.Width, top + region.Height, 1);
-            _context!.CopySubresourceRegion(_staging!, 0, 0, 0, 0, frame, 0, box);
+            while (_slots.Count < regions.Count)
+                _slots.Add(new Slot());
+
+            // every region is copied out of the ONE frame that is held now
+            for (var i = 0; i < regions.Count; i++)
+            {
+                var region = regions[i];
+                var slot = _slots[i];
+                EnsureStaging(slot, region.Width, region.Height, description.Format);
+                var left = region.X - (int)outputBounds.X;
+                var top = region.Y - (int)outputBounds.Y;
+                // Vortice 3.x keeps Box in Vortice.Mathematics (int fields), not in Vortice.Direct3D11.
+                var box = new Vortice.Mathematics.Box(left, top, 0, left + region.Width, top + region.Height, 1);
+                _context!.CopySubresourceRegion(slot.Staging!, 0, 0, 0, 0, frame, 0, box);
+            }
         }
         finally
         {
-            ReleaseFrameQuietly(); // the frame is never kept across reads
+            ReleaseFrameQuietly(); // the frame is never kept across calls
             resource.Dispose();
         }
 
-        var result = ReadStaging(region.Width, region.Height);
-        MaskOwnWindows(region);
-        return result;
+        var windows = CaptureExclusion.VisibleUnexcludedWindows(); // asked once for all regions
+        var brackets = windows.Count == 0 ? Array.Empty<CaptureExclusion.BracketMask[]>() : CaptureExclusion.RecentBrackets();
+        var images = new List<Mat?>(regions.Count);
+        for (var i = 0; i < regions.Count; i++)
+        {
+            var slot = _slots[i];
+            ReadStaging(slot, regions[i]);
+            MaskOwnWindows(slot.Bgr!, regions[i], windows, brackets);
+            images.Add(slot.Bgr);
+        }
+
+        return new GrabRegionsResult(GrabStatus.Ok, images);
     }
 
-    private void EnsureStaging(int width, int height, Vx.Format format)
+    private static int Bucket(int size) => (size + StagingBucket - 1) / StagingBucket * StagingBucket;
+
+    private void EnsureStaging(Slot slot, int width, int height, Vx.Format format)
     {
-        if (_staging is not null && _stagingWidth == width && _stagingHeight == height && _stagingFormat == format)
+        var bucketWidth = Bucket(width);
+        var bucketHeight = Bucket(height);
+        if (slot.Staging is not null && slot.StagingWidth == bucketWidth && slot.StagingHeight == bucketHeight && slot.Format == format)
             return;
-        _staging?.Dispose();
-        _staging = null;
-        _hasPicture = false; // the Mat belongs to the old region size
+        slot.Staging?.Dispose();
+        slot.Staging = null;
+        slot.HasPicture = false; // the Mat belongs to the old texture
         var description = new Vd.Texture2DDescription
         {
-            Width = (uint)width, // uint in Vortice 3.x (int in older versions: then drop the casts)
-            Height = (uint)height,
+            Width = (uint)bucketWidth, // uint in Vortice 3.x (int in older versions: then drop the casts)
+            Height = (uint)bucketHeight,
             MipLevels = 1,
             ArraySize = 1,
             Format = format,
@@ -254,44 +324,44 @@ public sealed class DxgiFrameSource : IFrameSource
             CPUAccessFlags = Vd.CpuAccessFlags.Read,
             MiscFlags = Vd.ResourceOptionFlags.None,
         };
-        _staging = _device!.CreateTexture2D(description);
-        _stagingWidth = width;
-        _stagingHeight = height;
-        _stagingFormat = format;
+        slot.Staging = _device!.CreateTexture2D(description);
+        slot.StagingWidth = bucketWidth;
+        slot.StagingHeight = bucketHeight;
+        slot.Format = format;
     }
 
-    /// <summary>Maps the staging texture, converts BGRA (or RGBA) to BGR into the reusable Mat and unmaps.</summary>
-    private GrabResult ReadStaging(int width, int height)
+    /// <summary>Maps the slot's staging texture, converts the region's part of it (BGRA or RGBA) to BGR into the slot's reusable Mat and unmaps.</summary>
+    private void ReadStaging(Slot slot, Rect region)
     {
-        var staging = _staging!;
+        var staging = slot.Staging!;
         var context = _context!;
         var mapped = context.Map(staging, 0, Vd.MapMode.Read, Vd.MapFlags.None);
         try
         {
-            _bgr ??= new Mat();
-            using var source = Mat.FromPixelData(height, width, MatType.CV_8UC4, mapped.DataPointer, mapped.RowPitch);
-            var code = _stagingFormat == Vx.Format.B8G8R8A8_UNorm ? ColorConversionCodes.BGRA2BGR : ColorConversionCodes.RGBA2BGR;
-            Cv2.CvtColor(source, _bgr, code);
+            slot.Bgr ??= new Mat();
+            using var source = Mat.FromPixelData(region.Height, region.Width, MatType.CV_8UC4, mapped.DataPointer, mapped.RowPitch);
+            var code = slot.Format == Vx.Format.B8G8R8A8_UNorm ? ColorConversionCodes.BGRA2BGR : ColorConversionCodes.RGBA2BGR;
+            Cv2.CvtColor(source, slot.Bgr, code);
         }
         finally
         {
             context.Unmap(staging, 0);
         }
 
-        _hasPicture = true;
-        return new GrabResult(GrabStatus.Ok, _bgr);
+        slot.Region = region;
+        slot.HasPicture = true;
     }
 
     /// <summary>
     /// Second layer against IRIS capturing its own overlay: windows that could not be excluded from capture (<see cref="CaptureExclusion"/>) are painted black in
     /// the picture, so that brackets and panel colors never reach the detector. Nothing to do (the usual case) when every overlay window is excluded by Windows.
     /// </summary>
-    private void MaskOwnWindows(Rect region)
+    private static void MaskOwnWindows(Mat bgr, Rect region, IReadOnlyList<CaptureExclusion.MaskWindow> windows, IReadOnlyList<CaptureExclusion.BracketMask[]> brackets)
     {
-        if (_bgr is null || _bgr.Empty())
+        if (bgr.Empty() || windows.Count == 0)
             return;
         var bracketsMasked = false;
-        foreach (var mask in CaptureExclusion.VisibleUnexcludedWindows())
+        foreach (var mask in windows)
         {
             if (mask.BracketsOnly)
             {
@@ -299,7 +369,7 @@ public sealed class DxgiFrameSource : IFrameSource
                 // Only the outlines of the brackets are painted out.
                 if (!bracketsMasked)
                 {
-                    MaskBracketOutlines(region);
+                    MaskBracketOutlines(bgr, region, brackets);
                     bracketsMasked = true;
                 }
 
@@ -313,7 +383,7 @@ public sealed class DxgiFrameSource : IFrameSource
             var bottom = Math.Min(window.Bottom, region.Y + region.Height) - region.Y;
             if (right <= left || bottom <= top)
                 continue;
-            Cv2.Rectangle(_bgr, new Rect(left, top, right - left, bottom - top), new Scalar(0, 0, 0), -1);
+            Cv2.Rectangle(bgr, new Rect(left, top, right - left, bottom - top), new Scalar(0, 0, 0), -1);
         }
     }
 
@@ -322,17 +392,17 @@ public sealed class DxgiFrameSource : IFrameSource
 
     /// <summary>
     /// Paints the bracket shapes black, each as a line as thick as the widest thing drawn for it (the dark outline: colored stroke plus the outline on both sides)
-    /// plus <see cref="BracketMaskExtra"/>. The boxes are those of the last model the brackets window drew, in screen pixels as the window draws them; the Mat is
-    /// the capture region, so drawing outside it is clipped by OpenCV.
+    /// plus <see cref="BracketMaskExtra"/>. The boxes are those of the last <see cref="CaptureExclusion.HistoryLength"/> models the brackets window drew, in screen pixels as the
+    /// window draws them; the Mat is the capture region, so drawing outside it is clipped by OpenCV.
     /// </summary>
-    private void MaskBracketOutlines(Rect region)
+    private static void MaskBracketOutlines(Mat bgr, Rect region, IReadOnlyList<CaptureExclusion.BracketMask[]> brackets)
     {
-        var bgr = _bgr!;
         var black = new Scalar(0, 0, 0);
-        foreach (var item in CaptureExclusion.LatestBrackets())
+        foreach (var set in brackets) // the last published sets, newest first: the screen may still show an earlier frame than the newest
+        foreach (var item in set)
         {
             var box = item.ScreenBox;
-            var m = BracketMetrics.For(box);
+            var m = BracketMetrics.For(box, item.GameHeight);
             var extent = m.Extent(box);
             if (extent.Right < region.X || extent.X > region.X + region.Width || extent.Bottom < region.Y || extent.Y > region.Y + region.Height)
                 continue; // nothing of it in the picture
