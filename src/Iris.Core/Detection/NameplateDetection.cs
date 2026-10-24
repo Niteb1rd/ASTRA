@@ -8,7 +8,8 @@ namespace Iris.Core.Detection;
 /// <param name="NameBox">The name line, in frame pixels.</param>
 /// <param name="DistanceBox">The distance line under it, in frame pixels.</param>
 /// <param name="DistanceText">The distance line as read, such as <c>835.5m</c> or <c>9.0km</c> (digit look-alike letters already turned into digits).</param>
-public sealed record NameplateDetection(string Name, double Score, Rect NameBox, Rect DistanceBox, string DistanceText)
+/// <param name="HasSpeedGroup">True when the distance line goes on with a speed readout opened by <c>[</c> (the plate is targeted: <c>9.0km [-29m/s]</c>); <see cref="DistanceBox"/> then covers the whole line, and the speed itself is not read.</param>
+public sealed record NameplateDetection(string Name, double Score, Rect NameBox, Rect DistanceBox, string DistanceText, bool HasSpeedGroup = false)
 {
     /// <summary>The score divided by the number of letters.</summary>
     public double MeanScore => Name.Length == 0 ? 0.0 : Score / Name.Length;

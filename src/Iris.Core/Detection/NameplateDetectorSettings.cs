@@ -97,6 +97,21 @@ public sealed record NameplateDetectorSettings
     public double LeftWidthDifference { get; init; } = 8.0;
 
     /// <summary>
+    /// A targeted nameplate prints its closing speed after the distance, <c>9.0km [-29m/s]</c>. When the line joiner leaves the speed group as a
+    /// separate box, the box to the right of a line within this many line heights (same row) is joined to it as one candidate line.
+    /// </summary>
+    public double SpeedJoinGap { get; init; } = 1.5;
+
+    /// <summary>... and it must be at most this many line heights wide.</summary>
+    public double SpeedJoinMaxLines { get; init; } = 8.0;
+
+    /// <summary>
+    /// The piece after the word gap that follows the unit is the opening bracket "[" of the speed group when the model's best character
+    /// (among all of its characters) is "[" with at least this log probability.
+    /// </summary>
+    public double BracketMinScore { get; init; } = -0.7;
+
+    /// <summary>
     /// Work budget per frame (single frame <see cref="NameplateDetector.Detect"/>): at most this many different name lines (the upper
     /// lines of candidate pairs) are evaluated; further pairs are ignored. The budget is soft: the neighbour check of a crowd
     /// pair (<see cref="FrameEvaluator"/>) may read the pairs of neighbouring lines, which are not counted, so a frame can read more
@@ -126,6 +141,8 @@ public sealed record NameplateDetectorSettings
             return "MaxCandidateTopsPerFrame must be at least 1.";
         if (ClearLines < 0 || SpeckArea < 0 || CenterTolerance < 0 || LeftTolerance < 0 || LeftWidthDifference < 0 || DistanceMinInk < 0)
             return "The isolation and pairing numbers must not be negative.";
+        if (SpeedJoinGap < 0 || SpeedJoinMaxLines < 0)
+            return "The speed group join limits must not be negative.";
         if (MaxDistanceValue < 0)
             return "MaxDistanceValue must not be negative.";
         return null;

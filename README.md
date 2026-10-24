@@ -170,8 +170,8 @@ The overlay text uses the font **Quantico** (Bold), licensed under the SIL Open 
 Phase 3 reads real nameplates from the screen. Step 1 is the reader itself, without screen capture yet: it is given an image and the box of one
 nameplate line and returns the name. It lives in `src/Iris.Core/Detection/Letters/`:
 
-- `LetterModel`: the trained classifier (a small neural network: 388 numbers describing one letter in, a log probability for each of the 41 characters
-  `A-Z 0-9 _ -` and, for distance lines, `. k m` out). Its weights are the file `letters-model.bin`, embedded in `Iris.Core` as the resource `Iris.Core.Detection.Letters.letters-model.bin`. The file contains numbers only; it was trained from the developer's own
+- `LetterModel`: the trained classifier (a small neural network: 388 numbers describing one letter in, a log probability for each of the 43 characters
+  `A-Z 0-9 _ -` and, for distance lines, `. k m` and the brackets `[ ]` of the speed readout out). Its weights are the file `letters-model.bin`, embedded in `Iris.Core` as the resource `Iris.Core.Detection.Letters.letters-model.bin`. The file contains numbers only; it was trained from the developer's own
   gameplay clips with a separate local training kit that is not part of this repository.
 - `NameplateFeatures`: the image side. Crop to a 4x text mask (local contrast on the brightest colour channel, so cyan, white, red and green text all work,
   with an automatic contrast threshold), the capital band, cuts at blank columns, and the 388-number letter description.
@@ -200,9 +200,9 @@ megabytes (the Windows x64 build) and `IRIS.exe`'s folder to grow by a similar a
 | --- | --- | --- |
 | magic | 8 bytes | `IRISLM01` |
 | version | uint32 | 1 |
-| charset | uint32 byte length N, then N bytes UTF-8 | the characters, in output order: output unit i is `charset[i]` (`-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_km`, 41 characters: the letters of names, plus the decimal point and the lower case `k` and `m` of distance lines) |
+| charset | uint32 byte length N, then N bytes UTF-8 | the characters, in output order: output unit i is `charset[i]` (`-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ[]_km`, 43 characters: the letters of names, plus the decimal point and the lower case `k` and `m` of distance lines, and the square brackets `[` and `]` of the speed readout) |
 | input size | uint32 | 388 (a 16x24 picture of the letter plus width, height, top and bottom offset relative to the capital height, each times 4) |
-| layer count | uint32 | L (currently 2: 388 to 256 to 41) |
+| layer count | uint32 | L (currently 2: 388 to 256 to 43) |
 | each layer | uint32 rows (inputs), uint32 cols (outputs), float32 weights row-major (`weight[i][j]` connects input i to output j), float32 biases (cols values) | |
 
 ReLU follows every layer except the last; softmax follows the last. The reader clips each probability to at least 1e-6 and takes its logarithm.
@@ -219,12 +219,12 @@ missed ones, so a text line is only a nameplate when it has the distance line th
 1. **Cheap pass.** Colour mask (top-hat 11x11 per colour channel, then the cyan/white, red and green rules), tall blobs (over 22 px) dropped, text lines by dilation 7x1 and
    size/fill filters. Default scan region x 15-85 %, y 10-70 % of the frame (`NameplateDetectorSettings`; the replay tool takes `--region`).
 2. **Distance anchor.** A line is a distance only if it reads as a number from 0 to 1000, a period, **exactly one digit**, then lower case `m` or `km`, and nothing after it
-   (`DistanceLineRule`). A distance without a decimal is ignored. The line is read with the letter model restricted to `0-9 . k m` and the digit look-alikes below; the read must be sure
+   (`DistanceLineRule`); one word gap after the unit may be followed by the `[` of a speed readout, which ends the line for the rule (see "Speed readout" below). A distance without a decimal is ignored. The line is read with the letter model restricted to `0-9 . k m` and the digit look-alikes below; the read must be sure
    (mean score and the gap to the model's free best), and no gap inside the line may be wider than a word gap. Unsure end pieces (specks next to the line) are trimmed first.
    Nothing may touch the line, and 3 line-box heights (`ClearLines`; the height of the line's bounding box, which is about one character width) must be clear on both sides, small specks tolerated
    (the one exception is the crowd exception, rule 4).
 3. **Name.** The line directly above the anchor (the gap between the two lines is at most 1.4 line-box heights; the lines are about equally high), a **single word** of 4 to 25 characters `A-Z 0-9 - _`, read with the score per letter at least -0.20.
-   It must be centred over the distance (the game centres a name over its distance), left-aligned pairs are rejected (the left edges equal within 2 px while the widths differ by 8 px or more:
+   It must be centred over the distance line (the game centres a name over its distance line; with a speed readout over the whole line, speed group included), left-aligned pairs are rejected (the left edges equal within 2 px while the widths differ by 8 px or more:
    HUD label columns such as `R-ALT` over `VSI`), and 3 line-box heights must be clear on both sides.
 4. **Isolation: strict, crowd and loose pairs.** A pair whose lines are both isolated is a *strict* pair. A pair whose lines fail only the isolation test is a *loose* pair: it may only continue a track
    that already is a nameplate, never start one (hysteresis). **Crowd exception:** nameplates drift next to each other, so ink beside a line does not count against it when ALL of that ink lies inside the boxes of
@@ -295,14 +295,14 @@ outside the repository (the tool refuses to write into a folder that is inside a
 Python reference (`detector_ref.py` plus `tracker_ref.py`) on all 5718 frames of 13 clips, 60 labeled names (the labels say who appears in a clip, not in which frames). "v2-fixed" is the current code: crowd exception,
 tracker with prediction and identical-read association, `AMMUNITON` on the exclusion list:
 
-| | v1 (replay-v1) | v2, tracker K=3 over 300 ms | v2-fixed |
-| --- | --- | --- | --- |
-| labeled names found | 60/60 | 51/60 | 55/60 |
-| detections (v1) / false detections | 50191 / 27424 | n/a (tracks are what counts) | n/a |
-| wrong names confirmed | n/a | 1 (a stable misread: `AMMUNITON`) | 0 |
-| junk nameplate tracks | n/a | 39 (plus 195 stages of the typing animation, 42 unread, 293 excluded or contact code) | 28 (plus 180 animation stages, 38 unread, 94 excluded or contact code) |
-| nameplate tracks | n/a | 1323 | 574 |
-| median delay to the confirmed name | n/a | 3 frames (0.3 s at 10 fps) | 3 frames |
+| | v1 (replay-v1) | v2, tracker K=3 over 300 ms | v2-fixed | v2-fixed + speed readout (model v3) |
+| --- | --- | --- | --- | --- |
+| labeled names found | 60/60 | 51/60 | 55/60 | 55/60 |
+| detections (v1) / false detections | 50191 / 27424 | n/a (tracks are what counts) | n/a | n/a |
+| wrong names confirmed | n/a | 1 (a stable misread: `AMMUNITON`) | 0 | 0 |
+| junk nameplate tracks | n/a | 39 (plus 195 stages of the typing animation, 42 unread, 293 excluded or contact code) | 28 (plus 180 animation stages, 38 unread, 94 excluded or contact code) | 29 (plus 189 animation stages, 40 unread, 94 excluded or contact code) |
+| nameplate tracks | n/a | 1323 | 574 | 592 |
+| median delay to the confirmed name | n/a | 3 frames (0.3 s at 10 fps) | 3 frames | 3 frames |
 
 The 5 labeled names that are still not confirmed: three contact codes (`AB-1234-CD`, `EF-5678-GH`, `JK-9012-LM`: they are single line plates the app ignores by name anyway) and `ZANTHOR` and `PIXEL4821`
 (a crowded clip start in front of a station: `ZANTHOR` has one clean read in the whole clip, `PIXEL4821` three clean reads in frames 1 to 3 that span only 200 ms, less than the 300 ms rule asks for).
@@ -312,11 +312,26 @@ Times per frame depend on the machine (v1 median was 19.9 ms per frame in C#).
 Single screenshots without the tracker find fewer names (hard cases: red hostile targets, bright moons, stacked plates, plates without a distance line): 5 of the 17 labeled names are read in one frame
 by `detect()` (`evaluate_screenshots_v2.py`), with no wrong name. The letter model v2 reads held-out clips' letters at 98.1 %, the 14 labeled screenshot crops exactly 11/14, and held-out distance lines exactly 98.4 % (the anchor rule passes 98.7 %).
 
-A targeted nameplate also prints its speed on its distance line (`4.4km [268m/s]`). That line does not read as a distance (the `[268m/s]` part is a second word) and its first part has ink beside it,
-so such frames are not nameplates for IRIS; a plate is usually read in the frames before it is targeted. Reading the speed as part of the distance line is a possible later feature.
+**Speed readout.** A targeted nameplate prints its closing speed after its distance: `9.0km [-29m/s]`, `4.4km [268m/s]`, `15.6km [1km/s]` (lower case `m/s` or `km/s`, a space before `[`,
+a minus sign for a closing speed). The distance anchor accepts it: after the unit, **one word gap and a `[`** may follow, and everything from the bracket on is ignored (not read, not scored, not validated;
+the speed itself is not used). The line is judged on the pieces before the gap (`DistanceLineRule`, `HasSpeedGroup`). The bracket is recognized by the letter model (model v3 has the two characters `[` and `]`):
+the piece after the gap must be read as `[` when the model may choose among **all** of its characters, with a log probability of at least `BracketMinScore` (-0.7). The distance part is still read with the
+distance alphabet only, so no digit can be read as a bracket. Rejected, as before: a speed first (`VELOCITY 225M/S (1.12KM)`, `209M/S (59.06KM)`: upper case and parentheses, the part before the gap is not a distance),
+a speed group without a distance before it, a gap that is not followed by `[` (a minus sign, text), a second gap before the bracket.
 
-**Parity fixtures.** `tests/Iris.Core.Tests/Fixtures/detector/` has five synthetic frames (fake nameplates in the game's colours with made-up names, plus decoys: label columns, single lines, speed lines,
-a crowded plate, bars, stars; the fifth frame holds nameplates side by side, a plate beside a HUD word pair and a plate beside a ring) and `detector.json` with the stages (boxes, strict, crowd and loose pairs,
+- **Centering.** The game centres the name over the WHOLE line, speed group included (measured on the 13 clips: the centre of the whole line is within 0.5 px of the name centre in every frame where
+  the name is complete; the distance part alone is tens of pixels off). The pairing therefore uses the full extent of the line.
+- **Joined or split.** Usually the 7 px line joiner puts the whole line into one box. When the gap after the unit is wider (`SpeedJoinGap`, up to 1.5 line heights) and the speed group is a box of its own,
+  the box to the right (same row, similar height, at most `SpeedJoinMaxLines` = 8 line heights wide) is joined to the distance box as one extra candidate line (`SpeedUnions`); it can only be the lower line of a pair.
+- **Clearance.** The 3 line heights of free space on both sides apply to the whole line: after the `]`, not after the unit.
+- **Model v3.** `[` and `]` were added to model v2 by training only two new output units on v2's hidden layer (training kit: `extend_model.py`; samples from Tesseract-labelled speed lines, 68 `[` and 58 `]`).
+  Everything else the model knows is unchanged (a full retrain from scratch re-draws every weight; on the clips it gave one stable misread that was then confirmed as a wrong name, `UNKAOWN`, and 12 more junk tracks, none of it related to brackets).
+  Held-out clips (`name3`, `name7`): letter accuracy 98.1 % (as v2), 67 of 67 held-out brackets recognized (fitted on the other clips only), 1 of 12 514 other held-out letters read as a bracket; screenshot exam 11/14 as before.
+- **Effect on the clips** (Python reference): the labeled names found stay 55/60 and no wrong name is confirmed; `TTSUPERFREAK` (a targeted plate) is confirmed at frame 45 instead of 480, `AYANADX` has 38 instead of 11 frames with a name
+  vote (27 of them on speed lines), `FSS_SNOWY` 190 instead of 123. The price is 18 more nameplate tracks (18 more animation stages, unread tracks and junk tracks in total: the name types in while a plate is targeted) and 1 more junk track.
+
+**Parity fixtures.** `tests/Iris.Core.Tests/Fixtures/detector/` has six synthetic frames (fake nameplates in the game's colours with made-up names, plus decoys: label columns, single lines, speed lines,
+a crowded plate, bars, stars; the fifth frame holds nameplates side by side, a plate beside a HUD word pair and a plate beside a ring; the sixth has speed readouts `x.ykm [-nnm/s]`, joined and split into two boxes, and their decoys) and `detector.json` with the stages (boxes, strict, crowd and loose pairs,
 evaluations, detections) of the Python reference. `NameplateDetectorTests` compare the C# detector with it.
 They were made by a script of the local training kit; like the letter fixtures they check agreement with the reference, not accuracy on real footage.
 

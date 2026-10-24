@@ -75,6 +75,100 @@ public class DistanceLineRuleTests
         Assert.Equal("17.0m", reading!.Value.Text);
     }
 
+    /// <summary>"9.0km" (5 pieces, 6 pixel gaps), then a 24 pixel gap (a word gap is 0.33 * 48 = 15.8), then a bracket piece and the speed group.</summary>
+    private static PieceRead SpeedLine(string distance, int bracketAt = 0, params (string Text, int Start, int End)[] after)
+    {
+        var line = Line(distance);
+        var list = line.Pieces.ToList();
+        var end = list[^1].End;
+        var start = bracketAt > 0 ? bracketAt : end + 24;
+        list.Add(new ReadPiece(start, start + 10, "1", 0.0, 0.0)); // what the distance alphabet makes of "[": a digit
+        foreach (var piece in after)
+            list.Add(new ReadPiece(piece.Start, piece.End, piece.Text, -2.0, -0.1)); // the speed group is read with the distance alphabet: junk
+        return new PieceRead(list, Cap);
+    }
+
+    private static Func<ReadPiece, bool> BracketAt(int start) => piece => piece.Start == start;
+
+    [Theory]
+    [InlineData("9.0km", 9.0, true)]
+    [InlineData("4.4km", 4.4, true)]
+    [InlineData("835.5m", 835.5, false)]
+    public void SpeedGroupAfterTheUnit_IsAllowed_AndNotRead(string distance, double value, bool km)
+    {
+        var read = SpeedLine(distance, 0, ("2", 300, 330), ("9", 336, 366), ("m", 372, 420), ("5", 800, 830));
+        var bracket = read.Pieces[Line(distance).Pieces.Count].Start;
+
+        var reading = DistanceLineRule.Evaluate(read, Settings, BracketAt(bracket));
+
+        Assert.NotNull(reading);
+        Assert.True(reading!.Value.HasSpeedGroup);
+        Assert.Equal(distance, reading.Value.Text); // the text is the distance part only
+        Assert.Equal(value, reading.Value.Value, 3);
+        Assert.Equal(km, reading.Value.Kilometers);
+    }
+
+    [Fact]
+    public void PlainDistance_HasNoSpeedGroup()
+    {
+        var reading = DistanceLineRule.Evaluate(Line("9.0km"), Settings, _ => true);
+
+        Assert.NotNull(reading);
+        Assert.False(reading!.Value.HasSpeedGroup);
+    }
+
+    [Fact]
+    public void GapAfterTheUnit_WithoutABracket_IsNotADistance()
+    {
+        var read = SpeedLine("9.0km", 0, ("2", 300, 330));
+
+        Assert.Null(DistanceLineRule.Evaluate(read, Settings));                 // no bracket test at all
+        Assert.Null(DistanceLineRule.Evaluate(read, Settings, _ => false));     // the piece after the gap is not a "["
+    }
+
+    [Fact]
+    public void SpeedGroupWithoutADistanceBeforeIt_IsNotAnAnchor()
+    {
+        // "[-29m/s]" alone, or after something that is not number.digit unit: the bracket after the gap cannot rescue the part before it
+        var noDecimal = SpeedLine("12km", 0);
+        Assert.Null(DistanceLineRule.Evaluate(noDecimal, Settings, _ => true));
+        var speedFirst = SpeedLine("209m", 0);   // "209m/s (9.05km)": speed first, uppercase and parentheses in the game
+        Assert.Null(DistanceLineRule.Evaluate(speedFirst, Settings, _ => true));
+        var word = SpeedLine("WHISKEY", 0);
+        Assert.Null(DistanceLineRule.Evaluate(word, Settings, _ => true));
+    }
+
+    [Fact]
+    public void OnlyTheFirstGapMayHoldTheBracket()
+    {
+        // a second wide gap before the bracket: "9.0km" gap "7" gap "[": the piece after the FIRST gap is not the bracket
+        var line = Line("9.0km");
+        var list = line.Pieces.ToList();
+        var end = list[^1].End;
+        list.Add(new ReadPiece(end + 24, end + 54, "7", 0.0, 0.0));
+        list.Add(new ReadPiece(end + 100, end + 110, "1", 0.0, 0.0));
+        var read = new PieceRead(list, Cap);
+
+        Assert.Null(DistanceLineRule.Evaluate(read, Settings, BracketAt(end + 100)));
+    }
+
+    [Fact]
+    public void DistancePartIsStillJudgedStrictly_WithASpeedGroup()
+    {
+        // the distance pieces are unsure: judged on their own scores, the junk after the bracket does not matter either way
+        var pieces = new List<ReadPiece>
+        {
+            new(0, 30, "9", -2.0, -0.1),
+            new(36, 45, ".", -2.0, -0.1),
+            new(51, 81, "0", -2.0, -0.1),
+            new(87, 117, "k", -2.0, -0.1),
+            new(123, 153, "m", -2.0, -0.1),
+            new(177, 187, "1", 0.0, 0.0),
+        };
+
+        Assert.Null(DistanceLineRule.Evaluate(new PieceRead(pieces, Cap), Settings, BracketAt(177)));
+    }
+
     [Fact]
     public void WideGapInsideTheLine_IsNotOneDistance()
     {

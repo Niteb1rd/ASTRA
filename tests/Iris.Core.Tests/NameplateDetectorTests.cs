@@ -33,7 +33,7 @@ public class NameplateDetectorTests
     {
         var frames = DetectorFixtures.Load();
 
-        Assert.Equal(5, frames.Count);
+        Assert.Equal(6, frames.Count);
         Assert.All(frames, f => Assert.True(File.Exists(f.ImagePath), f.ImagePath));
         Assert.Contains(frames, f => f.Default.Detections.Length == 0);
         Assert.Contains(frames, f => f.Height != 1440); // a frame that needs the scaled constants
@@ -69,6 +69,9 @@ public class NameplateDetectorTests
         Assert.Equal(s.LeftWidthDifference, p.GetProperty("left_width_diff").GetDouble());
         Assert.Equal(s.DistanceMinInk, p.GetProperty("dist_min_ink").GetDouble());
         Assert.Equal(s.CrowdException, p.GetProperty("crowd_exception").GetBoolean());
+        Assert.Equal(s.SpeedJoinGap, p.GetProperty("speed_join_gap").GetDouble());
+        Assert.Equal(s.SpeedJoinMaxLines, p.GetProperty("speed_join_max_lines").GetDouble());
+        Assert.Equal(s.BracketMinScore, p.GetProperty("bracket_min_score").GetDouble());
     }
 
     [Fact]
@@ -92,6 +95,7 @@ public class NameplateDetectorTests
         Assert.NotNull((NameplateDetectorSettings.Default with { RegionBottom = 1.5 }).Validate());
         Assert.NotNull((NameplateDetectorSettings.Default with { MinNameLength = 10, MaxNameLength = 4 }).Validate());
         Assert.NotNull((NameplateDetectorSettings.Default with { MaxCandidateTopsPerFrame = 0 }).Validate());
+        Assert.NotNull((NameplateDetectorSettings.Default with { SpeedJoinGap = -1 }).Validate());
     }
 
     /// <summary>Text lines and pairs (stages 2 to 4: mask, lines, pairing) equal the reference, with the default scan region and with the whole frame.</summary>
@@ -185,6 +189,8 @@ public class NameplateDetectorTests
                         problems.Add($"{frame.File} {label}: {topBox} name '{actual.Detection?.Name}', Python '{reference.Name}'");
                     else if (reference.Name is not null && reference.DistanceText != actual.Detection!.DistanceText)
                         problems.Add($"{frame.File} {label}: {topBox} distance read '{actual.Detection.DistanceText}', Python '{reference.DistanceText}'");
+                    else if (reference.Name is not null && reference.SpeedGroup != actual.Detection!.HasSpeedGroup)
+                        problems.Add($"{frame.File} {label}: {topBox} speed group {actual.Detection.HasSpeedGroup}, Python {reference.SpeedGroup}");
                     else if (reference.Name is not null && Math.Abs(reference.Score - actual.Detection!.Score) > ScoreTolerance)
                         problems.Add($"{frame.File} {label}: {topBox} score {actual.Detection.Score}, Python {reference.Score}");
                 }
@@ -265,6 +271,93 @@ public class NameplateDetectorTests
         Assert.True(evaluation.IsNameplate);
         Assert.Equal("NEIGHBOR_ONE", evaluation.Detection?.Name);
         Assert.DoesNotContain(detector.Detect(image), d => d.Name == "NEIGHBOR_ONE");
+    }
+
+    // ------------------------------------------------------------------------------------------------ speed readouts (frame_f)
+
+    private static readonly string[] SpeedPlates = { "SYNTH_ALPHA", "SYNTH_BRAVO", "DUMMY_DELTA", "FIXTURE_ECHO", "MOCK_FOXTROT" };
+
+    /// <summary>
+    /// `9.0km [-29m/s]` under a name: the anchor accepts a `[` after one word gap following the unit and ignores everything from the bracket on.
+    /// Three plates have the speed group joined into the distance line (one box), two have it as a separate box that the detector joins.
+    /// </summary>
+    [OpenCvFact]
+    public void SpeedReadouts_AreAnchoredOnTheDistancePart()
+    {
+        var frame = DetectorFixtures.Load().First(f => f.File == "frame_f.png");
+        using var image = Cv2.ImRead(frame.ImagePath, ImreadModes.Color);
+        using var detector = new NameplateDetector(new NameplateReader(Model), WholeFrame);
+
+        var found = detector.Detect(image).ToDictionary(d => d.Name);
+
+        foreach (var name in SpeedPlates)
+        {
+            Assert.True(found.ContainsKey(name), $"{name} not found");
+            Assert.True(found[name].HasSpeedGroup, $"{name} has no speed group");
+        }
+
+        Assert.Equal("9.0km", found["SYNTH_ALPHA"].DistanceText);
+        Assert.Equal("4.4km", found["SYNTH_BRAVO"].DistanceText);
+        Assert.Equal("1.9km", found["DUMMY_DELTA"].DistanceText);
+        Assert.Equal("7.7km", found["FIXTURE_ECHO"].DistanceText);
+        Assert.Equal("238.5m", found["MOCK_FOXTROT"].DistanceText);
+        Assert.Equal(SpeedPlates.Length, found.Count);
+    }
+
+    /// <summary>
+    /// The decoys: a gap after the unit but no bracket, a minus sign instead of the bracket, no decimal, a speed group without a distance,
+    /// speed first, and a neighbor too close after the speed group.
+    /// </summary>
+    [OpenCvFact]
+    public void SpeedReadoutDecoys_AreNotReported()
+    {
+        var frame = DetectorFixtures.Load().First(f => f.File == "frame_f.png");
+        using var image = Cv2.ImRead(frame.ImagePath, ImreadModes.Color);
+        using var detector = new NameplateDetector(new NameplateReader(Model), WholeFrame);
+
+        var names = detector.Detect(image).Select(d => d.Name).ToList();
+
+        foreach (var decoy in new[] { "NOBRACKET_ONE", "NOBRACKET_TWO", "NODECIMAL_TWO", "NODISTANCE_ONE", "SPEEDFIRST_ONE", "NEIGHBOR_TWO" })
+            Assert.DoesNotContain(decoy, names);
+    }
+
+    /// <summary>
+    /// A speed group that the line joiner left as its own box is offered as one line with the distance: the pair's lower box is as wide as both
+    /// parts together and centered under the name (the whole line is centered, not its distance part).
+    /// </summary>
+    [OpenCvFact]
+    public void SplitSpeedGroup_IsJoinedIntoOneCenteredLine()
+    {
+        var frame = DetectorFixtures.Load().First(f => f.File == "frame_f.png");
+        using var image = Cv2.ImRead(frame.ImagePath, ImreadModes.Color);
+        using var detector = new NameplateDetector(new NameplateReader(Model), WholeFrame);
+
+        var candidates = detector.FindCandidates(image);
+        var echo = detector.Detect(image).Single(d => d.Name == "FIXTURE_ECHO");
+
+        // the box under the name is the union: it is wider than the lines the joiner made of its two parts
+        var parts = candidates.Boxes.Where(b => b.Y > echo.NameBox.Y && b.Y < echo.NameBox.Y + 3 * echo.NameBox.Height
+            && b.X >= echo.DistanceBox.X - 1 && b.X + b.Width <= echo.DistanceBox.X + echo.DistanceBox.Width + 1 && b != echo.DistanceBox).ToList();
+        Assert.True(parts.Count >= 2, "the two separate boxes of the distance and the speed group");
+        Assert.Equal(parts.Min(b => b.X), echo.DistanceBox.X);
+        Assert.Equal(parts.Max(b => b.X + b.Width), echo.DistanceBox.X + echo.DistanceBox.Width);
+        var nameCenter = echo.NameBox.X + echo.NameBox.Width / 2.0;
+        var lineCenter = echo.DistanceBox.X + echo.DistanceBox.Width / 2.0;
+        Assert.InRange(Math.Abs(nameCenter - lineCenter), 0, NameplateDetectorSettings.Default.CenterTolerance);
+        // ... and the distance part alone is NOT centered under the name
+        var distancePart = parts.OrderBy(b => b.X).First();
+        Assert.True(Math.Abs(distancePart.X + distancePart.Width / 2.0 - nameCenter) > NameplateDetectorSettings.Default.CenterTolerance);
+    }
+
+    /// <summary>With the brackets switched off (a bracket score nobody reaches) the speed lines are not anchors and nothing but the plain plates is found.</summary>
+    [OpenCvFact]
+    public void WithoutTheBracketTest_SpeedLinesAreNotAnchors()
+    {
+        var frame = DetectorFixtures.Load().First(f => f.File == "frame_f.png");
+        using var image = Cv2.ImRead(frame.ImagePath, ImreadModes.Color);
+        using var detector = new NameplateDetector(new NameplateReader(Model), WholeFrame with { BracketMinScore = 1.0 });
+
+        Assert.Empty(detector.Detect(image));
     }
 
     // ------------------------------------------------------------------------------------------------ the crowd exception (frame_e)
@@ -509,6 +602,8 @@ public class NameplateDetectorTests
                 problems.Add($"{where}: '{a[i].Name}', Python '{e[i].Name}'");
             else if (e[i].DistanceText != a[i].DistanceText)
                 problems.Add($"{where}: {a[i].Name} distance read '{a[i].DistanceText}', Python '{e[i].DistanceText}'");
+            else if (e[i].SpeedGroup != a[i].HasSpeedGroup)
+                problems.Add($"{where}: {a[i].Name} speed group {a[i].HasSpeedGroup}, Python {e[i].SpeedGroup}");
             else if (!Near(e[i].NameBox, a[i].NameBox) || !Near(e[i].DistanceBox, a[i].DistanceBox))
                 problems.Add($"{where}: {a[i].Name} boxes {a[i].NameBox} / {a[i].DistanceBox}, Python {e[i].NameBox} / {e[i].DistanceBox}");
             else if (Math.Abs(e[i].Score - a[i].Score) > ScoreTolerance)
