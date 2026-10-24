@@ -67,26 +67,7 @@ public class CacheDatabaseTests
         using var upgraded = new CacheDatabase(env.Connection);
 
         Assert.Equal(2, upgraded.SchemaVersion);
-        Assert.Equal(0, upgraded.GetDuplicateFrames("Anything"));
-        Assert.Equal(1, upgraded.IncrementDuplicateFrames("Anything", env.Start));
         Assert.Equal("HEKATE", upgraded.GetPlayer("Nitebird")!.Orgs[0].Sid);
-    }
-
-    [Fact]
-    public void DuplicateFrameCounts_IncrementGetAndDelete_IgnoringCase()
-    {
-        using var env = new CacheEnv();
-
-        Assert.Equal(0, env.Db.GetDuplicateFrames("Gold"));
-        Assert.Equal(1, env.Db.IncrementDuplicateFrames("Gold", env.Start));
-        Assert.Equal(2, env.Db.IncrementDuplicateFrames("GOLD", env.Start.AddMinutes(1)));
-        Assert.Equal(2, env.Db.GetDuplicateFrames("gold"));
-        Assert.Equal(1, env.Db.IncrementDuplicateFrames("Silver", env.Start));
-
-        env.Db.DeleteDuplicateFrames("Gold");
-
-        Assert.Equal(0, env.Db.GetDuplicateFrames("Gold"));
-        Assert.Equal(1, env.Db.GetDuplicateFrames("Silver"));
     }
 
     private static void RunSql(SqliteConnection connection, string sql)

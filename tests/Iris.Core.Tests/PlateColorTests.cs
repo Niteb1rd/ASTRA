@@ -26,11 +26,9 @@ public class PlateColorTests
         return new LineMask(1, count, data) { InkColors = ink };
     }
 
-    // light cyan of a normal plate (RGB 110, 230, 255), pure white, the party blue, friendly green, hostile red (as drawn in the fixtures)
+    // light cyan of a normal plate (RGB 110, 230, 255), the party blue and hostile red (as drawn in the fixtures)
     private static readonly (byte B, byte G, byte R) Cyan = (255, 230, 110);
-    private static readonly (byte B, byte G, byte R) White = (255, 255, 255);
     private static readonly (byte B, byte G, byte R) Blue = (240, 190, 150);
-    private static readonly (byte B, byte G, byte R) Green = (80, 185, 80);
     private static readonly (byte B, byte G, byte R) Red = (70, 70, 235);
 
     [Theory]
