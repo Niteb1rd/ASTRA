@@ -49,11 +49,8 @@ from the shipped list, `src/Iris.Core/Detection/exclusions.default.txt`. In the 
 
 - A nameplate whose name is on the list is never matched or looked up, except when the name is also on your own player list
   (your player list wins). Org-list members and hotkey lookups follow the exclusion list with no such exception.
-- IRIS also learns: a player cannot be in two places at once, so a name seen on two separate nameplates in 3 different frames
-  (counted across sessions) is added to the end of the file, after a comment line `# auto-added <date> UTC: <reason>`.
-  Delete those two lines if the name was added by mistake, or put the name on your player list.
-  IRIS only ever appends to the file; it never rewrites your own lines.
-- The frame counts are kept in the lookup cache database (cache schema version 2; an older cache file is upgraded automatically).
+- IRIS no longer writes to this file by itself: it only holds your own entries and the shipped defaults. Duplicates are handled for
+  the running session only (see "Duplicate names" below).
 
 ## Colors, brackets and the No Match rule
 
@@ -430,7 +427,7 @@ costs more GPU work for the transparent window (see below). A cheap image-based 
 **The overlay model from tracks** (`LiveSnapshotBuilder`). Brackets for CONFIRMED nameplate tracks only (a name read identically 3 times over at least 300 ms), coloured by the usual rules: `{ }` player list, `[ ]` org list,
 `< >` org attribute and No Match. A correction of the confirmed name switches colour and shape on the next read. The panel entries come from `OverlayModelBuilder` ("Orgs: not looked up" until the cache has the player).
 An expired track is gone; a track no read has seen for 600 ms is hidden, and so is everything when no read at all happened for 600 ms. Names the exclusion list or the contact-code rule ignore get no bracket (the player list wins over both); the
-duplicate-name tracker is fed every read (a name on two separate plates in 3 reads goes on the exclusion list). Players who are cached members of an org on the org list but have no cached page are looked up in the background, one at a time, through the
+session duplicate rule is fed every read (see "Duplicate names"). Players who are cached members of an org on the org list but have no cached page are looked up in the background, one at a time, through the
 rate-limited RSI client (`OrgMemberLookupQueue`, `CacheRefresher.LookupOrgListMemberAsync`), so they get the org's colour as soon as the page is read.
 
 **Render throttle.** The overlay redraws only when the model changes (not on every tick). A transparent window costs Windows work in proportion to its area, so the live overlay is **two small windows** instead of one window as big as the game: a brackets
@@ -446,6 +443,30 @@ microseconds each. Look at the minute lines in the log (`average` and `p95`) for
 
 Tests: `LiveTrackingTests` (geometry, prediction, window fit, stats, snapshot from tracks), `LiveEngineTests` (tickrate setting, org member queue, the whole pipeline with a fake frame source over the detector fixtures).
 
+## Multi-row names, plate colour, duplicate names and the O/0 check
+
+**Multi-row names.** The game wraps a long handle over up to 3 centered rows above the distance line. The detector joins them (a port of
+`stack_rows` of the Python reference): rows above the name line within 0.8 line heights of the row below, a pitch of 1.05 to 1.8 line heights,
+a similar height, full width (11 line heights or more for every row above the last), centered like the distance line, one word each; the name is the rows
+joined, 4 to 64 characters. A fourth row, or a name-like row that is not centered, is a blocker: the plate is still a nameplate but gives no name. A junk line (not one word) above a name is
+ignored, the name line is read alone, exactly as before. A single-row plate behaves as it always did. A detection exposes `Rows` (every row box) and `PlateBox` (rows plus distance line).
+Fixtures: `tests/Iris.Core.Tests/Fixtures/plates/` (synthetic frames from `make_plate_fixtures.py`, expected values from the Python reference).
+
+**Plate colour.** The ink pixels of all rows are measured (median colour of the brighter half) and classified as `WHITE` (including light cyan), `BLUE`, `GREEN` or `RED`
+exactly as `plate_color` / `classify_color` of the reference (`PlateColors`); it is on the detection and on the track. At least 30 ink pixels are needed, otherwise there is no colour.
+
+**Duplicate names.** A player cannot be in two places at once, so one name read on two separate plates means one of the reads is wrong. In order, for every name:
+1. a name on one of your lists (player list, org list, org attribute) is **always shown and never excluded**;
+2. otherwise only WHITE plates count: when the same name is read on 2 or more non-overlapping white plates by both tracks in the same update, within 3 updates,
+   it gets a **session exclusion**: kept in memory, it survives Reset (which happens when the game leaves the front or the overlay is disabled; there is no hotkey) and is gone when IRIS quits;
+3. a session-excluded name gets no bracket, no panel entry and no RSI lookup; the log says once per name `Session exclusion: NAME (seen on 2+ white nameplates)`.
+Nothing is written to `exclusions.txt` any more (`ExclusionList` keeps user and default entries only).
+
+**O/0 check.** The letter model cannot tell `O` from `0` reliably, so the reader measures the glyph on the screen pixels (names only, never the distance line): the glyph is enlarged 8x, thresholded, and the ratio of the
+outer width to height and of the hole width to height decide with a two-feature Gaussian rule whether it is a letter `O` or a zero (`O0Rule`, constants from `model/o0-rule.json`; a verdict needs 95 % probability, otherwise the model's read stays).
+`NameplateDetectorSettings.SubPixelO0Rule` is **on by default, on purpose**; the Python reference flag `o0_rule` defaults to off only so that old results can be reproduced. Setting it to false switches the check off. `O0RuleTests` use synthetic glyphs; the test `O0LocalParityTests` compares with real crops from your machine and only runs when the environment variable
+`IRIS_O0_FIXTURES` points to the folder (those crops are not in the repository).
+
 ## Build and test (Windows)
 
 One-time setup: install the .NET 8 SDK.
@@ -454,15 +475,17 @@ One-time setup: install the .NET 8 SDK.
 winget install Microsoft.DotNet.SDK.8
 ```
 
-Then, from this folder:
+Then, from this folder (`IRIS.sln` holds all five projects):
 
 ```
-dotnet test tests\Iris.Core.Tests
+dotnet build IRIS.sln
+dotnet test IRIS.sln
 ```
+
+(`dotnet test tests\Iris.Core.Tests` runs only the tests project.)
 
 The first run downloads the packages it needs, which takes about a minute.
-Without captured RSI pages, a good result looks like `Passed!  - Failed: 0, Passed: N, Skipped: 6`.
-The 6 skipped tests are the ones that need real RSI pages (see below).
+Without captured RSI pages, a good result looks like `Passed!  - Failed: 0, Passed: N, Skipped: 7` (the 6 tests that need real RSI pages, see below, plus the local O/0 parity test while `IRIS_O0_FIXTURES` is unset).
 
 ## Run the app (Windows)
 

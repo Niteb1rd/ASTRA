@@ -112,9 +112,20 @@ public sealed record NameplateTrackerSettings
     /// Soft: it counts the evaluations the tracker asks for; the neighbour check of a crowd pair (<see cref="FrameEvaluator"/>) can read further pairs inside one of them.</summary>
     public int MaxEvaluationsPerFrame { get; init; } = 24;
 
+    /// <summary>
+    /// The DUPLICATE RULE (see <see cref="SessionExclusions"/>): a name read on two separate WHITE plates by both tracks in the same update, within
+    /// <see cref="DuplicateUpdates"/> updates, is not a player (a HUD line, a reflection, clutter) and is excluded for the session. Off: nothing is ever excluded.
+    /// </summary>
+    public bool DuplicateRule { get; init; } = true;
+
+    /// <summary>The window of the duplicate rule, in updates: both tracks must have read the name in one update of the last this-many (and the current one). Python: <c>dup_frames</c>.</summary>
+    public int DuplicateUpdates { get; init; } = 3;
+
     /// <summary>Returns a description of the first problem with the values, or null if they are usable.</summary>
     public string? Validate()
     {
+        if (DuplicateUpdates < 0)
+            return "DuplicateUpdates must not be negative.";
         if (ConfirmReads < 1)
             return "ConfirmReads must be at least 1.";
         if (ExpireMs < 0 || RecheckMs < 0 || ConfirmedRereadMs < 0 || ConfirmSpanMs < 0 || CorrectionWindowMs < 0)
@@ -139,14 +150,18 @@ public sealed record NameplateTrackerSettings
 /// <param name="Strict">True when both lines are isolated (nothing but specks within three line heights on either side). A pair that is
 /// not strict may only continue a track that is already a Nameplate: starting a nameplate takes a clean look, keeping one does not
 /// (a ship, a HUD arc or another plate drifting next to it must not make it flicker).</param>
-public readonly record struct TrackCandidate(Rect Top, Rect Bottom, bool Strict = true);
+/// <param name="Rows">The rows stacked above and including <paramref name="Top"/> (top to bottom, <paramref name="Top"/> last), when there are some; the track follows
+/// them while it moves (see <see cref="NameplateTrack.Rows"/>). Null: none.</param>
+public readonly record struct TrackCandidate(Rect Top, Rect Bottom, bool Strict = true, IReadOnlyList<Rect>? Rows = null);
 
 /// <summary>
 /// What evaluating a candidate found out (see <see cref="NameplateDetector.Evaluate"/>).
 /// </summary>
 /// <param name="IsNameplate">The lower line is a distance anchor and the upper line is one word of valid name characters.</param>
 /// <param name="Name">The name, when it was also read surely enough to count as a vote; otherwise null.</param>
-public readonly record struct TrackEvaluation(bool IsNameplate, string? Name)
+/// <param name="Rows">The name rows of the read, top to bottom (see <see cref="NameplateDetection.Rows"/>); null when there was no read.</param>
+/// <param name="Color">The plate colour of the read (<see cref="NameplateDetection.Color"/>); null when unknown. The duplicate rule only looks at <see cref="PlateColor.White"/> plates.</param>
+public readonly record struct TrackEvaluation(bool IsNameplate, string? Name, IReadOnlyList<Rect>? Rows = null, PlateColor? Color = null)
 {
     public static TrackEvaluation No { get; } = new(false, null);
 }
@@ -165,6 +180,7 @@ public sealed class NameplateTrack
         Id = id;
         Top = top;
         Bottom = bottom;
+        Rows = new[] { top };
         FirstFrame = frame;
         FirstMs = timeMs;
         LastSeenMs = timeMs;
@@ -180,6 +196,42 @@ public sealed class NameplateTrack
 
     /// <summary>The line below it.</summary>
     public Rect Bottom { get; internal set; }
+
+    /// <summary>
+    /// The rows of the name, top to bottom, <see cref="Top"/> last, as of the last frame that saw the track: more than one for a multi-row name (the rows
+    /// follow the track at every frame; they count only when the last evaluation read as many rows). Never empty.
+    /// </summary>
+    public IReadOnlyList<Rect> Rows { get; private set; }
+
+    /// <summary>The whole plate: the union of the name rows and the line below them.</summary>
+    public Rect PlateBox => PlateGeometry.PlateBox(Rows, Bottom);
+
+    /// <summary>The colour class reported with the track's last counted vote; null before the first vote or when it could not be measured.</summary>
+    public PlateColor? Color { get; internal set; }
+
+    /// <summary>True when the duplicate rule excluded a name this track had read or confirmed (see <see cref="SessionExclusions"/>).</summary>
+    public bool DuplicateExcluded { get; internal set; }
+
+    /// <summary>How many rows the last evaluation that read the plate found (1 until then).</summary>
+    internal int EvaluatedRowCount { get; private set; } = 1;
+
+    /// <summary>Update number -> the name this track read in that update (the last 16 updates): what the duplicate rule compares between two tracks.</summary>
+    internal Dictionary<long, string> ReadUpdates { get; } = new();
+
+    /// <summary>The track moved to this candidate: its lines, and its rows when the candidate has as many as the last evaluation read.</summary>
+    internal void Follow(Rect top, Rect bottom, IReadOnlyList<Rect>? rows)
+    {
+        Top = top;
+        Bottom = bottom;
+        Rows = rows is { Count: > 0 } && rows.Count == EvaluatedRowCount && rows[rows.Count - 1] == top ? rows : new[] { top };
+    }
+
+    /// <summary>An evaluation read these rows (the detection's rows, name line last).</summary>
+    internal void NoteEvaluatedRows(IReadOnlyList<Rect> rows)
+    {
+        EvaluatedRowCount = rows.Count;
+        Rows = rows;
+    }
 
     public TrackVerdict Verdict { get; internal set; } = TrackVerdict.NotNameplate;
 
@@ -496,7 +548,16 @@ public sealed record NameRead(string Name, int Count, double FirstMs, double Las
 /// <param name="Closed">Tracks that expired in this frame (they are no longer in <see cref="NameplateTracker.Tracks"/>).</param>
 /// <param name="Corrected">The part of <paramref name="Confirmed"/> that CHANGED an already confirmed name (the last of
 /// <see cref="NameplateTrack.Corrections"/> says from what to what): the app updates the panel of that nameplate.</param>
-public sealed record TrackerUpdate(IReadOnlyList<NameplateTrack> Confirmed, IReadOnlyList<NameplateTrack> Closed, IReadOnlyList<NameplateTrack> Corrected);
+/// <param name="NewlyExcluded">The names the duplicate rule put on the session exclusion list in this update (usually none); null when none.</param>
+public sealed record TrackerUpdate(
+    IReadOnlyList<NameplateTrack> Confirmed,
+    IReadOnlyList<NameplateTrack> Closed,
+    IReadOnlyList<NameplateTrack> Corrected,
+    IReadOnlyList<string>? NewlyExcluded = null)
+{
+    /// <summary><see cref="NewlyExcluded"/>, never null.</summary>
+    public IReadOnlyList<string> Excluded => NewlyExcluded ?? Array.Empty<string>();
+}
 
 /// <summary>
 /// Follows candidate pairs from frame to frame, keeps a sticky verdict per track and lets the reads of a nameplate vote on its
@@ -520,22 +581,41 @@ public sealed record TrackerUpdate(IReadOnlyList<NameplateTrack> Confirmed, IRea
 /// (<see cref="TrackerUpdate.Corrected"/>, <see cref="NameplateTrack.Corrections"/>).</item>
 /// <item>Several evaluations in a row that say "no nameplate" turn a Nameplate track back into NotNameplate.</item>
 /// <item>A track no candidate matched for <see cref="NameplateTrackerSettings.ExpireMs"/> is closed.</item>
+/// <item>THE DUPLICATE RULE (a port of <c>_duplicate</c> of <c>tracker_ref.py</c>): a name that two Nameplate tracks read in the same update, within
+/// <see cref="NameplateTrackerSettings.DuplicateUpdates"/> updates, while both are WHITE plates (<see cref="TrackEvaluation.Color"/>) and their name lines do not overlap,
+/// is not a player: it goes on the <see cref="SessionExclusions"/> list and gets no more votes. A name that <c>isListed</c> says is on one of the user's lists is
+/// never excluded (the check comes first). Blue and green plates (the party members appear as both) are never counted.</item>
 /// </list>
 /// Not thread safe.
 /// </summary>
 public sealed class NameplateTracker
 {
     private readonly NameplateTrackerSettings _settings;
+    private readonly SessionExclusions _session;
     private readonly List<NameplateTrack> _tracks = new();
-    private int _nextId = 1;
 
-    public NameplateTracker(NameplateTrackerSettings? settings = null)
+    /// <summary>The most recently closed tracks: a session exclusion marks them too (as the reference marks every track).</summary>
+    private readonly Queue<NameplateTrack> _closedHistory = new();
+    private const int ClosedHistory = 256;
+    private int _nextId = 1;
+    private long _update;                        // number of Update calls so far (the duplicate rule counts in updates)
+    private Func<string, bool>? _isListed;       // the isListed of the Update that is running
+    private List<string>? _newlyExcluded;        // names the running Update put on the session list
+
+    /// <param name="settings">The tracker settings.</param>
+    /// <param name="sessionExclusions">The names excluded for this run of IRIS. Pass the list the app owns to keep it when a tracker is replaced (the live
+    /// engine makes a new tracker whenever detection restarts); null: the tracker has a list of its own.</param>
+    public NameplateTracker(NameplateTrackerSettings? settings = null, SessionExclusions? sessionExclusions = null)
     {
         _settings = settings ?? NameplateTrackerSettings.Default;
         var problem = _settings.Validate();
         if (problem is not null)
             throw new ArgumentException(problem, nameof(settings));
+        _session = sessionExclusions ?? new SessionExclusions();
     }
+
+    /// <summary>The names the duplicate rule excluded (shared with the caller when one was given to the constructor).</summary>
+    public SessionExclusions SessionExclusions => _session;
 
     /// <summary>The live tracks.</summary>
     public IReadOnlyList<NameplateTrack> Tracks => _tracks;
@@ -544,10 +624,15 @@ public sealed class NameplateTracker
     /// Processes one frame. <paramref name="candidates"/> are the pairs the cheap pass found; <paramref name="evaluate"/> reads one
     /// (top line, bottom line) and says whether it is a nameplate and which name it read. It is called only for the candidates that need it.
     /// <paramref name="frameHeight"/> is the height of the frame in pixels (the stable width tolerance is given for
-    /// <see cref="NameplateTrackerSettings.ReferenceFrameHeight"/>); 0 means that height.
+    /// <see cref="NameplateTrackerSettings.ReferenceFrameHeight"/>); 0 means that height. <paramref name="isListed"/> says whether a name is on one of the
+    /// user's lists (player list, org list, org attribute match): such a name is never excluded by the duplicate rule; null: none is.
     /// </summary>
-    public TrackerUpdate Update(long frame, double timeMs, IReadOnlyList<TrackCandidate> candidates, Func<Rect, Rect, TrackEvaluation> evaluate, int frameHeight = 0)
+    public TrackerUpdate Update(
+        long frame, double timeMs, IReadOnlyList<TrackCandidate> candidates, Func<Rect, Rect, TrackEvaluation> evaluate, int frameHeight = 0, Func<string, bool>? isListed = null)
     {
+        _update++;
+        _isListed = isListed;
+        _newlyExcluded = null;
         var tolerance = _settings.StableWidthPx * (frameHeight > 0 ? frameHeight : _settings.ReferenceFrameHeight) / _settings.ReferenceFrameHeight;
         var confirmedNow = new List<NameplateTrack>();
         var correctedNow = new List<NameplateTrack>();
@@ -596,8 +681,7 @@ public sealed class NameplateTracker
                 track.LastSeenMs = timeMs;
                 track.NotePosition(timeMs, top);
                 var sizeChanged = SizeChanged(track, top);
-                track.Top = top;
-                track.Bottom = bottom;
+                track.Follow(top, bottom, candidates[c].Rows);
                 if (track.Verdict == TrackVerdict.NotNameplate)
                 {
                     if (!(sizeChanged || timeMs - track.LastCheckedMs >= _settings.RecheckMs))
@@ -630,8 +714,7 @@ public sealed class NameplateTracker
                     track.Jumps++;
                     track.LastSeenMs = timeMs;
                     track.NotePosition(timeMs, top);
-                    track.Top = top;
-                    track.Bottom = bottom;
+                    track.Follow(top, bottom, candidates[c].Rows);
                 }
                 else
                 {
@@ -653,8 +736,15 @@ public sealed class NameplateTracker
         }
 
         if (closed.Count > 0)
+        {
             _tracks.RemoveAll(t => closed.Contains(t));
-        return new TrackerUpdate(confirmedNow, closed, correctedNow);
+            foreach (var t in closed)
+                _closedHistory.Enqueue(t);
+            while (_closedHistory.Count > ClosedHistory)
+                _closedHistory.Dequeue();
+        }
+
+        return new TrackerUpdate(confirmedNow, closed, correctedNow, _newlyExcluded);
     }
 
     /// <summary>Closes every remaining track (end of a clip) and returns them.</summary>
@@ -717,18 +807,81 @@ public sealed class NameplateTracker
         track.EverNameplate = true;
         track.FailStreak = 0;
         track.LastReadMs = timeMs;
+        if (result.Rows is { Count: > 0 })
+            track.NoteEvaluatedRows(result.Rows);
         if (result.Name is null || !NameShape.HasValidEdges(result.Name))
         {
             track.ClearDispute(); // a nameplate without a vote (too unsure, or a name may not start or end with -): no disagreement to chase
             return;
         }
 
+        if (_session.Contains(result.Name) && !IsListed(result.Name))
+        {
+            track.ClearDispute(); // a name excluded for this session gets no votes
+            track.DuplicateExcluded = true;
+            return;
+        }
+
+        if (IsDuplicate(track, result.Name, result.Color))
+        {
+            track.ClearDispute();
+            return;
+        }
+
+        track.Color = result.Color;
         var outcome = track.Vote(result.Name, frame, timeMs, track.Top.Width, _settings, tolerance);
         if (outcome != VoteOutcome.None)
             confirmedNow.Add(track);
         if (outcome == VoteOutcome.Corrected)
             correctedNow.Add(track);
     }
+
+    private bool IsListed(string name) => _isListed is not null && _isListed(name);
+
+    /// <summary>
+    /// The duplicate rule, run for every vote (<c>_duplicate</c> of <c>tracker_ref.py</c>): true when this read makes <paramref name="name"/> excluded for the session (the
+    /// vote is then not counted). Only WHITE plates take part. Both tracks must have READ the name in the same update within the last
+    /// <see cref="NameplateTrackerSettings.DuplicateUpdates"/> (a track that jumped to another plate in a fast pan, while the old track still holds the old name, is an association
+    /// artefact, not a duplicate), the other track's last counted vote must be on a WHITE plate, and the two name lines must not overlap (the same plate tracked twice).
+    /// A name on one of the user's lists is never excluded.
+    /// </summary>
+    private bool IsDuplicate(NameplateTrack track, string name, PlateColor? color)
+    {
+        if (!_settings.DuplicateRule || color != PlateColor.White)
+            return false;
+        track.ReadUpdates[_update] = name;
+        foreach (var old in track.ReadUpdates.Keys.Where(k => k < _update - 16).ToList())
+            track.ReadUpdates.Remove(old);
+        foreach (var other in _tracks)
+        {
+            if (ReferenceEquals(other, track) || other.Color != PlateColor.White)
+                continue;
+            var both = false;
+            for (var n = _update - _settings.DuplicateUpdates; n <= _update && !both; n++)
+            {
+                both = other.ReadUpdates.TryGetValue(n, out var theirs) && string.Equals(theirs, name, StringComparison.Ordinal)
+                       && track.ReadUpdates.TryGetValue(n, out var mine) && string.Equals(mine, name, StringComparison.Ordinal);
+            }
+
+            if (!both || Overlap(other.Top, track.Top))
+                continue;
+            if (IsListed(name))
+                return false; // a listed name is never excluded
+            if (_session.TryAdd(name))
+                (_newlyExcluded ??= new List<string>()).Add(name);
+            foreach (var t in _tracks.Concat(_closedHistory))
+            {
+                if (string.Equals(t.ConfirmedName, name, StringComparison.Ordinal) || t.Reads.Any(r => string.Equals(r.Name, name, StringComparison.Ordinal)))
+                    t.DuplicateExcluded = true;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool Overlap(Rect a, Rect b) => a.X < b.X + b.Width && b.X < a.X + a.Width && a.Y < b.Y + b.Height && b.Y < a.Y + a.Height;
 
     /// <summary>The name line has about the size of the track's: height within max(2 px, 25 %), width within the tolerance (plus half a line height).</summary>
     private bool SameSize(NameplateTrack track, Rect top)

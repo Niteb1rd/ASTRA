@@ -15,7 +15,10 @@ public enum LabelMode
 /// <summary>
 /// The names that are known to be on screen: <c>clips.txt</c> (one line per clip, <c>clip: NAME1, NAME2</c>, <c>#</c> starts a
 /// comment) or <c>screenshots.csv</c> (columns <c>file,expected_players,notes</c>, names separated by <c>;</c>). Names are upper
-/// case. The label files contain other players' handles: they stay on your PC, outside the repository.
+/// case. A name that the game wraps over several rows (up to 3) can be written row by row with <c>/</c> between the rows
+/// (<c>FIRSTROW/SECONDROW</c>): the detector reads the rows joined, so the label is the rows joined (<see cref="JoinRows"/>).
+/// A contact code (<c>PA-5968-XF</c>) can be labeled as well: it counts as found when a track confirms it, but it is not a miss when
+/// it is never read (see <see cref="ReplayMetrics"/>). The label files contain other players' handles: they stay on your PC, outside the repository.
 /// </summary>
 public sealed class ClipLabels
 {
@@ -34,6 +37,10 @@ public sealed class ClipLabels
 
     /// <summary>Every labeled name of every clip or image.</summary>
     public IEnumerable<string> AllNames() => _names.Values.SelectMany(v => v).Distinct(StringComparer.Ordinal);
+
+    /// <summary>Normalizes a label: upper case, and the rows of a multi-row name (separated by <c>/</c>) joined, as the detector joins them.</summary>
+    public static string JoinRows(string name) =>
+        string.Concat(name.Split('/', StringSplitOptions.TrimEntries)).Trim().ToUpperInvariant();
 
     public static ClipLabels Load(string path)
     {
@@ -60,7 +67,7 @@ public sealed class ClipLabels
                 names[clip] = list = new List<string>();
             foreach (var name in line[(colon + 1)..].Split(',', ';'))
             {
-                var trimmed = name.Trim().ToUpperInvariant();
+                var trimmed = JoinRows(name);
                 if (trimmed.Length > 0)
                     list.Add(trimmed);
             }
@@ -91,7 +98,7 @@ public sealed class ClipLabels
             {
                 foreach (var name in row[namesColumn].Split(';'))
                 {
-                    var trimmed = name.Trim().ToUpperInvariant();
+                    var trimmed = JoinRows(name);
                     if (trimmed.Length > 0)
                         list.Add(trimmed);
                 }

@@ -156,124 +156,6 @@ public class ExclusionListTests : IDisposable
     }
 
     [Fact]
-    public void AddAutomatic_AppendsCommentAndName_AndKeepsTheUsersContentExactly()
-    {
-        var path = PathOf();
-        const string original = "# mine\nGold\n\n  Copper  \n";
-        WriteRaw(path, original);
-        var list = Load(path);
-
-        var added = list.AddAutomatic("Zinc", "seen twice");
-
-        Assert.True(added);
-        Assert.Equal(original + "# auto-added 2026-01-01 UTC: seen twice\nZinc\n", File.ReadAllText(path));
-        Assert.True(list.IsExcluded("zinc"));
-        Assert.Equal(3, list.Count);
-    }
-
-    [Fact]
-    public void AddAutomatic_AddsANewlineFirstWhenTheFileEndsWithoutOne()
-    {
-        var path = PathOf();
-        WriteRaw(path, "Gold");
-        var list = Load(path);
-
-        Assert.True(list.AddAutomatic("Zinc", "why"));
-
-        Assert.Equal("Gold\n# auto-added 2026-01-01 UTC: why\nZinc\n", File.ReadAllText(path));
-        var reloaded = Load(path);
-        Assert.Equal(2, reloaded.Count);
-        Assert.True(reloaded.IsExcluded("Gold"));
-        Assert.True(reloaded.IsExcluded("Zinc"));
-    }
-
-    [Fact]
-    public void AddAutomatic_WorksOnAnEmptyFile_AndWritesNoByteOrderMark()
-    {
-        var path = PathOf();
-        WriteRaw(path, "");
-        var list = Load(path);
-
-        Assert.True(list.AddAutomatic("Zinc", "why"));
-
-        var bytes = File.ReadAllBytes(path);
-        Assert.Equal("# auto-added 2026-01-01 UTC: why\nZinc\n", Encoding.UTF8.GetString(bytes));
-        Assert.NotEqual(0xEF, bytes[0]);
-    }
-
-    [Fact]
-    public void AddAutomatic_RefusesDuplicates_IgnoringCase_AndWritesNothing()
-    {
-        var path = PathOf();
-        WriteRaw(path, "Gold\n");
-        var list = Load(path);
-
-        Assert.False(list.AddAutomatic("GOLD", "again"));
-        Assert.True(list.AddAutomatic("Zinc", "first"));
-        Assert.False(list.AddAutomatic("zinc", "second"));
-
-        Assert.Equal("Gold\n# auto-added 2026-01-01 UTC: first\nZinc\n", File.ReadAllText(path));
-    }
-
-    [Fact]
-    public void AddAutomatic_NoticesANameTheUserJustAddedByHand()
-    {
-        var path = PathOf();
-        WriteRaw(path, "Gold\n");
-        var list = Load(path);
-        WriteRaw(path, "Gold\nZinc\n");
-        File.SetLastWriteTimeUtc(path, File.GetLastWriteTimeUtc(path).AddMinutes(1));
-
-        Assert.False(list.AddAutomatic("Zinc", "why"));
-
-        Assert.Equal("Gold\nZinc\n", File.ReadAllText(path));
-    }
-
-    [Fact]
-    public void AddAutomatic_UsesTheClockDate()
-    {
-        var path = PathOf();
-        var list = Load(path);
-        _clock.UtcNow = new DateTimeOffset(2027, 3, 9, 23, 59, 0, TimeSpan.Zero);
-
-        Assert.True(list.AddAutomatic("Zincite", "why"));
-
-        Assert.EndsWith("# auto-added 2027-03-09 UTC: why\nZincite\n", File.ReadAllText(path));
-    }
-
-    [Fact]
-    public void AddAutomatic_IsNotReportedAsAChange_ButALaterOutsideEditIs()
-    {
-        var path = PathOf();
-        WriteRaw(path, "Gold\n");
-        var list = Load(path);
-
-        Assert.True(list.AddAutomatic("Zinc", "why"));
-        Assert.False(list.ReloadIfChanged());   // our own append
-
-        WriteRaw(path, "Gold\nZinc\nLead and more\n");
-        Assert.True(list.ReloadIfChanged());
-        Assert.True(list.IsExcluded("Lead and more"));
-        Assert.False(list.ReloadIfChanged());   // reported once
-    }
-
-    [Fact]
-    public void AddAutomatic_DoesNotSwallowTheNotificationOfAnOutsideChangeItNoticed()
-    {
-        var path = PathOf();
-        WriteRaw(path, "Gold\n");
-        var list = Load(path);
-        WriteRaw(path, "Gold\nCopper\n");   // edited by hand; nobody has looked yet
-
-        Assert.True(list.AddAutomatic("Zinc", "why"));   // looks at the file first, and finds Copper
-
-        Assert.True(list.IsExcluded("Copper"));
-        Assert.True(list.IsExcluded("Zinc"));
-        Assert.True(list.ReloadIfChanged());    // the poll still reports the hand edit
-        Assert.False(list.ReloadIfChanged());
-    }
-
-    [Fact]
     public void ReloadIfChanged_ReportsAChangeOnlyOnce_AndNotTheFirstLoad()
     {
         var path = PathOf();
@@ -301,32 +183,19 @@ public class ExclusionListTests : IDisposable
         Assert.False(list.IsExcluded("L0RV1LLE"));
         Assert.False(list.IsExcluded("HURSTQN"));
         Assert.False(list.IsExcluded("LORVILLEX"));
-    }
 
     [Fact]
-    public void AddAutomatic_AddsALookAlikeOfAListedName_ItIsAnotherName()
+    public void TheList_NeverWritesToTheFileAfterCreatingIt()
     {
         var path = PathOf();
-        WriteRaw(path, "Hurston\n");
+        WriteRaw(path, "# my list\nGold\n");
         var list = Load(path);
-        var before = list.Count;
+        var before = File.ReadAllBytes(path);
 
-        Assert.True(list.AddAutomatic("HURST0N", "test"));
+        list.ReloadIfChanged();
+        Assert.True(list.IsExcluded("Gold"));
+        Assert.False(list.IsExcluded("Zinc"));
 
-        Assert.Equal(before + 1, list.Count);
-        Assert.True(list.IsExcluded("HURST0N"));
-    }
-
-    [Fact]
-    public void AddAutomatic_DoesNotAddTheSameNameInAnotherCase()
-    {
-        var path = PathOf();
-        WriteRaw(path, "Hurston\n");
-        var list = Load(path);
-        var before = list.Count;
-
-        Assert.False(list.AddAutomatic("HURSTON", "test"));
-
-        Assert.Equal(before, list.Count);
+        Assert.Equal(before, File.ReadAllBytes(path)); // the duplicate rule excludes for the session only (SessionExclusions); nothing is appended
     }
 }

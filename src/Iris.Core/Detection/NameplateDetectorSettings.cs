@@ -121,6 +121,36 @@ public sealed record NameplateDetectorSettings
     public double LeftWidthDifference { get; init; } = 8.0;
 
     /// <summary>
+    /// MULTI-ROW NAMES: the game wraps a long handle onto up to this many stacked rows (the last row is the name line right above the distance line, centered on it like
+    /// every other row). A 4th row above the chain is not joined: it blocks the plate (a nameplate without a name) when it reads as a name word.
+    /// </summary>
+    public int MaxRows { get; init; } = 3;
+
+    /// <summary>Rows: the empty gap between two rows is at least 1 pixel and at most this many line heights (of the lower row).</summary>
+    public double RowGapMax { get; init; } = 0.8;
+
+    /// <summary>Rows: the distance from the top of a row to the top of the row below it is at least this many line heights (the game: 1.19 to 1.46, mean 1.36).</summary>
+    public double RowPitchMin { get; init; } = 1.05;
+
+    /// <summary>... and at most this many.</summary>
+    public double RowPitchMax { get; init; } = 1.8;
+
+    /// <summary>
+    /// A row above the bottom row of a stack is a FULL row: the game wraps names at a fixed width (about 14.6 line heights, measured 196 to 208 px at 1440 high),
+    /// so it is at least this many line heights wide. A short line above a name is no wrapped row.
+    /// </summary>
+    public double RowMinCaps { get; init; } = 11.0;
+
+    /// <summary>
+    /// The sub-pixel O/0 rule (<see cref="Letters.O0Rule"/>): every O or 0 the model read in a NAME is measured on its own glyph and replaced by the verdict when the rule is sure
+    /// (P at least 0.95 for O, at most 0.05 for 0). On by default: on the synthetic detector frames it changes no read.
+    /// </summary>
+    public bool SubPixelO0Rule { get; init; } = true;
+
+    /// <summary>The thresholds of the plate colour classes (see <see cref="PlateColors"/>).</summary>
+    public PlateColorSettings PlateColorRules { get; init; } = PlateColorSettings.Default;
+
+    /// <summary>
     /// A targeted nameplate prints its closing speed after the distance, <c>9.0km [-29m/s]</c>. When the line joiner leaves the speed group as a
     /// separate box, the box to the right of a line within this many line heights (same row) is joined to it as one candidate line.
     /// </summary>
@@ -169,6 +199,8 @@ public sealed record NameplateDetectorSettings
             return "The isolation and pairing numbers must not be negative.";
         if (SpeedJoinGap < 0 || SpeedJoinMaxLines < 0)
             return "The speed group join limits must not be negative.";
+        if (MaxRows < 1 || RowGapMax < 0 || RowPitchMin < 0 || RowPitchMax < RowPitchMin || RowMinCaps < 0)
+            return "The row limits are not usable (at least 1 row, positive gap and pitch, maximum pitch at least the minimum).";
         if (MaxDistanceValue < 0)
             return "MaxDistanceValue must not be negative.";
         return null;

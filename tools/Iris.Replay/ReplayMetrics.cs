@@ -33,7 +33,17 @@ public sealed class GroupMetrics
 {
     public int Frames { get; internal set; }
 
-    public int Labels { get; internal set; }
+    /// <summary>Labeled names that must be found: every distinct label except contact codes, plus the contact codes that were found.</summary>
+    public int Labels => RequiredLabels + FoundCodes;
+
+    /// <summary>Distinct labels that are not contact codes.</summary>
+    public int RequiredLabels { get; internal set; }
+
+    /// <summary>Labeled contact codes (2-4-2 pattern). Found when read, never a miss when unread.</summary>
+    public int ContactCodeLabels { get; internal set; }
+
+    /// <summary>Labeled contact codes that a track confirmed (or, in single image mode, that were read).</summary>
+    public int FoundCodes => Found.Keys.Count(ContactCode.IsContactCode) + ReadFrames.Keys.Count(ContactCode.IsContactCode);
 
     /// <summary>Reads (one per nameplate evaluation that read a sure enough name) that are labeled / wrong / excluded-type.</summary>
     public int Reads { get; internal set; }
@@ -53,6 +63,12 @@ public sealed class GroupMetrics
 
     /// <summary>Nameplate tracks that never read a name surely enough (nothing is shown for them).</summary>
     public int UnreadTracks { get; internal set; }
+
+    /// <summary>Nameplate tracks whose name the session duplicate rule excluded (nothing is shown for them in the app).</summary>
+    public int SessionExcludedTracks { get; internal set; }
+
+    /// <summary>Names the session duplicate rule excluded and a track of this clip confirmed or read best: neither found nor wrong.</summary>
+    public SortedSet<string> SessionExcluded { get; } = new(StringComparer.Ordinal);
 
     /// <summary>Nameplate tracks of excluded names and contact codes.</summary>
     public int FilteredTracks { get; internal set; }
@@ -136,7 +152,9 @@ public sealed class ReplayMetrics
             return null;
         if (!_groups.TryGetValue(key, out var group))
         {
-            group = new GroupMetrics { Labels = vocabulary.Distinct().Count() };
+            var distinct = vocabulary.Distinct().ToList();
+            var codes = distinct.Count(ContactCode.IsContactCode);
+            group = new GroupMetrics { RequiredLabels = distinct.Count - codes, ContactCodeLabels = codes };
             _groups[key] = group;
         }
 
@@ -188,8 +206,12 @@ public sealed class ReplayMetrics
     }
 
     /// <summary>Counts a track that is finished (expired, or the clip ended): what it confirmed and what kind of track it was.</summary>
-    public void AddTrack(string clip, NameplateTrack track)
+    /// <param name="clip">The clip.</param>
+    /// <param name="track">The finished track.</param>
+    /// <param name="sessionExcluded">The names the session duplicate rule excluded in this clip (as the Python evaluation does: confirmations of these names are neither found nor wrong, they are counted in their own column).</param>
+    public void AddTrack(string clip, NameplateTrack track, IReadOnlyCollection<string>? sessionExcluded = null)
     {
+        var excluded = sessionExcluded is null ? null : new HashSet<string>(sessionExcluded, StringComparer.OrdinalIgnoreCase);
         var key = GroupKey(clip, string.Empty);
         var vocabulary = _labels.NamesFor(key);
         var group = Group(key);
@@ -197,10 +219,16 @@ public sealed class ReplayMetrics
             return;
 
         group.Corrections += track.Corrections.Count;
-        if (track.ConfirmedName is not null && Classify(track.ConfirmedName, vocabulary, out _) == ReadKind.Wrong)
+        if (track.ConfirmedName is not null && excluded?.Contains(track.ConfirmedName) != true && Classify(track.ConfirmedName, vocabulary, out _) == ReadKind.Wrong)
             group.WrongFinal.Add(track.ConfirmedName);
         foreach (var (name, frame, ms) in track.Confirmations)
         {
+            if (excluded?.Contains(name) == true)
+            {
+                group.SessionExcluded.Add(name);
+                continue;
+            }
+
             switch (Classify(name, vocabulary, out var label))
             {
                 case ReadKind.Labeled:
@@ -223,6 +251,12 @@ public sealed class ReplayMetrics
             return;
         group.NameplateTracks++;
         var best = track.BestName;
+        if (best is not null && excluded?.Contains(best) == true)
+        {
+            group.SessionExcludedTracks++;
+            return;
+        }
+
         if (best is null)
         {
             group.UnreadTracks++;
@@ -298,9 +332,9 @@ public sealed class ReplayMetrics
             return text.ToString();
         }
 
-        const string row = "{0,-24} {1,6} {2,6} | {3,9} | {4,8} {5,8} | {6,6} {7,8} {8,5} | {9,5} {10,5} {11,6} {12,5} | {13,7} {14,7}";
-        text.AppendLine(string.Format(inv, row, "clip", "frames", "labels", "found", "delay fr", "delay ms", "wrong", "wrongEnd", "corr", "junk", "anim", "unread", "ignrd", "ms med", "ms p95"));
-        int frames = 0, labels = 0, found = 0, wrong = 0, wrongEnd = 0, corrections = 0, junk = 0, anim = 0, unread = 0, filtered = 0;
+        const string row = "{0,-24} {1,6} {2,6} | {3,9} | {4,8} {5,8} | {6,6} {7,8} {8,5} | {9,5} {10,5} {11,6} {12,5} {13,5} | {14,7} {15,7}";
+        text.AppendLine(string.Format(inv, row, "clip", "frames", "labels", "found", "delay fr", "delay ms", "wrong", "wrongEnd", "corr", "junk", "anim", "unread", "ignrd", "sess", "ms med", "ms p95"));
+        int frames = 0, labels = 0, found = 0, wrong = 0, wrongEnd = 0, corrections = 0, junk = 0, anim = 0, unread = 0, filtered = 0, sessionExcluded = 0;
         var delaysFrames = new List<double>();
         var delaysMs = new List<double>();
         var allMs = new List<double>();
@@ -308,7 +342,7 @@ public sealed class ReplayMetrics
         {
             text.AppendLine(string.Format(inv, row, Shorten(key, 24), g.Frames, g.Labels, $"{g.Found.Count}/{g.Labels}",
                 Number(g.MedianDelayFrames), Number(g.MedianDelayMs), g.WrongConfirmed.Count, g.WrongFinal.Count, g.Corrections, g.JunkTracks, g.AnimationTracks,
-                g.UnreadTracks, g.FilteredTracks, Number(Program.Median(g.FrameMs)), Number(Program.Percentile95(g.FrameMs))));
+                g.UnreadTracks, g.FilteredTracks, g.SessionExcludedTracks, Number(Program.Median(g.FrameMs)), Number(Program.Percentile95(g.FrameMs))));
             frames += g.Frames;
             labels += g.Labels;
             found += g.Found.Count;
@@ -319,6 +353,7 @@ public sealed class ReplayMetrics
             anim += g.AnimationTracks;
             unread += g.UnreadTracks;
             filtered += g.FilteredTracks;
+            sessionExcluded += g.SessionExcludedTracks;
             delaysFrames.AddRange(g.Found.Values.Select(x => (double)x.DelayFrames));
             delaysMs.AddRange(g.Found.Values.Select(x => x.DelayMs));
             allMs.AddRange(g.FrameMs);
@@ -326,18 +361,20 @@ public sealed class ReplayMetrics
 
         text.AppendLine(string.Format(inv, row, "TOTAL", frames, labels, $"{found}/{labels}",
             Number(delaysFrames.Count == 0 ? null : Program.Median(delaysFrames)), Number(delaysMs.Count == 0 ? null : Program.Median(delaysMs)),
-            wrong, wrongEnd, corrections, junk, anim, unread, filtered, Number(Program.Median(allMs)), Number(Program.Percentile95(allMs))));
+            wrong, wrongEnd, corrections, junk, anim, unread, filtered, sessionExcluded, Number(Program.Median(allMs)), Number(Program.Percentile95(allMs))));
         text.AppendLine();
+        text.AppendLine("labels = labeled names, plus labeled contact codes that were found (a contact code that is never read is not a miss);");
         text.AppendLine("found = labeled names a track CONFIRMED (read identically several times, with exactly the labeled spelling: names match exactly, 0/O and 1/I are different);");
         text.AppendLine("delay = median, over the found names, from the first read of the name to its confirmation (frames and ms of video time; frames are native video frames, also with --fps);");
         text.AppendLine("wrong = names CONFIRMED that are not labeled, not excluded, not contact codes: the app would look them up (the target is 0); wrongEnd = the same for the name each track ended with, after corrections;");
         text.AppendLine("corr = confirmed names that were CORRECTED (the track switched to another name that it read more often over the recent window);");
-        text.AppendLine("junk / anim / unread = nameplate tracks whose best read is none of the known names / a stage or near miss of one / nothing readable; ignrd = tracks of excluded names and contact codes.");
+        text.AppendLine("junk / anim / unread = nameplate tracks whose best read is none of the known names / a stage or near miss of one / nothing readable; ignrd = tracks of excluded names and contact codes;");
+        text.AppendLine("sess = tracks of names the session duplicate rule excluded (same name on 2+ white plates): their confirmations are neither found nor wrong.");
 
         var first = true;
         foreach (var (key, g) in _groups)
         {
-            var missing = (_labels.NamesFor(key) ?? Array.Empty<string>()).Distinct().Where(n => !g.Found.ContainsKey(n)).ToList();
+            var missing = (_labels.NamesFor(key) ?? Array.Empty<string>()).Distinct().Where(n => !g.Found.ContainsKey(n) && !ContactCode.IsContactCode(n)).ToList();
             if (missing.Count == 0)
                 continue;
             if (first)
@@ -351,6 +388,7 @@ public sealed class ReplayMetrics
         }
 
         AppendNameLists(text, "WRONG names that were confirmed (they would be looked up):", g => g.WrongConfirmed);
+        AppendNameLists(text, "Excluded by the session duplicate rule (neither found nor wrong):", g => g.SessionExcluded);
         AppendNameLists(text, "Confirmed but ignored by name (exclusion list or contact code), not labeled:", g => g.FilteredConfirmed);
         return text.ToString();
     }

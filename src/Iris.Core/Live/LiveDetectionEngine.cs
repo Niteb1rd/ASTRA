@@ -23,15 +23,16 @@ public sealed record StepResult(StepStatus Status, LiveSnapshot Snapshot, string
 
 /// <summary>
 /// One read of the detection loop, without any threads, timers or windows (those are the app's): capture a picture from an <see cref="IFrameSource"/>, run the
-/// <see cref="NameplateDetector"/> and the <see cref="NameplateTracker"/> over it (the pipeline shape of the replay tool), feed the
-/// <see cref="DuplicateNameTracker"/>, ask for lookups of org-list members, and build the <see cref="LiveSnapshot"/> that the overlay shows
-/// (<see cref="LiveSnapshotBuilder"/>). Not thread safe: ONE thread calls <see cref="Step"/>; the snapshot it returns is immutable and may be read from others.
+/// <see cref="NameplateDetector"/> and the <see cref="NameplateTracker"/> over it (the pipeline shape of the replay tool), apply the duplicate rule (a name on
+/// 2+ white plates is excluded for the session, see <see cref="SessionExclusions"/>; a name on one of the user's lists never is), ask for lookups of org-list members, and build the
+/// <see cref="LiveSnapshot"/> that the overlay shows (<see cref="LiveSnapshotBuilder"/>). Not thread safe: ONE thread calls <see cref="Step"/>; the snapshot it returns is immutable and may be read from others.
 /// </summary>
 public sealed class LiveDetectionEngine : IDisposable
 {
     private readonly NameplateReader _reader;
     private readonly Func<string, IReadOnlyList<OrgMembership>?> _lookupOrgs;
-    private readonly DuplicateNameTracker? _duplicates;
+    private readonly SessionExclusions _session;
+    private readonly Func<string, string, bool>? _isOrgMember;
     private readonly OrgMemberLookupQueue? _lookups;
     private readonly ILog _log;
     private readonly IClock _clock;
@@ -52,19 +53,22 @@ public sealed class LiveDetectionEngine : IDisposable
     /// <param name="reader">The letter reader (it may be shared; the model is read only).</param>
     /// <param name="exclusions">The exclusion list.</param>
     /// <param name="lookupOrgs">Orgs of a handle from the cache, null when never looked up. The engine remembers answers for <see cref="LiveSettings.OrgCacheMs"/>.</param>
-    /// <param name="duplicates">Counts names seen on two separate plates at once (auto exclusion), or null for none.</param>
+    /// <param name="sessionExclusions">The names the duplicate rule excluded for this run of IRIS. The app owns it and passes the same instance for the whole run:
+    /// <see cref="Reset"/> (alt-tab) forgets the tracks but NOT this list. Null: the engine keeps one of its own.</param>
     /// <param name="lookups">Queues lookups of org-list members, or null for none.</param>
+    /// <param name="isOrgMember">Tells whether a handle is a cached member of the org with the given SID (the org's member list); such a name counts as listed even before its player page was looked up. Null: none.</param>
     public LiveDetectionEngine(
         NameplateReader reader,
         ExclusionList exclusions,
         Func<string, IReadOnlyList<OrgMembership>?> lookupOrgs,
-        DuplicateNameTracker? duplicates = null,
+        SessionExclusions? sessionExclusions = null,
         OrgMemberLookupQueue? lookups = null,
         LiveSettings? settings = null,
         NameplateDetectorSettings? detectorSettings = null,
         NameplateTrackerSettings? trackerSettings = null,
         ILog? log = null,
-        IClock? clock = null)
+        IClock? clock = null,
+        Func<string, string, bool>? isOrgMember = null)
     {
         _settings = settings ?? LiveSettings.Default;
         var problem = _settings.Validate();
@@ -72,18 +76,22 @@ public sealed class LiveDetectionEngine : IDisposable
             throw new ArgumentException(problem, nameof(settings));
         _reader = reader;
         _lookupOrgs = lookupOrgs;
-        _duplicates = duplicates;
+        _session = sessionExclusions ?? new SessionExclusions();
+        _isOrgMember = isOrgMember;
         _lookups = lookups;
         _log = log ?? NullLog.Instance;
         _clock = clock ?? SystemClock.Instance;
         _baseDetectorSettings = detectorSettings ?? NameplateDetectorSettings.Default;
         _trackerSettings = trackerSettings ?? NameplateTrackerSettings.Default;
         _builder = new LiveSnapshotBuilder(exclusions, MemoizedOrgs, _settings);
-        _tracker = new NameplateTracker(_trackerSettings);
+        _tracker = new NameplateTracker(_trackerSettings, _session);
     }
 
     /// <summary>The tracker (for tests and diagnostics).</summary>
     public NameplateTracker Tracker => _tracker;
+
+    /// <summary>The names excluded for this session by the duplicate rule.</summary>
+    public SessionExclusions SessionExclusions => _session;
 
     /// <summary>The geometry of the current game window size; null before the first step.</summary>
     public ScanGeometry? Geometry => _geometry;
@@ -122,16 +130,21 @@ public sealed class LiveDetectionEngine : IDisposable
         var detector = _detector!;
         var candidates = detector.FindCandidates(image);
         var evaluator = detector.CreateEvaluator(image, candidates);
-        var evaluated = new Dictionary<Rect, PairEvaluation>();
-        _tracker.Update(_frame, nowMs, evaluator.TrackCandidates(), (top, bottom) =>
+        var update = _tracker.Update(_frame, nowMs, evaluator.TrackCandidates(), (top, bottom) =>
         {
             var evaluation = evaluator.Evaluate(top, bottom);
-            evaluated[top] = evaluation;
-            return new TrackEvaluation(evaluation.IsNameplate, evaluation.Detection?.Name);
-        }, geometry.WindowHeight);
+            var detection = evaluation.Detection;
+            return new TrackEvaluation(evaluation.IsNameplate, detection?.Name, detection?.NameRows, detection?.Color);
+        }, geometry.WindowHeight, name => IsListed(name, config));
 
-        CountDuplicates(config, nowMs, evaluated);
-        _snapshot = _builder.Build(_tracker.Tracks, config, geometry.Capture.X, geometry.Capture.Y, nowMs, _snapshot);
+        foreach (var name in update.Excluded)
+            _log.Write(_clock.UtcNow, $"Session exclusion: {name} (seen on 2+ white nameplates)");
+
+        // a session-excluded name gets no bracket, no panel entry and no lookup (a name on one of the user's lists is never excluded)
+        IReadOnlyList<NameplateTrack> shown = _tracker.Tracks;
+        if (_session.Count > 0)
+            shown = _tracker.Tracks.Where(t => t.ConfirmedName is not { } confirmed || !_session.Contains(confirmed) || IsListed(confirmed, config)).ToList();
+        _snapshot = _builder.Build(shown, config, geometry.Capture.X, geometry.Capture.Y, nowMs, _snapshot);
         if (_lookups is not null)
         {
             foreach (var bracket in _snapshot.Brackets)
@@ -143,11 +156,12 @@ public sealed class LiveDetectionEngine : IDisposable
 
     /// <summary>
     /// Forgets everything seen so far: the tracks, the snapshot, the remembered orgs and the waiting lookups. Called when detection stops (the game left the front,
-    /// the overlay was disabled): what was on screen then is not what is on screen later.
+    /// the overlay was disabled): what was on screen then is not what is on screen later. The session exclusions (<see cref="SessionExclusions"/>) are kept: they
+    /// last until IRIS closes.
     /// </summary>
     public void Reset()
     {
-        _tracker = new NameplateTracker(_trackerSettings);
+        _tracker = new NameplateTracker(_trackerSettings, _session);
         _snapshot = LiveSnapshot.Empty;
         _orgMemo.Clear();
         _lookups?.Clear();
@@ -174,38 +188,26 @@ public sealed class LiveDetectionEngine : IDisposable
     }
 
     /// <summary>
-    /// The duplicate name rule: a name on two separate plates in one frame counts that frame (three frames: the name goes on the exclusion list). The plates are the
-    /// Nameplate tracks seen in this frame, with their confirmed name, or the name read in this frame while the track is not confirmed yet.
+    /// True when the name is on one of the user's lists: the player list, or a member of an org on the org list (through the orgs in the cache, or as a cached member of a
+    /// listed org whose page has not been looked up yet). Org attribute rules (No Org, Redacted, archetype, activity) do not count. Such a name is always shown and never
+    /// excluded by the duplicate rule.
     /// </summary>
-    private void CountDuplicates(SocialConfig config, double nowMs, Dictionary<Rect, PairEvaluation> evaluated)
+    private bool IsListed(string name, SocialConfig config)
     {
-        if (_duplicates is null)
-            return;
-        List<DetectedNameplate>? plates = null;
-        foreach (var track in _tracker.Tracks)
-        {
-            if (track.Verdict != TrackVerdict.Nameplate || track.LastSeenMs != nowMs)
-                continue;
-            var name = track.ConfirmedName;
-            if (name is null && evaluated.TryGetValue(track.Top, out var evaluation))
-                name = evaluation.Detection?.Name;
-            if (name is null)
-                continue;
-            var box = LiveSnapshotBuilder.WindowBox(track, 0, 0);
-            (plates ??= new List<DetectedNameplate>()).Add(new DetectedNameplate(name, (int)box.X, (int)box.Y, (int)box.Width, (int)box.Height));
-        }
-
-        if (plates is null || plates.Count < 2)
-            return;
+        if (NameFilter.IsOnPlayerList(name, config))
+            return true;
+        var orgs = MemoizedOrgs(name);
+        if (orgs is not null && ColorResolver.Resolve(name, orgs, config).Kind is MatchKind.PlayerList or MatchKind.OrgList)
+            return true;
+        if (_isOrgMember is null)
+            return false;
         try
         {
-            var added = _duplicates.Process(_frame, plates, config);
-            foreach (var name in added)
-                _log.Write(_clock.UtcNow, $"live: {name} was seen on 2+ separate nameplates in {DuplicateNameTracker.FramesNeeded} frames and was added to the exclusion list");
+            return config.Orgs.Any(org => _isOrgMember(org.Sid, name));
         }
         catch (Exception ex) when (ex is DbException or InvalidOperationException or InvalidDataException)
         {
-            _log.Write(_clock.UtcNow, "live: the duplicate name check failed: " + ex.Message);
+            return false;
         }
     }
 

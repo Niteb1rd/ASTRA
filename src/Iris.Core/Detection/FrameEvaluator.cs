@@ -43,12 +43,18 @@ public sealed class FrameEvaluator
         var boxes = _candidates.Boxes;
         var list = new List<TrackCandidate>(_candidates.Pairs.Count + _candidates.CrowdPairs.Count + _candidates.LoosePairs.Count);
         foreach (var (t, b) in _candidates.Pairs)
-            list.Add(new TrackCandidate(boxes[t], boxes[b], true));
+            list.Add(Candidate(boxes[t], boxes[b], true));
         foreach (var crowd in _candidates.CrowdPairs)
-            list.Add(new TrackCandidate(boxes[crowd.Top], boxes[crowd.Bottom], true));
+            list.Add(Candidate(boxes[crowd.Top], boxes[crowd.Bottom], true));
         foreach (var (t, b) in _candidates.LoosePairs)
-            list.Add(new TrackCandidate(boxes[t], boxes[b], false));
+            list.Add(Candidate(boxes[t], boxes[b], false));
         return list;
+    }
+
+    private TrackCandidate Candidate(Rect top, Rect bottom, bool strict)
+    {
+        var rows = _candidates.StackOf(top, bottom)?.Rows;
+        return new TrackCandidate(top, bottom, strict, rows is { Count: > 1 } ? rows : null);
     }
 
     /// <summary>Evaluates one candidate pair (boxes as in <see cref="NameplateCandidates.Boxes"/>), including the neighbour check of a crowd pair.</summary>
@@ -84,7 +90,7 @@ public sealed class FrameEvaluator
     private PairEvaluation Pair(Rect top, Rect bottom)
     {
         if (!_memo.TryGetValue((top, bottom), out var evaluation))
-            _memo[(top, bottom)] = evaluation = _detector.Evaluate(_frame, top, bottom);
+            _memo[(top, bottom)] = evaluation = _detector.Evaluate(_frame, top, bottom, _candidates.StackOf(top, bottom));
         return evaluation;
     }
 
