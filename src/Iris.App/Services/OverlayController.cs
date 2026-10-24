@@ -147,11 +147,16 @@ public sealed class OverlayController : IDisposable
     /// </summary>
     public void LiveChanged() => Evaluate();
 
-    /// <summary>The model for "now" from the latest snapshot: the brackets moved along their tracked velocity from where they were last tracked, at most 50 ms ahead.</summary>
+    /// <summary>
+    /// The model for the moment the frame will be SHOWN from the latest snapshot: the brackets moved along their tracked velocity from where they were last tracked to the
+    /// expected display time (now plus one refresh period of the display, <see cref="DisplayTiming"/>), at most 50 ms ahead of their last tracked time.
+    /// </summary>
     private OverlayModel ModelAtNow(OverlayModel? previous)
     {
         var hub = _hub;
-        return hub is null ? OverlayModel.Empty : LivePredictor.ModelAt(hub.Current, StopwatchClock.Shared.NowMs, _liveSettings, previous);
+        return hub is null
+            ? OverlayModel.Empty
+            : LivePredictor.ModelAt(hub.Current, StopwatchClock.Shared.NowMs + DisplayTiming.RefreshPeriodMs, _liveSettings, previous);
     }
 
     /// <summary>

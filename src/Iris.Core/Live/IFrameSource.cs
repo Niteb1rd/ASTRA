@@ -35,9 +35,10 @@ public readonly record struct GrabResult(GrabStatus Status, Mat? Image, string? 
 /// screen frame. The images belong to the frame source, as <see cref="GrabResult.Image"/> does (valid until the next grab, release or dispose; the caller
 /// must not dispose or keep them). An entry is null when there is no picture for that region: with <see cref="GrabStatus.NoNewFrame"/> that is a region
 /// whose place changed since the last grab (the screen did not change, so the previous picture of that place is not there; "unchanged" is the answer),
-/// with <see cref="GrabStatus.Unavailable"/> it is every entry.
+/// with <see cref="GrabStatus.Unavailable"/> it is every entry. <paramref name="FrameMs"/> is the time of the frame on the live clock
+/// (<see cref="StopwatchClock.Shared"/>), taken right after the screen frame was acquired; NaN when the source has no such time (then the caller uses its own clock).
 /// </summary>
-public readonly record struct GrabRegionsResult(GrabStatus Status, IReadOnlyList<Mat?> Images, string? Message = null)
+public readonly record struct GrabRegionsResult(GrabStatus Status, IReadOnlyList<Mat?> Images, string? Message = null, double FrameMs = double.NaN)
 {
     public static GrabRegionsResult Unavailable(string message) => new(GrabStatus.Unavailable, Array.Empty<Mat?>(), message);
 }

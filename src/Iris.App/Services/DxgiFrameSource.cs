@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Iris.Core.Live;
 using Iris.Core.Overlay;
 using Iris.Core.Social;
@@ -56,7 +57,8 @@ public sealed class DxgiFrameSource : IFrameSource
         public bool HasPicture;    // Bgr holds a picture of the current setup and of Region
     }
 
-    private readonly List<Slot> _slots = new();
+    private readonly List<Slot> _slots = new();   // the pool of the search patches: a patch keeps its slot (same picture, else same size bucket)
+    private readonly Slot _scan = new();          // the scan region has its own slot: it never shares a texture with a patch
     private Vd.ID3D11Device? _device;
     private Vd.ID3D11DeviceContext? _context;
     private Vx.IDXGIOutputDuplication? _duplication;
@@ -76,7 +78,13 @@ public sealed class DxgiFrameSource : IFrameSource
     }
 
     /// <inheritdoc />
-    public GrabRegionsResult GrabRegions(IReadOnlyList<Rect> screenRegions)
+    public GrabRegionsResult GrabRegions(IReadOnlyList<Rect> screenRegions) => GrabRegions(screenRegions, firstIsScan: false);
+
+    /// <summary>
+    /// <see cref="GrabRegions(IReadOnlyList{Rect})"/> with the first region marked as the detection scan region: it gets a dedicated staging texture and picture, separate
+    /// from the pool of the patches, so that no slot ever switches between the scan size and a patch size.
+    /// </summary>
+    public GrabRegionsResult GrabRegions(IReadOnlyList<Rect> screenRegions, bool firstIsScan)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (screenRegions.Count == 0)
@@ -111,7 +119,7 @@ public sealed class DxgiFrameSource : IFrameSource
                 }
             }
 
-            return CopyRegions(screenRegions, bounds);
+            return CopyRegions(screenRegions, bounds, firstIsScan);
         }
         catch (SharpGenException ex)
         {
@@ -125,7 +133,7 @@ public sealed class DxgiFrameSource : IFrameSource
     /// <inheritdoc />
     public void Release()
     {
-        foreach (var slot in _slots)
+        foreach (var slot in AllSlots())
         {
             slot.Staging?.Dispose();
             slot.Staging = null;
@@ -149,7 +157,7 @@ public sealed class DxgiFrameSource : IFrameSource
         if (_disposed)
             return;
         Release();
-        foreach (var slot in _slots)
+        foreach (var slot in AllSlots())
         {
             slot.Bgr?.Dispose();
             slot.Bgr = null;
@@ -157,6 +165,63 @@ public sealed class DxgiFrameSource : IFrameSource
 
         _slots.Clear();
         _disposed = true;
+    }
+
+    private IEnumerable<Slot> AllSlots()
+    {
+        yield return _scan;
+        foreach (var slot in _slots)
+            yield return slot;
+    }
+
+    /// <summary>
+    /// A slot for each region. The scan region (when <paramref name="firstIsScan"/>) always gets <see cref="_scan"/>. A patch gets the slot that holds the picture of the very same
+    /// rectangle (for the "unchanged screen" answer), else a free slot with a staging texture of its size bucket, else any free slot, else a new one: so a patch keeps its texture
+    /// from tick to tick whatever happens to the other patches.
+    /// </summary>
+    private Slot[] AssignSlots(IReadOnlyList<Rect> regions, bool firstIsScan)
+    {
+        var result = new Slot?[regions.Count];
+        var used = new HashSet<Slot>();
+        var start = 0;
+        if (firstIsScan && regions.Count > 0)
+        {
+            result[0] = _scan;
+            used.Add(_scan);
+            start = 1;
+        }
+
+        for (var i = start; i < regions.Count; i++)
+            result[i] = _slots.FirstOrDefault(slot => !used.Contains(slot) && slot.HasPicture && slot.Region == regions[i]);
+        for (var i = start; i < regions.Count; i++)
+        {
+            if (result[i] is null)
+            {
+                var width = Bucket(regions[i].Width);
+                var height = Bucket(regions[i].Height);
+                result[i] = _slots.FirstOrDefault(slot => !used.Contains(slot) && slot.Staging is not null && slot.StagingWidth == width && slot.StagingHeight == height);
+            }
+
+            if (result[i] is not null)
+                used.Add(result[i]!);
+        }
+
+        for (var i = start; i < regions.Count; i++)
+        {
+            if (result[i] is not null)
+                continue;
+            var slot = _slots.FirstOrDefault(s => !used.Contains(s));
+            if (slot is null)
+            {
+                slot = new Slot();
+                _slots.Add(slot);
+            }
+
+            result[i] = slot;
+            used.Add(slot);
+        }
+
+        return result!;
     }
 
     private static PixelRect ToPixelRect(Rect rect) => new(rect.X, rect.Y, rect.Width, rect.Height);
@@ -204,7 +269,7 @@ public sealed class DxgiFrameSource : IFrameSource
         return null;
     }
 
-    private GrabRegionsResult CopyRegions(IReadOnlyList<Rect> regions, PixelRect outputBounds)
+    private GrabRegionsResult CopyRegions(IReadOnlyList<Rect> regions, PixelRect outputBounds, bool firstIsScan)
     {
         var duplication = _duplication!;
         // Depending on the Vortice version AcquireNextFrame returns the Result or throws a SharpGenException for a failed one (a timeout included): both are handled here.
@@ -224,15 +289,17 @@ public sealed class DxgiFrameSource : IFrameSource
         {
             resource?.Dispose();
             // nothing changed on screen: a region that is where it was keeps its previous picture of this setup, any other has none
+            var assigned = AssignSlots(regions, firstIsScan);
             var previous = new List<Mat?>(regions.Count);
             for (var i = 0; i < regions.Count; i++)
             {
-                var slot = i < _slots.Count ? _slots[i] : null;
+                var slot = assigned[i];
                 var keep = slot is { HasPicture: true, Bgr: { IsDisposed: false } bgr } && slot.Region == regions[i] && !bgr.Empty();
-                previous.Add(keep ? slot!.Bgr : null);
+                previous.Add(keep ? slot.Bgr : null);
             }
 
-            return new GrabRegionsResult(GrabStatus.NoNewFrame, previous, previous.Exists(m => m is not null) ? null : "waiting for the first screen picture");
+            return new GrabRegionsResult(
+                GrabStatus.NoNewFrame, previous, previous.Exists(m => m is not null) ? null : "waiting for the first screen picture", StopwatchClock.Shared.NowMs);
         }
 
         if (acquired.Failure || resource is null)
@@ -244,6 +311,13 @@ public sealed class DxgiFrameSource : IFrameSource
             _retryAtTick = Environment.TickCount64 + (lost ? 0 : RetryAfterFailureMs);
             return GrabRegionsResult.Unavailable(lost ? "screen capture was lost and is being set up again" : "screen capture failed: " + acquired);
         }
+
+        // the time of this frame, and what IRIS's own windows looked like at that moment: both are taken now, before the copies (which take time), so that the masks
+        // are the ones of the picture and not of a later redraw
+        var frameMs = StopwatchClock.Shared.NowMs;
+        var windows = CaptureExclusion.VisibleUnexcludedWindows();
+        var brackets = windows.Count == 0 ? Array.Empty<CaptureExclusion.BracketMask[]>() : CaptureExclusion.RecentBrackets(frameMs);
+        var slots = AssignSlots(regions, firstIsScan);
 
         try
         {
@@ -264,14 +338,11 @@ public sealed class DxgiFrameSource : IFrameSource
                 return GrabRegionsResult.Unavailable($"the screen picture has pixel format {description.Format}, which IRIS cannot read (only 8 bit B8G8R8A8 and R8G8B8A8 are supported)");
             }
 
-            while (_slots.Count < regions.Count)
-                _slots.Add(new Slot());
-
             // every region is copied out of the ONE frame that is held now
             for (var i = 0; i < regions.Count; i++)
             {
                 var region = regions[i];
-                var slot = _slots[i];
+                var slot = slots[i];
                 EnsureStaging(slot, region.Width, region.Height, description.Format);
                 var left = region.X - (int)outputBounds.X;
                 var top = region.Y - (int)outputBounds.Y;
@@ -286,18 +357,16 @@ public sealed class DxgiFrameSource : IFrameSource
             resource.Dispose();
         }
 
-        var windows = CaptureExclusion.VisibleUnexcludedWindows(); // asked once for all regions
-        var brackets = windows.Count == 0 ? Array.Empty<CaptureExclusion.BracketMask[]>() : CaptureExclusion.RecentBrackets();
         var images = new List<Mat?>(regions.Count);
         for (var i = 0; i < regions.Count; i++)
         {
-            var slot = _slots[i];
+            var slot = slots[i];
             ReadStaging(slot, regions[i]);
             MaskOwnWindows(slot.Bgr!, regions[i], windows, brackets);
             images.Add(slot.Bgr);
         }
 
-        return new GrabRegionsResult(GrabStatus.Ok, images);
+        return new GrabRegionsResult(GrabStatus.Ok, images, null, frameMs);
     }
 
     private static int Bucket(int size) => (size + StagingBucket - 1) / StagingBucket * StagingBucket;

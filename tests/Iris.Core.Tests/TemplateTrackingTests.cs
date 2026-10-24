@@ -298,9 +298,119 @@ public class TemplateTrackingTests
         Assert.Equal(1033, moved.ReferenceMs);
     }
 
+    // ----- review fixes: stale prediction base, tracked position wins, hysteresis, held screen, no-template plates -----
+
+    [OpenCvFact]
+    public void Tracker_TheMarginGrowsWithTheAgeOfThePredictionBase_UpToTheMaximumPredictionTime()
+    {
+        using var tracker = new PlateTemplateTracker();
+
+        Assert.Equal(66.6, tracker.Margin(33.3, 1440, 0), 1);       // the tick
+        Assert.Equal(400.0, tracker.Margin(33.3, 1440, 200), 1);    // a detection's picture 200 ms old: 2000 px/s x 0.2 s
+        Assert.Equal(200.0, tracker.Margin(33.3, 720, 200), 1);     // scaled with the height
+        Assert.Equal(1000.0, tracker.Margin(33.3, 1440, 5000), 1);  // capped at MaxPredictionMs (500 ms)
+    }
+
+    [OpenCvFact]
+    public void Tracker_ThePatchOfAPlateWhosePositionIsOldIsWideEnoughForTheWayItWent()
+    {
+        using var tracker = new PlateTemplateTracker();
+        using var first = Window();
+        DrawPlate(first, 450, 500, White);
+        tracker.ApplyDetection(Detection(first, 450, 500, 1000), 1000); // the position is as old as the picture
+
+        var fresh = Assert.Single(tracker.Plan(1033, 33, W, H));
+        var aged = Assert.Single(tracker.Plan(1250, 33, W, H));
+
+        Assert.True(aged.Patch.Width > fresh.Patch.Width + 100, "250 ms at up to 2000 px/s is 500 px, not 66");
+        Assert.True(aged.Patch.X <= fresh.Patch.X - 100);
+    }
+
+    [OpenCvFact]
+    public void Tracker_ADetectionOlderThanTheTrackingKeepsTheTrackedPositionAndVelocity()
+    {
+        using var tracker = new PlateTemplateTracker();
+        using var first = Window();
+        DrawPlate(first, 200, 300, White);
+        tracker.ApplyDetection(Detection(first, 200, 300, 1000), 1000);
+        for (var i = 1; i <= 5; i++)
+        {
+            using var frame = Window();
+            DrawPlate(frame, 200 + 4 * i, 300, White);
+            Tick(tracker, frame, 1000 + 33.0 * i);
+        }
+
+        // the detection read a picture from 1100 ms (the plate was at 210 then) and arrives now, after the tracking found it at 220 (1165 ms)
+        using var older = Window();
+        DrawPlate(older, 210, 300, White);
+        tracker.ApplyDetection(Detection(older, 210, 300, 1100, vx: 0.0), 1170);
+
+        var bracket = Assert.Single(tracker.Snapshot(1170).Brackets);
+        Assert.InRange(bracket.Box.X, 219.0, 221.0);   // not thrown back to 210
+        Assert.True(bracket.VxPerMs > 0.05, "the tracked velocity is kept, not the detection's 0");
+        Assert.Equal(1165, bracket.ReferenceMs);
+        Assert.Equal(1, tracker.TemplateCount);        // the template is the detection's new one
+    }
+
+    [OpenCvFact]
+    public void Tracker_ADetectionThatAgreesWithinTwoPixelsKeepsTheTrackedBox_ADisagreeingOneWins()
+    {
+        using var tracker = new PlateTemplateTracker();
+        using var first = Window();
+        DrawPlate(first, 200, 300, White);
+        tracker.ApplyDetection(Detection(first, 200, 300, 1000), 1000);
+
+        using var near = Window();
+        DrawPlate(near, 201, 299, White);
+        tracker.ApplyDetection(Detection(near, 201, 299, 1200), 1200);
+        var kept = Assert.Single(tracker.Snapshot(1200).Brackets);
+        Assert.Equal(200, kept.Box.X); // a still bracket does not hop by a pixel
+        Assert.Equal(300, kept.Box.Y);
+
+        using var far = Window();
+        DrawPlate(far, 206, 300, White);
+        tracker.ApplyDetection(Detection(far, 206, 300, 1400), 1400);
+        Assert.Equal(206, Assert.Single(tracker.Snapshot(1400).Brackets).Box.X);
+    }
+
+    [OpenCvFact]
+    public void Tracker_AnUnchangedScreenDoesNotKeepAPlateThatWasMissingAlive()
+    {
+        using var tracker = new PlateTemplateTracker();
+        using (var first = Window())
+        {
+            DrawPlate(first, 200, 300, White);
+            tracker.ApplyDetection(Detection(first, 200, 300, 1000), 1000);
+        }
+
+        using var empty = Window();
+        Tick(tracker, empty, 1033); // not found: the last attempt failed
+        for (var t = 1066.0; t <= 1400; t += 33)
+        {
+            var plan = tracker.Plan(t, 33, W, H);
+            tracker.Update(t, plan, null, screenUnchanged: true);
+        }
+
+        Assert.Empty(tracker.Snapshot(1400).Brackets); // lost 300 ms after the last sighting, whatever the screen did
+    }
+
+    [OpenCvFact]
+    public void Tracker_APlateWithoutATemplateCountsAsSeenWhenItsDetectionArrives()
+    {
+        using var tracker = new PlateTemplateTracker();
+        var box = new PixelRect(300, 200, 120, 24);
+        var seed = new PlateSeed(1, box, box, null, PlateColorClass.Any, 0, 0, 1000); // picture from 1000 ms
+        var bracket = new LiveBracket(1, "P", box, 0, 0, 1000, MatchKind.NoMatch, OverlayColor.Blue);
+
+        tracker.ApplyDetection(new DetectionResult(new LiveSnapshot(new[] { bracket }, Array.Empty<PanelEntry>(), 1000), new[] { seed }, 1000, W, H), 1250); // OCR took 250 ms
+
+        Assert.Single(tracker.Snapshot(1500).Brackets); // 250 ms after it arrived: still there, no blink before the next detection
+        Assert.Empty(tracker.Snapshot(1600).Brackets);  // but not forever
+    }
+
     // ----- the search patch -----
 
-    [Theory]
+    [OpenCvTheory]
     [InlineData(5.0, 1440, 16.0)]     // a fast tick: the minimum margin
     [InlineData(33.3, 1440, 66.6)]    // 2000 px/s x tick
     [InlineData(33.3, 720, 33.3)]     // scaled with the window height

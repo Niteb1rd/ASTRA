@@ -54,6 +54,7 @@ public sealed class PlateTemplateTracker : IDisposable
         public double Vy;
         public double AtMs;              // when (X, Y) was tracked or predicted
         public double LastFoundMs;       // the last time a detection or a match saw the plate
+        public bool LastAttemptFound;    // the last match attempt (or the detection) found the plate; a held (unchanged) screen only refreshes LastFoundMs for such plates
         public Mat? Template;
         public PlateColorClass Class;
         public readonly List<(double Ms, double X, double Y)> Samples = new();
@@ -133,10 +134,12 @@ public sealed class PlateTemplateTracker : IDisposable
                 continue;
             }
 
+            var isNew = false;
             if (!_states.TryGetValue(seed.TrackId, out var state))
             {
                 state = new State { TrackId = seed.TrackId };
                 _states[seed.TrackId] = state;
+                isNew = true;
             }
             else if (state.Template is not null)
             {
@@ -159,20 +162,52 @@ public sealed class PlateTemplateTracker : IDisposable
                 }
             }
 
+            // The detection wins on identity (name, kind, colour: the snapshot), template and box size. On POSITION it wins unless the tracking is the better witness:
+            // - the plate was tracked (found by a match) AFTER the picture the detection read, so the tracked position is newer than the detection's: keep it
+            //   (and its velocity); the new template is anchored by matching it around that position on the next tick;
+            // - or the detection agrees with the tracked box within 2 px (scaled with the window height): keep the tracked box, so a still bracket does not hop by a pixel.
+            var scale = BracketMetrics.Scale(_windowHeight);
+            var keep = false;
+            if (!isNew && state.W > 0 && IsShown(state, seed.AtMs))
+            {
+                if (state.LastFoundMs > seed.AtMs)
+                {
+                    keep = true;
+                }
+                else
+                {
+                    var (px, py) = Predict(state, seed.AtMs, _windowHeight);
+                    keep = Math.Abs(px - seed.NameBox.X) <= 2.0 * scale && Math.Abs(py - seed.NameBox.Y) <= 2.0 * scale;
+                }
+            }
+
             state.Class = seed.ColorClass;
-            state.X = seed.NameBox.X;
-            state.Y = seed.NameBox.Y;
             state.W = seed.NameBox.Width;
             state.H = seed.NameBox.Height;
             state.OffsetX = seed.PlateBox.X - seed.NameBox.X;
             state.OffsetY = seed.PlateBox.Y - seed.NameBox.Y;
             state.PlateW = seed.PlateBox.Width;
             state.PlateH = seed.PlateBox.Height;
-            (state.Vx, state.Vy) = ClampVelocity(seed.VxPerMs, seed.VyPerMs);
-            state.AtMs = seed.AtMs;
-            state.LastFoundMs = seed.AtMs;
-            state.Samples.Clear();
-            state.Samples.Add((seed.AtMs, state.X, state.Y));
+            if (keep)
+            {
+                state.LastFoundMs = Math.Max(state.LastFoundMs, seed.AtMs);
+            }
+            else
+            {
+                state.X = seed.NameBox.X;
+                state.Y = seed.NameBox.Y;
+                (state.Vx, state.Vy) = ClampVelocity(seed.VxPerMs, seed.VyPerMs);
+                state.AtMs = seed.AtMs;
+                state.LastFoundMs = seed.AtMs;
+                state.Samples.Clear();
+                state.Samples.Add((seed.AtMs, state.X, state.Y));
+            }
+
+            state.LastAttemptFound = true;
+            // a plate without a template is never matched, so nothing but a detection can refresh it: it counts as seen when the result ARRIVES, so that it does not
+            // blink off between two detections (the picture's age is the OCR latency)
+            if (state.Template is null)
+                state.LastFoundMs = Math.Max(state.LastFoundMs, nowMs);
         }
     }
 
@@ -186,11 +221,13 @@ public sealed class PlateTemplateTracker : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         EnsureWindow(windowWidth, windowHeight);
         var plan = new List<PatchPlan>();
-        var margin = Margin(tickMs, windowHeight);
         foreach (var state in _states.Values.OrderBy(s => s.TrackId))
         {
             if (state.Template is null || !IsShown(state, nowMs))
                 continue;
+            // the prediction starts at the last position the plate was known at, which can be much older than one tick (a detection's picture, a run of misses): the
+            // search margin must cover the way it can have gone since
+            var margin = Margin(tickMs, windowHeight, nowMs - state.AtMs);
             var (px, py) = Predict(state, nowMs, windowHeight);
             var left = Math.Max(0, (int)Math.Floor(px - margin));
             var top = Math.Max(0, (int)Math.Floor(py - margin));
@@ -204,9 +241,15 @@ public sealed class PlateTemplateTracker : IDisposable
         return plan;
     }
 
-    /// <summary>The search margin in pixels: max(16, 2000 px/s x tick) at 1440 high, scaled by <paramref name="windowHeight"/> / 1440.</summary>
-    public double Margin(double tickMs, int windowHeight) =>
-        Math.Max(_settings.TrackMinMarginPx, _settings.TrackMaxSpeedPxPerSec * tickMs / 1000.0) * BracketMetrics.Scale(windowHeight);
+    /// <summary>
+    /// The search margin in pixels: max(16, 2000 px/s x time) at 1440 high, scaled by <paramref name="windowHeight"/> / 1440, where the time is the larger of the tick and
+    /// the age of the position the prediction starts from (<paramref name="ageMs"/>), at most <see cref="LiveSettings.MaxPredictionMs"/>.
+    /// </summary>
+    public double Margin(double tickMs, int windowHeight, double ageMs = 0.0)
+    {
+        var span = Math.Min(Math.Max(tickMs, ageMs), _settings.MaxPredictionMs);
+        return Math.Max(_settings.TrackMinMarginPx, _settings.TrackMaxSpeedPxPerSec * span / 1000.0) * BracketMetrics.Scale(windowHeight);
+    }
 
     /// <summary>
     /// One tracking tick at <paramref name="nowMs"/>. <paramref name="patches"/> are the pictures of <paramref name="plan"/>'s patches, from index <paramref name="firstPatch"/> on
@@ -232,9 +275,15 @@ public sealed class PlateTemplateTracker : IDisposable
             if (picture is null || picture.Empty())
             {
                 if (screenUnchanged)
+                {
                     Hold(state, nowMs);
+                }
                 else
-                    Miss(state, nowMs, item.PredictedX, item.PredictedY);
+                {
+                    var (qx, qy) = Predict(state, nowMs, scaleHeight);
+                    Miss(state, nowMs, qx, qy);
+                }
+
                 continue;
             }
 
@@ -246,7 +295,8 @@ public sealed class PlateTemplateTracker : IDisposable
             }
             else
             {
-                Miss(state, nowMs, item.PredictedX, item.PredictedY);
+                var (qx, qy) = Predict(state, nowMs, scaleHeight); // re-predicted at THIS time (the frame's), not the plan's
+                Miss(state, nowMs, qx, qy);
             }
         }
 
@@ -375,6 +425,7 @@ public sealed class PlateTemplateTracker : IDisposable
         state.Y = y;
         state.AtMs = nowMs;
         state.LastFoundMs = nowMs;
+        state.LastAttemptFound = true;
         state.Samples.Add((nowMs, x, y));
         while (state.Samples.Count > _settings.TrackVelocitySamples)
             state.Samples.RemoveAt(0);
@@ -393,14 +444,17 @@ public sealed class PlateTemplateTracker : IDisposable
         state.X = predictedX;
         state.Y = predictedY;
         state.AtMs = nowMs;
+        state.LastAttemptFound = false;
         state.Samples.Clear(); // predictions are no measurements
     }
 
     private static void Hold(State state, double nowMs)
     {
-        // the screen did not change: nothing moved, so nothing is moving
+        // the screen did not change: nothing moved, so nothing is moving. Only a plate that was found at its last attempt is still "seen"; one that was
+        // missing stays missing (an unchanged screen is no evidence that it is there), and is lost after its 300 ms as usual.
         state.AtMs = nowMs;
-        state.LastFoundMs = nowMs;
+        if (state.LastAttemptFound)
+            state.LastFoundMs = nowMs;
         state.Vx = 0;
         state.Vy = 0;
         state.Samples.Clear();

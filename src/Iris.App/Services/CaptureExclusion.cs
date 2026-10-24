@@ -15,7 +15,7 @@ namespace Iris.App.Services;
 /// <item><b>Masked by IRIS</b> (the fallback when Windows refused or is too old, and the way of the setting "Show overlay in screenshots and recordings"): the window
 /// keeps WDA_NONE (visible in recordings and screenshots) and <see cref="DxgiFrameSource"/> paints it black in every picture IRIS captures itself: the whole rectangle
 /// for the panel and test windows, only the outlines of the brackets for the brackets window (its rectangle also holds nameplates, which must stay readable).
-/// Because a capture may show an earlier frame than the newest, the brackets of the last <see cref="HistoryLength"/> published sets are all painted out.</item>
+/// Because a capture may show an earlier frame than the newest, the brackets of the newest published set and of every set published within <see cref="MaskWindowMs"/> before the captured frame are all painted out.</item>
 /// </list>
 /// <see cref="Apply"/> can be called again for a window (the setting changed): the window changes over at once, without a restart.
 /// Thread safe: the UI thread registers windows and publishes bracket boxes, the capture thread reads them.
@@ -25,14 +25,17 @@ internal static class CaptureExclusion
     /// <summary>The first Windows 10 build that knows WDA_EXCLUDEFROMCAPTURE (version 2004). On older builds the call turns the window into a black box in captures.</summary>
     public const int MinimumBuild = 19041;
 
-    /// <summary>How many of the last published bracket sets are painted out of a capture.</summary>
-    public const int HistoryLength = 3;
+    /// <summary>Bracket sets published within this long before a captured frame are all painted out of it (the screen may show any of them), besides the newest one.</summary>
+    public const double MaskWindowMs = 100.0;
+
+    /// <summary>How many published sets are kept: enough for <see cref="MaskWindowMs"/> at a 240 Hz refresh and more.</summary>
+    public const int HistoryLength = 32;
 
     /// <summary>A window that is not excluded from capture: where it is and how to paint it out.</summary>
     internal readonly record struct MaskWindow(NativeMethods.NativeRect Rect, bool BracketsOnly);
 
-    /// <summary>One bracket pair as drawn: the nameplate box in screen physical pixels, the kind (which decides the bracket shape) and the game window's height (the brackets have one fixed size, scaled with it).</summary>
-    internal readonly record struct BracketMask(PixelRect ScreenBox, MatchKind Kind, double GameHeight);
+    /// <summary>One bracket pair as drawn: the nameplate box in screen physical pixels, the kind (which decides the bracket shape) and the game window's height (the brackets have one fixed size, scaled with it) and when the set was published (the live clock, <see cref="StopwatchClock.Shared"/>).</summary>
+    internal readonly record struct BracketMask(PixelRect ScreenBox, MatchKind Kind, double GameHeight, double PublishedMs);
 
     private static readonly object Gate = new();
     private static readonly Dictionary<IntPtr, bool> Unexcluded = new(); // hwnd -> is the brackets window; guarded by Gate
@@ -111,12 +114,32 @@ internal static class CaptureExclusion
 
     /// <summary>
     /// UI thread: hands the capture thread the brackets that the brackets window shows now (an empty array when it shows none). The array must not be changed afterwards.
-    /// The last <see cref="HistoryLength"/> sets are kept.
+    /// The last <see cref="HistoryLength"/> sets are kept, each mask stamped with its publication time.
     /// </summary>
     public static void PublishBrackets(BracketMask[] masks) => Brackets.Publish(masks);
 
-    /// <summary>Capture thread: the last published bracket sets, newest first (never null, never changed by the caller).</summary>
-    public static IReadOnlyList<BracketMask[]> RecentBrackets() => Brackets.Recent;
+    /// <summary>
+    /// Capture thread: the bracket sets to paint out of a frame captured at <paramref name="frameMs"/> (live clock): the newest set (it is on screen until the window
+    /// redraws, however long ago it was published) and every older one published within <see cref="MaskWindowMs"/> before the frame. Call it right after the frame was acquired.
+    /// Never null, never changed by the caller.
+    /// </summary>
+    public static IReadOnlyList<BracketMask[]> RecentBrackets(double frameMs)
+    {
+        var all = Brackets.Recent;
+        if (all.Count == 0)
+            return Array.Empty<BracketMask[]>();
+        var result = new List<BracketMask[]>(all.Count);
+        for (var i = 0; i < all.Count; i++)
+        {
+            var set = all[i];
+            if (set.Length == 0)
+                continue; // nothing was drawn then
+            if (i == 0 || set[0].PublishedMs >= frameMs - MaskWindowMs)
+                result.Add(set);
+        }
+
+        return result;
+    }
 
     /// <summary>Screen rectangles of the registered (masked) windows that are visible now (physical pixels). Usually empty.</summary>
     public static IReadOnlyList<MaskWindow> VisibleUnexcludedWindows()

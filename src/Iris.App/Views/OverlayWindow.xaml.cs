@@ -190,11 +190,12 @@ public partial class OverlayWindow : Window
 
         var dx = Math.Round(_bounds.X + _fit.X) - _fit.X;
         var dy = Math.Round(_bounds.Y + _fit.Y) - _fit.Y;
+        var publishedMs = StopwatchClock.Shared.NowMs;
         var masks = new CaptureExclusion.BracketMask[_model.Brackets.Count];
         for (var i = 0; i < masks.Length; i++)
         {
             var item = _model.Brackets[i];
-            masks[i] = new CaptureExclusion.BracketMask(new PixelRect(item.Box.X + dx, item.Box.Y + dy, item.Box.Width, item.Box.Height), item.Kind, _bounds.Height);
+            masks[i] = new CaptureExclusion.BracketMask(new PixelRect(item.Box.X + dx, item.Box.Y + dy, item.Box.Width, item.Box.Height), item.Kind, _bounds.Height, publishedMs);
         }
 
         CaptureExclusion.PublishBrackets(masks); // a new array each time; never changed after this

@@ -75,6 +75,7 @@ public sealed class LiveDetectionService : IDisposable
     private PlateTemplateTracker? _tracker;
     private ScanGeometry? _geometry;
     private LiveSnapshot _lastNotified = LiveSnapshot.Empty;
+    private double _lastPublishMs;
     private double _nextDetectMs;
     private string? _lastCaptureProblem;
     private bool _tooSmallLogged;
@@ -350,8 +351,9 @@ public sealed class LiveDetectionService : IDisposable
         work += Stopwatch.GetTimestamp() - mark;
 
         // 3. ONE frame, all regions
-        var grab = _source!.GrabRegions(regions);
-        var captured = _clock.NowMs; // the time of the picture (it was taken a moment ago, the copy is what took the time)
+        var grab = _source!.GrabRegions(regions, detectSlot); // the scan region has its own staging slot, the patches share a stable pool
+        // the time of the picture: the frame's own, taken right after it was acquired (the copies after it took time); one clock for everything
+        var captured = double.IsNaN(grab.FrameMs) ? _clock.NowMs : grab.FrameMs;
         mark = Stopwatch.GetTimestamp();
 
         TrackTick tick;
@@ -563,8 +565,12 @@ public sealed class LiveDetectionService : IDisposable
     private void Publish(LiveSnapshot snapshot)
     {
         _hub.Publish(snapshot);
+        // after a stall (no publish for longer than StaleHideMs) the renderer has hidden the brackets by itself and its hook is gone: it must be told that there is something again
+        var at = _clock.NowMs;
+        var stalled = at - _lastPublishMs > _live.StaleHideMs;
+        _lastPublishMs = at;
         var last = _lastNotified;
-        if ((snapshot.Brackets.Count > 0) == (last.Brackets.Count > 0) && ReferenceEquals(snapshot.Panel, last.Panel))
+        if (!stalled && (snapshot.Brackets.Count > 0) == (last.Brackets.Count > 0) && ReferenceEquals(snapshot.Panel, last.Panel))
             return;
         _lastNotified = snapshot;
         if (Interlocked.Exchange(ref _notifyPending, 1) == 0)
