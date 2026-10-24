@@ -66,12 +66,21 @@ public sealed record AppSettings
     public const int NameplateTrackingFpsDefault = 30;
 
     /// <summary>
-    /// "Nameplate Tracking Tickrate": how many times a second the brackets are moved on screen (15 to 120, the Settings tab slider goes in steps of 5).
-    /// The detector itself reads the screen only a few times a second (5, not a setting); between two reads the brackets are moved along the speed
-    /// each nameplate was seen moving at. This number only costs a little arithmetic and a redraw of the (small) bracket layer per tick, no
-    /// screen capture and no OCR; a higher number looks smoother and costs a little more CPU and GPU. The file accepts any whole number in the range.
+    /// "Nameplate Tracking Tickrate": how many times a second the nameplates are TRACKED (15 to 120, the Settings tab slider goes in steps of 5).
+    /// The detector (the OCR) reads the screen only 5 times a second (not a setting) and decides what is on screen and what it is called; in between,
+    /// a tracking tick at this rate copies a small patch of the screen around each known nameplate and finds the nameplate's text in it again
+    /// (template matching), which moves the bracket. Tracking never reads or changes names. A higher number follows fast turns more closely and costs
+    /// more screen copies and processor time (the log's minute line has the real numbers); the brackets themselves are drawn at the monitor's refresh rate regardless.
+    /// The file accepts any whole number in the range.
     /// </summary>
     public int NameplateTrackingFps { get; init; } = NameplateTrackingFpsDefault;
+
+    /// <summary>
+    /// "Show overlay in screenshots and recordings" (<c>overlay_visible_in_capture</c>, off by default). Off: the overlay windows are left out of every screen capture
+    /// (Windows' WDA_EXCLUDEFROMCAPTURE), so recorders, OBS, Discord and screenshots do not show them. On: the windows are visible to recorders (display affinity
+    /// none) and IRIS blacks out its own brackets and panel in the pictures it reads itself. Takes effect at once for all overlay windows, no restart.
+    /// </summary>
+    public bool OverlayVisibleInCapture { get; init; }
 
     // ---- Disabling the overlay, hotkeys ----
 

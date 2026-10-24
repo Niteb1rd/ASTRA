@@ -85,6 +85,42 @@ public class LiveEngineTests : IDisposable
         Assert.Equal(30, missing.Settings.NameplateTrackingFps);
     }
 
+    // ----- overlay_visible_in_capture -----
+
+    [Fact]
+    public void OverlayVisibleInCapture_DefaultsToFalse()
+    {
+        Assert.False(new AppSettings().OverlayVisibleInCapture);
+        Assert.False(AppSettingsToml.Read("format_version = 1\n").Settings.OverlayVisibleInCapture);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void OverlayVisibleInCapture_SaveThenLoadRoundTrips(bool value)
+    {
+        var path = _dir.File("settings.toml");
+        var saved = AppSettingsToml.Save(path, new AppSettings { OverlayVisibleInCapture = value });
+        var loaded = AppSettingsToml.Load(path);
+
+        Assert.True(saved.Success, saved.Error);
+        Assert.Empty(loaded.Warnings);
+        Assert.Equal(value, loaded.Settings.OverlayVisibleInCapture);
+        Assert.Contains("overlay_visible_in_capture = " + (value ? "true" : "false"), File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void OverlayVisibleInCapture_AWrongTypeBecomesFalseWithAWarning_AndTheKeyIsKnown()
+    {
+        var known = AppSettingsToml.Read("overlay_visible_in_capture = true\n");
+        var wrong = AppSettingsToml.Read("format_version = 1\noverlay_visible_in_capture = \"yes\"\n");
+
+        Assert.Empty(known.Warnings);
+        Assert.True(known.Settings.OverlayVisibleInCapture);
+        Assert.StartsWith("overlay_visible_in_capture", Assert.Single(wrong.Warnings));
+        Assert.False(wrong.Settings.OverlayVisibleInCapture);
+    }
+
     // ----- CacheDatabase.IsOrgMember -----
 
     [Fact]
@@ -246,9 +282,37 @@ public class LiveEngineTests : IDisposable
             return new GrabResult(GrabStatus.Ok, _last);
         }
 
+        public int RegionGrabs { get; private set; }
+        private readonly List<Mat> _regionImages = new();
+
+        public GrabRegionsResult GrabRegions(IReadOnlyList<Rect> screenRegions)
+        {
+            RegionGrabs++;
+            if (Unavailable)
+                return GrabRegionsResult.Unavailable("test: no picture");
+            foreach (var old in _regionImages)
+                old.Dispose();
+            _regionImages.Clear();
+            var images = new List<Mat?>(screenRegions.Count);
+            foreach (var region in screenRegions)
+            {
+                var crop = new Rect(region.X - Origin.X, region.Y - Origin.Y, region.Width, region.Height);
+                var image = new Mat(_window, crop).Clone();
+                _regionImages.Add(image);
+                images.Add(image);
+            }
+
+            return new GrabRegionsResult(GrabStatus.Ok, images);
+        }
+
         public void Release() => Releases++;
 
-        public void Dispose() => _last?.Dispose();
+        public void Dispose()
+        {
+            _last?.Dispose();
+            foreach (var image in _regionImages)
+                image.Dispose();
+        }
     }
 
     private const int WindowX = 100;
