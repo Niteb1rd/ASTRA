@@ -162,7 +162,7 @@ public sealed class OverlayController : IDisposable
         var hub = _hub;
         return hub is null
             ? OverlayModel.Empty
-            : LivePredictor.ModelAt(hub.Current, StopwatchClock.Shared.NowMs + DisplayTiming.RefreshPeriodMs, _liveSettings, previous);
+            : LivePredictor.ModelAt(hub.Current, StopwatchClock.Shared.NowMs + DisplayTiming.RefreshPeriodMs(_tracker.Current.Handle), _liveSettings, previous);
     }
 
     /// <summary>

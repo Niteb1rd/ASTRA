@@ -27,8 +27,8 @@ internal static class NativeMethods
     public static readonly IntPtr HwndTopmost = new IntPtr(-1);
 
     private const uint MonitorDefaultToNull = 0;
-    private const uint MonitorDefaultToPrimary = 1;
-    private const uint MonitorDefaultToNearest = 2;
+    public const uint MonitorDefaultToPrimary = 1;
+    public const uint MonitorDefaultToNearest = 2;
     private const int DwmwaExtendedFrameBounds = 9;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -47,6 +47,21 @@ internal static class NativeMethods
         public NativeRect Monitor;
         public NativeRect Work;
         public uint Flags;
+    }
+
+    /// <summary>
+    /// MONITORINFOEXW: <see cref="MonitorInfo"/> plus the device name of the monitor (<c>\\.\DISPLAY1</c>), 104 bytes. <see cref="Size"/> must be set to that size before the call,
+    /// or Windows fills only the plain MONITORINFO part and leaves the name empty.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct MonitorInfoEx
+    {
+        public int Size;
+        public NativeRect Monitor;
+        public NativeRect Work;
+        public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string Device;
     }
 
     /// <summary>Windows 10 version 2004 and later: the window is left out of screen captures (Desktop Duplication, screen recorders, screenshots) and shows as nothing there.</summary>
@@ -92,6 +107,11 @@ internal static class NativeMethods
     [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MonitorInfo info);
+
+    /// <summary>GetMonitorInfoW with the extended structure (adds the device name); the same Windows function as <see cref="GetMonitorInfo"/>.</summary>
+    [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetMonitorInfoEx(IntPtr hMonitor, ref MonitorInfoEx info);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
