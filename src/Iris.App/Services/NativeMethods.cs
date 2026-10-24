@@ -49,6 +49,17 @@ internal static class NativeMethods
         public uint Flags;
     }
 
+    /// <summary>Windows 10 version 2004 and later: the window is left out of screen captures (Desktop Duplication, screen recorders, screenshots) and shows as nothing there.</summary>
+    public const uint WdaExcludeFromCapture = 0x00000011;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint affinity);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
 

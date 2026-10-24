@@ -36,6 +36,8 @@ public sealed class LiveDetectionService : IDisposable
     private readonly OverlayController _overlay;
     private readonly Dispatcher _dispatcher;
     private readonly IMonotonicClock _clock = new StopwatchClock();
+    private const double EngineRetryMs = 5000;
+
     private readonly LiveSettings _live = LiveSettings.Default;
     private readonly ManualResetEventSlim _wake = new(false);
     private readonly ManualResetEventSlim _tickWake = new(false);
@@ -43,6 +45,8 @@ public sealed class LiveDetectionService : IDisposable
     private readonly object _publishGate = new();
     private readonly Thread _detectionThread;
     private readonly Thread _trackingThread;
+    private CancellationTokenSource? _lookupCts; // set by the detection thread; read after it ended
+    private Task? _lookupTask;                   // same
 
     private volatile CaptureGate _gate;
     private volatile bool _running;
@@ -84,10 +88,33 @@ public sealed class LiveDetectionService : IDisposable
         _wake.Set();
         _tickWake.Set();
         // the threads release the screen duplication and everything else they own before they end
-        if (_detectionThread.IsAlive)
-            _detectionThread.Join(TimeSpan.FromSeconds(3));
-        if (_trackingThread.IsAlive)
-            _trackingThread.Join(TimeSpan.FromSeconds(1));
+        var detectionEnded = !_detectionThread.IsAlive || _detectionThread.Join(TimeSpan.FromSeconds(3));
+        var trackingEnded = !_trackingThread.IsAlive || _trackingThread.Join(TimeSpan.FromSeconds(1));
+        if (!detectionEnded)
+            Log("Live detection: the detection thread did not end within 3 s of shutdown; its wait handles are left alone (it is a background thread and ends with the process)");
+        if (!trackingEnded)
+            Log("Live detection: the tracking thread did not end within 1 s of shutdown; its wait handles are left alone");
+
+        if (!detectionEnded)
+            return; // it may still be using the lookup queue, the wait handles and the services; touching them could only turn a slow stop into errors
+
+        // the lookup task was cancelled by the thread; give it a moment to finish its current RSI request before the services go away
+        try
+        {
+            _lookupTask?.Wait(TimeSpan.FromSeconds(2));
+        }
+        catch (AggregateException)
+        {
+            // cancelled or failed: nothing left to do
+        }
+
+        _lookupCts?.Dispose();
+        if (trackingEnded)
+        {
+            _wake.Dispose();
+            _tickWake.Dispose();
+            _stop.Dispose();
+        }
     }
 
     // UI thread
@@ -105,7 +132,7 @@ public sealed class LiveDetectionService : IDisposable
     {
         DxgiFrameSource? source = null;
         LiveDetectionEngine? engine = null;
-        CancellationTokenSource? lookupCts = null;
+        var engineRetryAtMs = 0.0;
         var running = false;
         var released = true;
         var idleSinceMs = 0.0;
@@ -151,10 +178,31 @@ public sealed class LiveDetectionService : IDisposable
                     source ??= new DxgiFrameSource();
                     if (engine is null)
                     {
-                        engine = CreateEngine(out var queue);
-                        lookupCts = CancellationTokenSource.CreateLinkedTokenSource(_services.ShutdownToken, _stop.Token);
-                        var token = lookupCts.Token;
-                        _ = Task.Run(() => queue.RunAsync(token), token);
+                        if (now < engineRetryAtMs)
+                        {
+                            _wake.Wait(Math.Max(1, (int)Math.Ceiling(engineRetryAtMs - now)));
+                            continue;
+                        }
+
+                        LiveDetectionEngine? created = null;
+                        try
+                        {
+                            created = CreateEngine(out var queue);
+                            var cts = CancellationTokenSource.CreateLinkedTokenSource(_services.ShutdownToken, _stop.Token);
+                            var token = cts.Token;
+                            _lookupCts = cts;
+                            _lookupTask = Task.Run(() => queue.RunAsync(token), token);
+                            engine = created; // only a completely started engine is kept
+                        }
+                        catch (Exception ex) when (ex is not OutOfMemoryException)
+                        {
+                            created?.Dispose();
+                            // for example the letter model or the cache could not be opened: the loop stays alive and tries again
+                            Log("Live detection could not start (" + ex.GetType().Name + ": " + ex.Message + "); trying again in " + EngineRetryMs / 1000 + " s");
+                            engine = null;
+                            engineRetryAtMs = _clock.NowMs + EngineRetryMs;
+                            continue;
+                        }
                     }
 
                     running = true;
@@ -239,7 +287,7 @@ public sealed class LiveDetectionService : IDisposable
             _running = false;
             try
             {
-                lookupCts?.Cancel();
+                _lookupCts?.Cancel();
             }
             catch (ObjectDisposedException)
             {

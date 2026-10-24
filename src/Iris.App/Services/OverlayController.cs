@@ -410,11 +410,13 @@ public sealed class OverlayController : IDisposable
         _panelWindow?.HideOverlay();
     }
 
-    private OverlayWindow EnsureTestWindow() => _testWindow ??= new OverlayWindow(OverlayLayer.All);
+    private void WarnWindow(string text) => _services.Log.Write(_services.Clock.UtcNow, text);
 
-    private OverlayWindow EnsureBracketWindow() => _bracketWindow ??= new OverlayWindow(OverlayLayer.Brackets);
+    private OverlayWindow EnsureTestWindow() => _testWindow ??= new OverlayWindow(OverlayLayer.All, WarnWindow);
 
-    private OverlayWindow EnsurePanelWindow() => _panelWindow ??= new OverlayWindow(OverlayLayer.Panel);
+    private OverlayWindow EnsureBracketWindow() => _bracketWindow ??= new OverlayWindow(OverlayLayer.Brackets, WarnWindow);
+
+    private OverlayWindow EnsurePanelWindow() => _panelWindow ??= new OverlayWindow(OverlayLayer.Panel, WarnWindow);
 
     public void Dispose()
     {

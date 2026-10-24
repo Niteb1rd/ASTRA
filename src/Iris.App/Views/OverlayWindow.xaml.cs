@@ -11,7 +11,8 @@ namespace Iris.App.Views;
 /// <summary>
 /// The overlay: a transparent, always-on-top window that lies over the game window (or a monitor, for the test overlay).
 /// After the window exists it gets the extended styles "layered, transparent, tool window, no activate": mouse clicks go through it to the game,
-/// it never takes the keyboard focus and it is not listed in Alt+Tab. It is created once and only hidden when not needed.
+/// it never takes the keyboard focus and it is not listed in Alt+Tab. It is excluded from screen capture (<see cref="CaptureExclusion"/>), so IRIS's own capture,
+/// recorders and screenshots do not show it. It is created once and only hidden when not needed.
 /// <see cref="Present"/> is cheap to call again and again: nothing is moved or redrawn unless the content, the size or the settings changed.
 ///
 /// The cost to keep in mind: a layered (transparent) window makes Windows composite and update its full surface on every redraw, however little changed in it,
@@ -26,6 +27,7 @@ public partial class OverlayWindow : Window
     private const double Margin = 64.0;
 
     private readonly OverlayLayer _layer;
+    private readonly Action<string>? _warn;
     private IntPtr _hwnd = IntPtr.Zero;
     private PixelRect _bounds;                // the game window (or monitor), screen pixels
     private bool _hasBounds;
@@ -39,9 +41,12 @@ public partial class OverlayWindow : Window
     {
     }
 
-    public OverlayWindow(OverlayLayer layer)
+    /// <param name="layer">What this window draws.</param>
+    /// <param name="warn">Receives a line for the log when something about the window's setup did not work (can be called on the UI thread).</param>
+    public OverlayWindow(OverlayLayer layer, Action<string>? warn = null)
     {
         _layer = layer;
+        _warn = warn;
         InitializeComponent();
         Surface.Layer = layer;
     }
@@ -54,6 +59,10 @@ public partial class OverlayWindow : Window
         var style = NativeMethods.GetWindowLongPtr(_hwnd, NativeMethods.GwlExStyle).ToInt64();
         style |= NativeMethods.WsExLayered | NativeMethods.WsExTransparent | NativeMethods.WsExToolWindow | NativeMethods.WsExNoActivate;
         NativeMethods.SetWindowLongPtr(_hwnd, NativeMethods.GwlExStyle, new IntPtr(style));
+
+        // IRIS's own screen capture must not see this window (brackets and panel colors would reach the detector). Also hides it from recorders and screenshots.
+        if (!CaptureExclusion.Apply(_hwnd))
+            _warn?.Invoke($"The {_layer} overlay window could not be excluded from screen capture (needs Windows 10 version 2004 or later); IRIS paints its rectangle black in its own captures instead");
 
         ApplyBounds();
     }

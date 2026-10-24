@@ -2,7 +2,7 @@ namespace Iris.Core.Detection;
 
 /// <summary>
 /// The tunable numbers of <see cref="NameplateDetector"/>. The defaults were tuned on gameplay footage at 3440x1440 (see the
-/// README section "Phase 3, step 3: the detector v2 and the tracker"); every pixel size below is given for a frame
+/// README section "Phase 3, step 2: the nameplate detector (v2), the tracker and the replay tool"); every pixel size below is given for a frame
 /// 1440 pixels high and is scaled with the real frame height (see <see cref="ReferenceHeight"/>).
 /// </summary>
 public sealed record NameplateDetectorSettings
@@ -51,7 +51,7 @@ public sealed record NameplateDetectorSettings
 
     /// <summary>
     /// Pixels of context needed above and below the scan region: the colour mask's morphological kernel (about 11 pixels at the reference height) reads
-    /// the pixels just outside the region (OpenCV looks past the edge of a sub-image), so a caller that crops must keep half a kernel plus a margin there.
+    /// the pixels around each pixel, so a caller that crops must keep half a kernel plus a margin above and below the region to treat its edge like the rest of the frame (the padding is cheap, and harmless where the detector would not have needed it).
     /// </summary>
     public int VerticalContextPadding(int scaleHeight) => Scale(scaleHeight, 11) + 2;
 

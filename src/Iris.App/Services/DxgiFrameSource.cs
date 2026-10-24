@@ -22,7 +22,9 @@ namespace Iris.App.Services;
 /// changed; an unexpected pixel format) releases everything (device, duplication, staging texture) and the next grab sets up again, no sooner than a short pause after a
 /// failed setup (<see cref="RetryAfterFailureMs"/>). The staging texture is made again when the region's size changes.</item>
 /// </list>
-/// Only 8 bit formats are supported: B8G8R8A8 and R8G8B8A8, which is what Windows gives for a normal (SDR) desktop. Not thread safe: one thread (the detection loop) calls everything.
+/// <c>DuplicateOutput</c> always delivers 8 bit B8G8R8A8, also while HDR is on for the monitor (Windows then converts the picture; the 16 bit float formats need
+/// <c>DuplicateOutput1</c>, which IRIS does not use). So HDR does not stop the capture, but the converted colors can lower the detection quality. R8G8B8A8 is accepted too,
+/// although <c>DuplicateOutput</c> is not known to produce it; any other format is reported as unsupported. Not thread safe: one thread (the detection loop) calls everything.
 /// The Vortice calls are the only place IRIS touches Direct3D or DXGI.
 /// </summary>
 public sealed class DxgiFrameSource : IFrameSource
@@ -43,6 +45,7 @@ public sealed class DxgiFrameSource : IFrameSource
     private IntPtr _monitor;
     private PixelRect _outputBounds;
     private Mat? _bgr;
+    private bool _hasPicture; // _bgr holds a picture of the current setup (false after Release and after the staging texture was made again)
     private long _retryAtTick;
     private bool _disposed;
 
@@ -93,6 +96,7 @@ public sealed class DxgiFrameSource : IFrameSource
         _staging = null;
         _stagingWidth = 0;
         _stagingHeight = 0;
+        _hasPicture = false;
         _duplication?.Dispose(); // disposing the duplication also gives up a frame that may still be held
         _duplication = null;
         _context?.Dispose();
@@ -120,11 +124,12 @@ public sealed class DxgiFrameSource : IFrameSource
             return "DXGI could not be started";
         using (factory)
         {
-            for (var a = 0; factory.EnumAdapters1(a, out var adapter).Success; a++)
+            // The indexes are uint in Vortice 3.x. If the build says "cannot convert uint to int" (an older Vortice), use int for a and o instead.
+            for (uint a = 0; factory.EnumAdapters1(a, out var adapter).Success; a++)
             {
                 using (adapter)
                 {
-                    for (var o = 0; adapter.EnumOutputs(o, out var output).Success; o++)
+                    for (uint o = 0; adapter.EnumOutputs(o, out var output).Success; o++)
                     {
                         using (output)
                         {
@@ -158,11 +163,29 @@ public sealed class DxgiFrameSource : IFrameSource
     private GrabResult CopyRegion(Rect region, PixelRect outputBounds)
     {
         var duplication = _duplication!;
-        var acquired = duplication.AcquireNextFrame(AcquireTimeoutMs, out _, out var resource);
+        // Depending on the Vortice version AcquireNextFrame returns the Result or throws a SharpGenException for a failed one (a timeout included): both are handled here.
+        Result acquired;
+        Vx.IDXGIResource? resource = null;
+        try
+        {
+            acquired = duplication.AcquireNextFrame(AcquireTimeoutMs, out _, out resource);
+        }
+        catch (SharpGenException ex)
+        {
+            acquired = ex.ResultCode;
+            resource = null;
+        }
+
         if (acquired == Vx.ResultCode.WaitTimeout)
-            return new GrabResult(GrabStatus.NoNewFrame, _bgr is { IsDisposed: false } && !_bgr.Empty() ? _bgr : null);
+        {
+            resource?.Dispose();
+            // nothing changed on screen: the previous picture stands, but only if there is one of this setup
+            return new GrabResult(GrabStatus.NoNewFrame, _hasPicture && _bgr is { IsDisposed: false } && !_bgr.Empty() ? _bgr : null);
+        }
+
         if (acquired.Failure || resource is null)
         {
+            resource?.Dispose();
             // access lost (mode change, secure desktop, another full-screen program) and everything else: start from scratch next time
             var lost = acquired == Vx.ResultCode.AccessLost;
             Release();
@@ -174,15 +197,16 @@ public sealed class DxgiFrameSource : IFrameSource
         {
             using var frame = resource.QueryInterface<Vd.ID3D11Texture2D>();
             var description = frame.Description;
-            if (description.Width != (int)outputBounds.Width || description.Height != (int)outputBounds.Height)
+            if (description.Width != (uint)outputBounds.Width || description.Height != (uint)outputBounds.Height)
                 return GrabResult.Unavailable($"the screen picture is {description.Width}x{description.Height}, not the {(int)outputBounds.Width}x{(int)outputBounds.Height} of the monitor (a rotated screen is not supported)");
             if (description.Format != Vx.Format.B8G8R8A8_UNorm && description.Format != Vx.Format.R8G8B8A8_UNorm)
-                return GrabResult.Unavailable($"the screen picture has pixel format {description.Format}, which IRIS cannot read (HDR is not supported: switch HDR off for the game's monitor)");
+                return GrabResult.Unavailable($"the screen picture has pixel format {description.Format}, which IRIS cannot read (only 8 bit B8G8R8A8 and R8G8B8A8 are supported)");
 
             EnsureStaging(region.Width, region.Height, description.Format);
             var left = region.X - (int)outputBounds.X;
             var top = region.Y - (int)outputBounds.Y;
-            var box = new Vd.Box(left, top, 0, left + region.Width, top + region.Height, 1);
+            // Box takes uint in Vortice 3.x (int in older versions: then drop the casts)
+            var box = new Vd.Box((uint)left, (uint)top, 0, (uint)(left + region.Width), (uint)(top + region.Height), 1);
             _context!.CopySubresourceRegion(_staging!, 0, 0, 0, 0, frame, 0, box);
         }
         finally
@@ -191,7 +215,9 @@ public sealed class DxgiFrameSource : IFrameSource
             resource.Dispose();
         }
 
-        return ReadStaging(region.Width, region.Height);
+        var result = ReadStaging(region.Width, region.Height);
+        MaskOwnWindows(region);
+        return result;
     }
 
     private void EnsureStaging(int width, int height, Vx.Format format)
@@ -200,10 +226,11 @@ public sealed class DxgiFrameSource : IFrameSource
             return;
         _staging?.Dispose();
         _staging = null;
+        _hasPicture = false; // the Mat belongs to the old region size
         var description = new Vd.Texture2DDescription
         {
-            Width = width,
-            Height = height,
+            Width = (uint)width, // uint in Vortice 3.x (int in older versions: then drop the casts)
+            Height = (uint)height,
             MipLevels = 1,
             ArraySize = 1,
             Format = format,
@@ -237,7 +264,28 @@ public sealed class DxgiFrameSource : IFrameSource
             context.Unmap(staging, 0);
         }
 
+        _hasPicture = true;
         return new GrabResult(GrabStatus.Ok, _bgr);
+    }
+
+    /// <summary>
+    /// Second layer against IRIS capturing its own overlay: windows that could not be excluded from capture (<see cref="CaptureExclusion"/>) are painted black in
+    /// the picture, so that brackets and panel colors never reach the detector. Nothing to do (the usual case) when every overlay window is excluded by Windows.
+    /// </summary>
+    private void MaskOwnWindows(Rect region)
+    {
+        if (_bgr is null || _bgr.Empty())
+            return;
+        foreach (var window in CaptureExclusion.VisibleUnexcludedWindows())
+        {
+            var left = Math.Max(window.Left, region.X) - region.X;
+            var top = Math.Max(window.Top, region.Y) - region.Y;
+            var right = Math.Min(window.Right, region.X + region.Width) - region.X;
+            var bottom = Math.Min(window.Bottom, region.Y + region.Height) - region.Y;
+            if (right <= left || bottom <= top)
+                continue;
+            Cv2.Rectangle(_bgr, new Rect(left, top, right - left, bottom - top), new Scalar(0, 0, 0), -1);
+        }
     }
 
     private void ReleaseFrameQuietly()

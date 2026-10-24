@@ -7,7 +7,7 @@ and summarizes their orgs in a side panel. See the requirements doc for the full
 
 ## Status
 
-Phase 3, step 3 makes the overlay live: DXGI screen capture of the game's scan region, a detection loop (5 reads a second) and bracket tracking between reads (see "Phase 3, step 3" below). Phase 3, step 2 added the nameplate detector and a replay tool; step 1 the nameplate letter recognizer. Phase 2: the overlay shell. IRIS runs as a tray app with a Social Overlay config window and the overlay window itself (brackets and the right-hand panel). The Settings tab has an Overlay section (including the tracking tickrate) and a "Show test overlay (15 s)" button to try it. See "Phase 2: the overlay" below.
+Phase 3, step 3 makes the overlay live: DXGI screen capture of the game's scan region, a detection loop (5 reads a second) and bracket tracking between reads (see "Phase 3, step 3: live detection" below). Phase 3, step 2 added the nameplate detector and a replay tool; step 1 the nameplate letter recognizer. Phase 2: the overlay shell. IRIS runs as a tray app with a Social Overlay config window and the overlay window itself (brackets and the right-hand panel). The Settings tab has an Overlay section (including the tracking tickrate) and a "Show test overlay (15 s)" button to try it. See "Phase 2: the overlay" below.
 
 - `src/Iris.Core`: config file (TOML) read, write and validate; color and bracket rules; right-panel org line (increment 1).
 - `src/Iris.Core/Rsi`: reads robertsspaceindustries.com. Pure parsers for the player organizations page, the org page and the
@@ -209,7 +209,7 @@ megabytes (the Windows x64 build) and `IRIS.exe`'s folder to grow by a similar a
 ReLU follows every layer except the last; softmax follows the last. The reader clips each probability to at least 1e-6 and takes its logarithm.
 `LetterModel.Load` rejects files with a wrong magic, version or shape, or with missing or extra bytes.
 
-## Phase 3, steps 2 and 3: the nameplate detector (v2), the tracker and the replay tool
+## Phase 3, step 2: the nameplate detector (v2), the tracker and the replay tool
 
 The detector finds nameplates in a whole frame and reads them with the letter model of step 1 (`src/Iris.Core/Detection/NameplateDetector.cs`).
 It does not use Tesseract or any other OCR: IRIS does not ship one. Version 2 is built around a **distance anchor**: false nameplates are worse than
@@ -393,10 +393,10 @@ a crowded plate, bars, stars; the fifth frame holds nameplates side by side, a p
 evaluations, detections) of the Python reference. `NameplateDetectorTests` compare the C# detector with it.
 They were made by a script of the local training kit; like the letter fixtures they check agreement with the reference, not accuracy on real footage.
 
-## Phase 3, step 3: live detection in the app
+## Phase 3, step 3: live detection
 
 The overlay now shows REAL detections: IRIS captures the game's screen, runs the nameplate detector and tracker over it, and draws brackets and the panel from the tracks.
-(The heading "Phase 3, steps 2 and 3" above is about the detector; this is the third step of the live overlay.)
+(Step 2, the detector, is described above; this is the third step of Phase 3.)
 
 **Capture: DXGI Desktop Duplication** (`src/Iris.App/Services/DxgiFrameSource.cs`, behind `IFrameSource` in `Iris.Core/Live`).
 - The monitor that holds the game window is duplicated (Windows 8 and later; the game must be borderless, which the overlay already requires). The picture stays on the GPU; only the **scan region**
@@ -404,7 +404,11 @@ The overlay now shows REAL detections: IRIS captures the game's screen, runs the
   The rest of the screen is never read back.
 - Each read is `AcquireNextFrame` (waits up to 100 ms), a region copy, `ReleaseFrame` at once. "Nothing changed on screen" is not an error: the previous picture is read again. Access lost (mode change, secure desktop,
   another full-screen program), device removed, a changed monitor or an unexpected pixel format release device, duplication and staging texture; the next read sets up again (after at most 2 s following a failed setup).
-- Only 8 bit formats (B8G8R8A8, R8G8B8A8) are supported, which is a normal SDR desktop. With HDR on for the game's monitor the capture reports "HDR is not supported" in the log and the overlay stays empty.
+- `DuplicateOutput` always delivers 8 bit B8G8R8A8 (R8G8B8A8 is accepted as well; any other format is reported in the log as unsupported). That holds with HDR on, too: Windows converts the picture, so HDR does not stop
+  the capture, but the converted colors can lower the detection quality. If detection is poor, try SDR for the game's monitor.
+- **IRIS's own overlay is kept out of its own capture.** Every overlay window (brackets, panel and confirmation text, test overlay) is set to "exclude from capture" (`SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE`),
+  otherwise the brackets and panel colors would be read as screen content. Side effect: **screen recorders, OBS, Discord screen share and screenshots do not show the overlay either** (Windows 10 version 2004 or later).
+  If Windows refuses the call, the log says so and IRIS paints the overlay windows' rectangles black in every picture it captures, before detection.
 - New packages: `Vortice.DXGI` 3.6.2 and `Vortice.Direct3D11` 3.6.2 (MIT), in `Iris.App` only. `Iris.Core` still has no Windows or Direct3D code.
 
 **Detection loop** (`LiveDetectionService`, `LiveDetectionEngine`). A background thread ("IRIS detection", below normal priority) does **5 reads a second** (an internal default,
