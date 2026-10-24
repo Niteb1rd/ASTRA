@@ -100,7 +100,7 @@ public partial class OverlayWindow : Window
         for (var i = 0; i < masks.Length; i++)
         {
             var item = _model.Brackets[i];
-            masks[i] = new CaptureExclusion.BracketMask(new PixelRect(item.Box.X + dx, item.Box.Y + dy, item.Box.Width, item.Box.Height), item.Kind);
+            masks[i] = new CaptureExclusion.BracketMask(new PixelRect(item.Box.X + dx, item.Box.Y + dy, item.Box.Width, item.Box.Height), item.Kind, _bounds.Height);
         }
 
         CaptureExclusion.PublishBrackets(masks); // a new array each time; never changed after this
@@ -152,7 +152,7 @@ public partial class OverlayWindow : Window
         if (boundsChanged || fitChanged)
             ApplyBounds();
 
-        Surface.SetContent(model, layout, toastLayout, toastLayout is null ? null : toast, fit);
+        Surface.SetContent(model, layout, toastLayout, toastLayout is null ? null : toast, fit, bounds.Height);
 
         if (!IsVisible)
         {
@@ -189,7 +189,7 @@ public partial class OverlayWindow : Window
         if (_layer == OverlayLayer.Brackets)
         {
             foreach (var item in model.Brackets)
-                parts.Add(BracketMetrics.ExtentOf(item.Box));
+                parts.Add(BracketMetrics.ExtentOf(item.Box, bounds.Height));
         }
         else
         {

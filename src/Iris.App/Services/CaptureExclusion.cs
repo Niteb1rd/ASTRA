@@ -22,8 +22,8 @@ internal static class CaptureExclusion
     /// <summary>A window that could not be excluded: where it is and how to paint it out.</summary>
     internal readonly record struct MaskWindow(NativeMethods.NativeRect Rect, bool BracketsOnly);
 
-    /// <summary>One bracket pair as drawn: the nameplate box in screen physical pixels and the kind (which decides the bracket shape).</summary>
-    internal readonly record struct BracketMask(PixelRect ScreenBox, MatchKind Kind);
+    /// <summary>One bracket pair as drawn: the nameplate box in screen physical pixels, the kind (which decides the bracket shape) and the game window's height (the brackets have one fixed size, scaled with it).</summary>
+    internal readonly record struct BracketMask(PixelRect ScreenBox, MatchKind Kind, double GameHeight);
 
     private static readonly object Gate = new();
     private static readonly Dictionary<IntPtr, bool> Unexcluded = new(); // hwnd -> is the brackets window; guarded by Gate
