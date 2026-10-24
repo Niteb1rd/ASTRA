@@ -495,9 +495,10 @@ public sealed class OverlayController : IDisposable
         _testTimer.Stop();
         _testTimer.Tick -= OnTestTick;
         foreach (var window in new[] { _testWindow, _bracketWindow, _panelWindow })
-            window?.Close();
+            window?.Close(); // destroys the Win32 window and its bitmap
         _testWindow = null;
         _bracketWindow = null;
         _panelWindow = null;
+        RenderKeepAlive.Shutdown();
     }
 }

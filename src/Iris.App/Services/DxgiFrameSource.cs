@@ -631,7 +631,7 @@ public sealed class DxgiFrameSource : IFrameSource
     }
 
     /// <summary>
-    /// The points (picture pixels, relative to <paramref name="region"/>) of one bracket as an open line: the same shape the overlay draws (OverlayCanvas.BracketShape;
+    /// The points (picture pixels, relative to <paramref name="region"/>) of one bracket as an open line: the same shape the overlay draws (OverlayPainter.BracketShape;
     /// keep the two in step), with the curves cut into short straight pieces.
     /// </summary>
     private static Point[] BracketPoints(MatchKind kind, double x, double y, double width, double height, bool mirrored, Rect region)

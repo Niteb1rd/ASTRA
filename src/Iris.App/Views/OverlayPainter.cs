@@ -19,13 +19,14 @@ public enum OverlayLayer
 }
 
 /// <summary>
-/// The surface the overlay is drawn on. It draws only in <see cref="OnRender"/> (no child elements), and only when the model or the
-/// layout changes (<see cref="SetContent"/>); between changes WPF keeps the recorded drawing, so an idle overlay costs nothing.
-/// Everything is drawn in physical pixels: a transform undoes the window's DPI scaling, so the model's pixel rectangles are used as they are.
-/// The model's coordinates are game-window pixels; the window may cover only a part of the game window (<see cref="OverlayWindowFit"/>), and
-/// <c>origin</c> of <see cref="SetContent"/> is where that part starts, so the drawing is shifted by it.
+/// Draws the overlay into a <see cref="DrawingContext"/> (the same drawing code the overlay always had; it used to be the <c>OnRender</c> of a WPF element). The window
+/// (<see cref="OverlayWindow"/>) gives it a <see cref="DrawingVisual"/>, renders that into a bitmap and hands the pixels to Windows in one call, so nothing here is on screen by
+/// itself. <see cref="SetContent"/> says what to draw; <see cref="Paint"/> draws it.
+/// Everything is drawn in physical pixels: the bitmap is rendered at 96 dpi and is exactly as many pixels as the window, so one device-independent unit is one pixel and the
+/// model's pixel rectangles are used as they are. The model's coordinates are game-window pixels; the window may cover only a part of the game window
+/// (<see cref="OverlayWindowFit"/>), and <c>origin</c> of <see cref="SetContent"/> is where that part starts, so the drawing is shifted by it.
 /// </summary>
-public sealed class OverlayCanvas : FrameworkElement
+public sealed class OverlayPainter
 {
     private static readonly Brush DarkBrush = Frozen(new SolidColorBrush(Color.FromArgb(0xE6, 0x0A, 0x0A, 0x0F)));
     private static readonly Brush ToastFill = Frozen(new SolidColorBrush(Color.FromArgb(0xCC, 0x12, 0x12, 0x1A)));
@@ -39,7 +40,7 @@ public sealed class OverlayCanvas : FrameworkElement
     private PixelRect _origin;
     private double _screenHeight = BracketMetrics.ReferenceScreenHeight;
 
-    static OverlayCanvas()
+    static OverlayPainter()
     {
         foreach (var color in Enum.GetValues<OverlayColor>())
         {
@@ -49,16 +50,11 @@ public sealed class OverlayCanvas : FrameworkElement
         }
     }
 
-    public OverlayCanvas()
-    {
-        IsHitTestVisible = false;
-    }
-
-    /// <summary>Which parts this surface draws (set once, before the first <see cref="SetContent"/>).</summary>
+    /// <summary>Which parts this painter draws (set once, before the first <see cref="SetContent"/>).</summary>
     public OverlayLayer Layer { get; set; } = OverlayLayer.All;
 
     /// <summary>
-    /// Replaces what is drawn and redraws once. <paramref name="origin"/> is the top-left corner (game-window pixels) of the part of the game window that
+    /// Replaces what is drawn. <paramref name="origin"/> is the top-left corner (game-window pixels) of the part of the game window that
     /// this surface covers; only its X and Y are used. <paramref name="screenHeight"/> is the game window's height in pixels: the brackets have one fixed size,
     /// scaled with it (<see cref="BracketMetrics"/>).
     /// </summary>
@@ -70,21 +66,16 @@ public sealed class OverlayCanvas : FrameworkElement
         _toastText = toastText;
         _origin = origin;
         _screenHeight = screenHeight;
-        InvalidateVisual();
     }
 
-    protected override void OnRender(DrawingContext dc)
+    /// <summary>Draws the current content. Nothing is drawn (the visual stays empty) when this layer has nothing to show.</summary>
+    public void Paint(DrawingContext dc)
     {
-        base.OnRender(dc);
         var drawBrackets = Layer != OverlayLayer.Panel && _model.Brackets.Count > 0;
         var drawPanel = Layer != OverlayLayer.Brackets && (!_panel.IsEmpty || _toastText is not null);
         if (!drawBrackets && !drawPanel)
             return;
 
-        var dpi = VisualTreeHelper.GetDpi(this);
-        var undoDpi = new ScaleTransform(1.0 / dpi.DpiScaleX, 1.0 / dpi.DpiScaleY);
-        undoDpi.Freeze();
-        dc.PushTransform(undoDpi);
         var shift = new TranslateTransform(-_origin.X, -_origin.Y);
         shift.Freeze();
         dc.PushTransform(shift);
@@ -104,7 +95,6 @@ public sealed class OverlayCanvas : FrameworkElement
         }
         finally
         {
-            dc.Pop();
             dc.Pop();
         }
     }
@@ -134,7 +124,7 @@ public sealed class OverlayCanvas : FrameworkElement
         dc.DrawGeometry(null, colorPen, right);
     }
 
-    // The brackets are redrawn up to 120 times a second with the same few pen sizes: the pens are kept (this surface lives on the UI thread only).
+    // The brackets are redrawn up to 120 times a second with the same few pen sizes: the pens are kept (this painter lives on the UI thread only).
     private static readonly Dictionary<(Brush Brush, double Thickness), Pen> Pens = new();
 
     private static Pen RoundPen(Brush brush, double thickness)
@@ -270,8 +260,8 @@ public sealed class OverlayCanvas : FrameworkElement
     }
 
     /// <summary>
-    /// The text is measured and drawn in physical pixels (the canvas pushes a transform that undoes the window's DPI scaling), so one device-independent
-    /// unit of this text is exactly one pixel: pixelsPerDip is 1.0, not the window's value.
+    /// The text is measured and drawn in physical pixels (the bitmap is rendered at 96 dpi and is exactly the window's size in pixels), so one device-independent
+    /// unit of this text is exactly one pixel: pixelsPerDip is 1.0.
     /// </summary>
     private static FormattedText Format(string text, double size) =>
         new(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, OverlayFonts.Bold, size, Brushes.White, 1.0);
