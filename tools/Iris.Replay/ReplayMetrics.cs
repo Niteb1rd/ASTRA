@@ -22,8 +22,9 @@ public enum ReadKind
 
 /// <summary>A labeled name that a track confirmed.</summary>
 /// <param name="Label">The labeled name (the confirmed text was identical to it).</param>
-/// <param name="ConfirmedFrame">Frame number at which it was confirmed.</param>
-/// <param name="DelayFrames">Frames from the first read of this name by its track to its confirmation.</param>
+/// <param name="ConfirmedFrame">Frame number at which it was confirmed (the native video frame number, or the number of the image file; also when <c>--fps</c> samples the frames).</param>
+/// <param name="DelayFrames">Frames from the first read of this name by its track to its confirmation: NATIVE video frames, not the number of sampled frames in between
+/// (with <c>--fps 5</c> on a 60 fps video three reads are at least 24 frames apart; <paramref name="DelayMs"/> is the figure to compare with the app).</param>
 /// <param name="DelayMs">The same in milliseconds of video time.</param>
 public sealed record FoundName(string Label, long ConfirmedFrame, long DelayFrames, double DelayMs);
 
@@ -328,7 +329,7 @@ public sealed class ReplayMetrics
             wrong, wrongEnd, corrections, junk, anim, unread, filtered, Number(Program.Median(allMs)), Number(Program.Percentile95(allMs))));
         text.AppendLine();
         text.AppendLine("found = labeled names a track CONFIRMED (read identically several times, with exactly the labeled spelling: names match exactly, 0/O and 1/I are different);");
-        text.AppendLine("delay = median, over the found names, from the first read of the name to its confirmation (frames and ms of video time);");
+        text.AppendLine("delay = median, over the found names, from the first read of the name to its confirmation (frames and ms of video time; frames are native video frames, also with --fps);");
         text.AppendLine("wrong = names CONFIRMED that are not labeled, not excluded, not contact codes: the app would look them up (the target is 0); wrongEnd = the same for the name each track ended with, after corrections;");
         text.AppendLine("corr = confirmed names that were CORRECTED (the track switched to another name that it read more often over the recent window);");
         text.AppendLine("junk / anim / unread = nameplate tracks whose best read is none of the known names / a stage or near miss of one / nothing readable; ignrd = tracks of excluded names and contact codes.");

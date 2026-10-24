@@ -23,8 +23,10 @@ public sealed class ReplayOptions
                        confirmed yellow, rejected pairs red
           --every N    use every Nth frame (default 1)
           --fps N      sample the frames by TIME: keep a frame when its timestamp has advanced at least 1000/N ms since the last kept
-                       one (default: every frame). A video of 60 or 120 fps is read much more often than the app reads (5 times a
-                       second), which lets a short-lived misread reach the confirmation; --fps 5 mirrors the app. Applied after --every
+                       one (default: every frame). A video of 60 or 120 fps is read much more often than the app will read (5 times a
+                       second, planned), which lets a short-lived misread reach the confirmation; --fps 5 mirrors that rate. Applied after --every.
+                       Frame numbers (the frame column, first_frame, delay fr) stay the NATIVE video frame numbers, not a count of the
+                       sampled frames; delay ms is the figure to compare with the app. Ignored for single images
           --model F    use this letters-model.bin instead of the one built into IRIS
           --region R   scan region as fractions of the frame: left,right,top,bottom (default 0.15,0.85,0.10,0.70)
           --image-fps N   frame rate that the frame numbers of image files stand for (default 10, as in the training kit); a video

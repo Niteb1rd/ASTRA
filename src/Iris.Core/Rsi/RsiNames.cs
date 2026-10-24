@@ -14,13 +14,14 @@ public static class RsiNames
     /// <summary>Longest player handle IRIS accepts.</summary>
     public const int MaxHandleLength = 64;
 
-    // \z (not $) on purpose: "$" would also accept a trailing newline. A handle may not start or end with "-" (RSI's account creation refuses it);
-    // "_" is allowed anywhere.
+    // \z (not $) on purpose: "$" would also accept a trailing newline. No edge rule here: older RSI accounts may have a handle that starts or ends
+    // with "-", and this check also gates RSI page parsing, member lists and the handles users type. The "no hyphen at the edges" rule belongs to
+    // reads from the screen only (NameShape.HasValidEdges, used by the detector and the tracker).
     private static readonly Regex HandlePattern = new(
-        "^(?!-)[A-Za-z0-9_-]{" + MinHandleLength + "," + MaxHandleLength + "}(?<!-)\\z", RegexOptions.CultureInvariant);
+        "^[A-Za-z0-9_-]{" + MinHandleLength + "," + MaxHandleLength + "}\\z", RegexOptions.CultureInvariant);
     private static readonly Regex SidPattern = new(@"^[A-Za-z0-9_-]{1,20}\z", RegexOptions.CultureInvariant);
 
-    /// <summary>Player handle: letters, digits, "_" and "-", 4 to 64 characters, not starting or ending with "-" ("_" is fine there).</summary>
+    /// <summary>Player handle: letters, digits, "_" and "-", 4 to 64 characters (a "-" may be anywhere; reads from the screen have the extra edge rule of <c>NameShape</c>).</summary>
     public static bool IsValidHandle(string? handle) => handle is not null && HandlePattern.IsMatch(handle);
 
     /// <summary>Org SID: letters, digits, "_" and "-", 1 to 20 characters.</summary>

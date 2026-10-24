@@ -354,6 +354,20 @@ public class ReplayToolTests
     }
 
     [Fact]
+    public void FpsIsIgnoredForSingleImages_AndTheToolSaysSo()
+    {
+        var oneImage = new[] { new ClipInput("shot", null, new[] { "shot.png" }) };
+        var video = new[] { new ClipInput("clip", "clip.mp4", Array.Empty<string>()) };
+        var folder = new[] { new ClipInput("frames", null, new[] { "f1.png", "f2.png" }) };
+
+        Assert.Null(Program.FpsIgnoredWarning(null, true, oneImage));             // no --fps: nothing to say
+        Assert.Null(Program.FpsIgnoredWarning(5.0, false, video));                // a video is sampled
+        Assert.Null(Program.FpsIgnoredWarning(5.0, false, folder));               // so is a folder of frames
+        Assert.Contains("--fps is ignored", Program.FpsIgnoredWarning(5.0, false, oneImage));  // one image as the input
+        Assert.Contains("--fps is ignored", Program.FpsIgnoredWarning(5.0, true, folder));     // screenshot labels: every image alone
+    }
+
+    [Fact]
     public void Sampler_RefusesARateOfZero()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => new FrameSampler(0.0));

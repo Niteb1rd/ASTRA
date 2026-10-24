@@ -38,7 +38,7 @@ public sealed record RowCheckResult(RowCheckState State, string Message, string?
 /// </summary>
 public sealed class RowValidator
 {
-    public const string InvalidHandleMessage = "Handles are 4 to 64 characters: letters, digits, - and _ (not starting or ending with -)";
+    public const string InvalidHandleMessage = "Handles are 4 to 64 characters: letters, digits, - and _";
     public const string InvalidSidMessage = "SIDs are 1 to 20 characters: letters, digits, - and _";
     public const string DuplicateMessage = "already in the list";
     public const string FallbackFailureMessage = "RSI not reachable";

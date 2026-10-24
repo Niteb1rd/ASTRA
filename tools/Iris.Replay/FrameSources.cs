@@ -13,7 +13,7 @@ public readonly record struct SourceFrame(string Clip, int Number, string Name, 
 
 /// <summary>
 /// Keeps frames by TIME: a frame is kept when its timestamp has advanced at least 1000/N ms since the last kept one (the first frame is
-/// always kept). With a 60 or 120 fps video and N = 5 this reads every 12th or 24th frame, as the app does (it reads 5 times a second);
+/// always kept). With a 60 or 120 fps video and N = 5 this reads every 12th or 24th frame, as the app will (it is planned to read 5 times a second);
 /// without a rate every frame is kept. One sampler per clip. Not thread safe.
 /// </summary>
 public sealed class FrameSampler

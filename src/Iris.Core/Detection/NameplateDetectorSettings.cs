@@ -31,7 +31,7 @@ public sealed record NameplateDetectorSettings
     /// </summary>
     public int ReferenceHeight { get; init; } = 1440;
 
-    /// <summary>A handle has 4 to 64 characters (letters, digits, "-" and "_"; it may not start or end with "-").</summary>
+    /// <summary>A name read from a nameplate has 4 to 64 characters (letters, digits, "-" and "_"); a read that starts or ends with "-" is no vote (<see cref="NameShape"/>).</summary>
     public int MinNameLength { get; init; } = 4;
 
     public int MaxNameLength { get; init; } = 64;

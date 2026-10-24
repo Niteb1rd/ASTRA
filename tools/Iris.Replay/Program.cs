@@ -45,6 +45,18 @@ public static class Program
         }
     }
 
+    /// <summary>
+    /// The warning for <c>--fps</c> given together with single images, or null. A single image stands alone and is read once, so there is nothing to
+    /// sample: <paramref name="singleImages"/> is a screenshot label run (every image alone, no tracker), and an input that is one image file counts too.
+    /// </summary>
+    public static string? FpsIgnoredWarning(double? sampleFps, bool singleImages, IReadOnlyList<ClipInput> clips)
+    {
+        if (sampleFps is null)
+            return null;
+        var oneImage = clips.Count == 1 && clips[0].VideoPath is null && clips[0].Images.Count == 1;
+        return singleImages || oneImage ? "Warning: --fps is ignored for single images (every image is read once, none is skipped)." : null;
+    }
+
     private sealed record ClipSummary(string Clip, int Frames, int NameplateTracks, int Confirmed, int Corrections, List<double> Times);
 
     private static int Run(ReplayOptions options)
@@ -58,6 +70,9 @@ public static class Program
         ClipLabels? labels = options.LabelsPath is null ? null : ClipLabels.Load(options.LabelsPath);
         var single = labels?.Mode == LabelMode.ByFile;
         var clips = FrameSources.Discover(options.Input);
+        var fpsWarning = FpsIgnoredWarning(options.SampleFps, single, clips);
+        if (fpsWarning is not null)
+            Console.Error.WriteLine(fpsWarning);
         Directory.CreateDirectory(options.OutDirectory);
         var annotatedFolder = Path.Combine(options.OutDirectory, "annotated");
         if (options.Annotate)
@@ -78,7 +93,7 @@ public static class Program
         var inv = CultureInfo.InvariantCulture;
         var step = options.Every == 1 ? "every frame" : string.Create(inv, $"every {options.Every} frames");
         var settings = options.Settings;
-        var sampling = options.SampleFps is null ? string.Empty : string.Create(inv, $", sampled by time at {options.SampleFps.Value:0.##} frames a second");
+        var sampling = options.SampleFps is null || fpsWarning is not null ? string.Empty : string.Create(inv, $", sampled by time at {options.SampleFps.Value:0.##} frames a second");
         var mode = single ? "single images, no tracker" : $"tracker: {options.TrackerSettings.ConfirmReads} identical reads of one box width over at least {options.TrackerSettings.ConfirmSpanMs:0} ms";
         Console.WriteLine(string.Create(inv, $"Replaying {clips.Count} clip(s), {step}{sampling}, scan region x {settings.RegionLeft:P0}-{settings.RegionRight:P0}, y {settings.RegionTop:P0}-{settings.RegionBottom:P0}; {mode}."));
         Console.WriteLine();

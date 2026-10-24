@@ -38,8 +38,8 @@ public class NameFilterTests : IDisposable
         Assert.False(NameFilter.ShouldIgnore(new string('a', 4), list, config));
         Assert.False(NameFilter.ShouldIgnore(new string('a', 64), list, config));
         Assert.True(NameFilter.ShouldIgnore(new string('a', 65), list, config));
-        Assert.True(NameFilter.ShouldIgnore("-abcd", list, config));    // may not start or end with a hyphen
-        Assert.True(NameFilter.ShouldIgnore("abcd-", list, config));
+        Assert.False(NameFilter.ShouldIgnore("-abcd", list, config));   // the edge rule is the detector's (NameShape), not the filter's
+        Assert.False(NameFilter.ShouldIgnore("abcd-", list, config));
         Assert.False(NameFilter.ShouldIgnore("_abcd_", list, config));
     }
 

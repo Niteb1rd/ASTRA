@@ -9,7 +9,7 @@ namespace Iris.Core.Detection;
 public static class NameFilter
 {
     /// <summary>
-    /// True if the text should be ignored: it is not a valid handle (4 to 64 letters, digits, - or _, not starting or ending with -),
+    /// True if the text should be ignored: it is not a valid handle (4 to 64 letters, digits, - or _),
     /// or it is on the exclusion list or has the shape of a contact code (<see cref="ContactCode"/>, "PA-5968-XF"),
     /// AND is not on the user's own player list.
     /// The user's player list wins: a name the user typed in is never ignored just because it is excluded or code-shaped.

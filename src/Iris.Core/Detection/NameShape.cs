@@ -4,8 +4,9 @@ namespace Iris.Core.Detection;
 public static class NameShape
 {
     /// <summary>
-    /// True when the name does not start or end with <c>-</c> (RSI refuses such handles at account creation; an underscore may start and end a
-    /// name). A read such as <c>-LOCKED0N</c> is an animation stage or a misread, not a name: it is no vote for the tracker (the nameplate itself
+    /// True when the name does not start or end with <c>-</c> (the handles RSI hands out today do not; an underscore may start and end a
+    /// name). This is a rule for reads from the screen only: <c>RsiNames.IsValidHandle</c> (RSI pages, member lists, typed handles) does not apply it,
+    /// because an older account might have such a handle. A read such as <c>-PIL0TFISH</c> is an animation stage or a misread, not a name: it is no vote for the tracker (the nameplate itself
     /// still is one). An empty name has no valid edges.
     /// </summary>
     public static bool HasValidEdges(string? name) =>
