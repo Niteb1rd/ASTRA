@@ -449,6 +449,7 @@
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="Panel width" VerticalAlignment="Center"
@@ -482,6 +483,14 @@
                                     ValueChanged="OnOverlaySliderChanged" />
                             <TextBlock Grid.Row="3" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center"
                                        Text="{Binding Value, ElementName=PanelTopGapSlider, StringFormat='{}{0:0}%'}" />
+
+                            <TextBlock Grid.Row="4" Grid.Column="0" Text="Nameplate Tracking Tickrate" VerticalAlignment="Center"
+                                       ToolTip="How many times a second the brackets are moved on screen (15 to 120). IRIS reads the screen only about 5 times a second; between two reads it moves each bracket along the speed its nameplate was seen moving at. A higher number looks smoother; it costs a little more processor and graphics work, never more screen reading." />
+                            <Slider x:Name="TrackingFpsSlider" Grid.Row="4" Grid.Column="1" Margin="0,3" VerticalAlignment="Center"
+                                    TickFrequency="5" IsSnapToTickEnabled="True" SmallChange="5" LargeChange="15"
+                                    ValueChanged="OnOverlaySliderChanged" />
+                            <TextBlock Grid.Row="4" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center"
+                                       Text="{Binding Value, ElementName=TrackingFpsSlider, StringFormat='{}{0:0} fps'}" />
                         </Grid>
                         <Button x:Name="TestOverlayButton" Content="Show test overlay (15 s)" HorizontalAlignment="Left"
                                 Padding="12,4" Margin="0,0,0,4" Click="OnTestOverlay"

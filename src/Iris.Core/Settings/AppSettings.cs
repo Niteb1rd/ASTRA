@@ -58,6 +58,21 @@ public sealed record AppSettings
     /// <summary>Space between the top of the screen and the panel, as a percentage of the height (0 to 60).</summary>
     public int PanelTopGapPercent { get; init; } = 15;
 
+    // ---- Live detection (Phase 3) ----
+
+    public const int NameplateTrackingFpsMin = 15;
+    public const int NameplateTrackingFpsMax = 120;
+    public const int NameplateTrackingFpsStep = 5;
+    public const int NameplateTrackingFpsDefault = 30;
+
+    /// <summary>
+    /// "Nameplate Tracking Tickrate": how many times a second the brackets are moved on screen (15 to 120, the Settings tab slider goes in steps of 5).
+    /// The detector itself reads the screen only a few times a second (5, not a setting); between two reads the brackets are moved along the speed
+    /// each nameplate was seen moving at. This number only costs a little arithmetic and a redraw of the (small) bracket layer per tick, no
+    /// screen capture and no OCR; a higher number looks smoother and costs a little more CPU and GPU. The file accepts any whole number in the range.
+    /// </summary>
+    public int NameplateTrackingFps { get; init; } = NameplateTrackingFpsDefault;
+
     // ---- Disabling the overlay, hotkeys ----
 
     /// <summary>
