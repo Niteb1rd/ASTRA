@@ -68,8 +68,16 @@ public static class FrameSources
         return clips;
     }
 
+    /// <summary>
+    /// The image files of a folder in frame order: by the number at the end of the name (f2 before f10; names without one last), then
+    /// by name. Plain name order would put f10 before f2, and TimeMs (from the frame number) would run backwards.
+    /// </summary>
     private static List<string> ImagesIn(string folder) =>
-        Directory.EnumerateFiles(folder).Where(IsImage).OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList();
+        Directory.EnumerateFiles(folder).Where(IsImage)
+            .OrderBy(p => TrailingNumber(Path.GetFileName(p)) is null)
+            .ThenBy(p => TrailingNumber(Path.GetFileName(p)) ?? 0)
+            .ThenBy(p => Path.GetFileName(p), StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     /// <summary>The number at the end of a file name without its extension (f00041 gives 41), or null.</summary>
     public static int? TrailingNumber(string fileName)

@@ -221,21 +221,20 @@ missed ones, so a text line is only a nameplate when it has the distance line th
 2. **Distance anchor.** A line is a distance only if it reads as a number from 0 to 1000, a period, **exactly one digit**, then lower case `m` or `km`, and nothing after it
    (`DistanceLineRule`). A distance without a decimal is ignored. The line is read with the letter model restricted to `0-9 . k m` and the digit look-alikes below; the read must be sure
    (mean score and the gap to the model's free best), and no gap inside the line may be wider than a word gap. Unsure end pieces (specks next to the line) are trimmed first.
-   Nothing may touch the line, and about 3 character widths (the capital height is the unit) must be clear on both sides, small specks tolerated
+   Nothing may touch the line, and 3 line-box heights (`ClearLines`; the height of the line's bounding box, which is about one character width) must be clear on both sides, small specks tolerated
    (the one exception is the crowd exception, rule 4).
-3. **Name.** The line directly above the anchor (within about one line height), a **single word** of 4 to 25 characters `A-Z 0-9 - _`, read with the score per letter at least -0.20.
+3. **Name.** The line directly above the anchor (the gap between the two lines is at most 1.4 line-box heights; the lines are about equally high), a **single word** of 4 to 25 characters `A-Z 0-9 - _`, read with the score per letter at least -0.20.
    It must be centred over the distance (the game centres a name over its distance), left-aligned pairs are rejected (the left edges equal within 2 px while the widths differ by 8 px or more:
-   HUD label columns such as `R-ALT` over `VSI`), and about 3 character widths must be clear on both sides.
+   HUD label columns such as `R-ALT` over `VSI`), and 3 line-box heights must be clear on both sides.
 4. **Isolation: strict, crowd and loose pairs.** A pair whose lines are both isolated is a *strict* pair. A pair whose lines fail only the isolation test is a *loose* pair: it may only continue a track
    that already is a nameplate, never start one (hysteresis). **Crowd exception:** nameplates drift next to each other, so ink beside a line does not count against it when ALL of that ink lies inside the boxes of
    other text lines that are themselves part of another candidate pair (a line over a line). Such a *crowd* pair is treated as strict, but only when every one of those neighbouring pairs also reads as a
    real nameplate (a valid distance anchor under one word of name characters; `FrameEvaluator`); a ring, a ship, a HUD arc, a panel, or text that is not part of a valid nameplate beside the line still
    rejects it (it stays loose, or is rejected). `NameplateDetectorSettings.CrowdException` (default on) switches the exception off.
-5. **Contact codes.** A name of the shape `XX-1234-XX` (2 letters, 4 digits, 2 letters, hyphens both or none, with the accuracy look-alikes) is ignored unless it is on the player list (`ContactCode`, `NameFilter`).
+5. **Contact codes.** A name of the shape `XX-1234-XX` (2 letters, 4 digits, 2 letters, each hyphen optional, with the accuracy look-alikes) is ignored unless it is on the player list (`ContactCode`, `NameFilter`).
 
 There is no stacked rule any more (v1 accepted a plate above a confirmed one without its own distance).
 Noise protection: a run of ink wider than 8 capital heights, or a cut search of more than 1500 candidate spans, is not cut: that run reads as nothing and scores -50.
-**Work budget (differs from the Python reference).** A frame evaluates at most `MaxCandidateTopsPerFrame` (default 24) different name lines.
 **Resolution.** The pixel constants are tuned for a frame 1440 px high and scaled by `frame height / 1440` (rounded, at least 1); the letter reader itself works from the capital height of the line.
 
 ### Look-alike lists (`LookAlikes`)
@@ -245,7 +244,7 @@ Two lists, in one documented class, used for different things:
 | List | Groups | Used for |
 | --- | --- | --- |
 | **Efficiency** | `0 O Q D`, `1 I 7`, `5 S`, `8 B`, `6 G`, `2 Z` | only the digits of the distance line: a letter the model sees where a digit must be counts as that digit |
-| **Accuracy** | `0 O`, `1 I` only | matching names against the player list, matching against the exclusion list, and the hotkey look-alike retry; everything else must match exactly |
+| **Accuracy** | `0 O`, `1 I` only | matching names against the player list, matching against the exclusion list, and (ready, step 5, not yet wired in) the hotkey look-alike retry (`LookAlikes.NameVariants`); everything else must match exactly |
 
 `NameMatcher` accepts only the accuracy look-alikes (it used to use a weighted edit distance with seven confusable groups; that was too generous). The exclusion list is look-alike
 tolerant in the same way (`HURST0N` is `Hurston`).
@@ -262,7 +261,7 @@ A name is not trusted from one frame. The tracker (`src/Iris.Core/Detection/Name
 - **Sticky verdict** per track: `Nameplate` (it passed the distance anchor) or `NotNameplate`. A `NotNameplate` track is not read again every frame, only every 3 s (`RecheckMs`) or when its box size changes
   notably (width by 15 %, height by 2 px or 15 %). A `Nameplate` track that fails 3 evaluations in a row becomes `NotNameplate`.
 - **Voting.** Every evaluation that reads the name surely enough is a vote. A name is **confirmed** after being read identically `ConfirmReads` times (default **3**), more often than any rival,
-  and the identical reads must span at least `ConfirmSpanMs` (default **300 ms**): the game types or scrambles a name when a plate appears (`DEME`, `MORIARTYG`, `UNKN13WN`), and a stage of that animation
+  and the identical reads must span at least `ConfirmSpanMs` (default **300 ms**): the game types or scrambles a name when a plate appears (`ORBI`, `STELLARK`, `UNKN0WN3`), and a stage of that animation
   can be read twice in a row; a real name stays. A rival that catches up takes the confirmation back. "Delay over wrong."
 - The confirmed name is exposed with the frame of the first read and of the confirmation. Tracks expire after 1 s unseen. A confirmed track is read again once a second.
 
@@ -305,11 +304,11 @@ tracker with prediction and identical-read association, `AMMUNITON` on the exclu
 | nameplate tracks | n/a | 1323 | 574 |
 | median delay to the confirmed name | n/a | 3 frames (0.3 s at 10 fps) | 3 frames |
 
-The 5 labeled names that are still not confirmed: three contact codes (`CZ-6863-FP`, `CQ-8839-GR`, `XL-5703-QW`: they are single line plates the app ignores by name anyway) and `QUINDOR` and `TEDDY1769`
-(a crowded clip start in front of a station: `QUINDOR` has one clean read in the whole clip, `TEDDY1769` three clean reads in frames 1 to 3 that span only 200 ms, less than the 300 ms rule asks for).
+The 5 labeled names that are still not confirmed: three contact codes (`AB-1234-CD`, `EF-5678-GH`, `JK-9012-LM`: they are single line plates the app ignores by name anyway) and `ZANTHOR` and `PIXEL4821`
+(a crowded clip start in front of a station: `ZANTHOR` has one clean read in the whole clip, `PIXEL4821` three clean reads in frames 1 to 3 that span only 200 ms, less than the 300 ms rule asks for).
 The two NPC names `VIXEN` and `WARLORD` are now found, but they are on the exclusion list, so the app ignores them.
 
-The Windows replay of the C# port gives the same table for your own footage; times per frame depend on the machine (v1 median was 19.9 ms per frame in C#).
+Times per frame depend on the machine (v1 median was 19.9 ms per frame in C#).
 Single screenshots without the tracker find fewer names (hard cases: red hostile targets, bright moons, stacked plates, plates without a distance line): 5 of the 17 labeled names are read in one frame
 by `detect()` (`evaluate_screenshots_v2.py`), with no wrong name. The letter model v2 reads held-out clips' letters at 98.1 %, the 14 labeled screenshot crops exactly 11/14, and held-out distance lines exactly 98.4 % (the anchor rule passes 98.7 %).
 

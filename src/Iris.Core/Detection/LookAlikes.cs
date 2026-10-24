@@ -5,8 +5,8 @@ namespace Iris.Core.Detection;
 /// confuse depends on what is at stake:
 /// <list type="bullet">
 /// <item><b>Accuracy list</b> (names): ONLY <c>0 &lt;-&gt; O</c> and <c>1 &lt;-&gt; I</c>. It is used everywhere two names are compared:
-/// the player list, the exclusion list, contact-code detection, the replay tool's label matching, and the look-alike retry of a
-/// hotkey lookup (<see cref="NameVariants"/>). Everything else must match exactly: a wrong name is worse than a missed one, because a
+/// the player list, the exclusion list, contact-code detection and the replay tool's label matching; <see cref="NameVariants"/>
+/// is ready for the look-alike retry of a hotkey lookup (step 5; not used by the app yet). Everything else must match exactly: a wrong name is worse than a missed one, because a
 /// wrong name is looked up on the RSI site and shown on screen.</item>
 /// <item><b>Efficiency list</b> (distance digits only): <c>0 O Q D</c>, <c>1 I 7</c>, <c>5 S</c>, <c>8 B</c>, <c>6 G</c>, <c>2 Z</c>.
 /// A distance line is read with these look-alikes tolerated because its digits are checked against a strict shape ("835.5m") and it

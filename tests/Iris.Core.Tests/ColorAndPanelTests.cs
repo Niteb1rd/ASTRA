@@ -39,6 +39,23 @@ public class ColorAndPanelTests
     }
 
     [Fact]
+    public void PlayerList_MatchesLookAlikeReads()
+    {
+        var c = Config(c => c.Players.Add(new PlayerEntry("Nitebird", OverlayColor.Cyan)));
+        foreach (var read in new[] { "N1TEBIRD", "NITEB1RD", "n1teb1rd" })
+        {
+            var m = ColorResolver.Resolve(read, Nitebird, c);
+            Assert.Equal(MatchKind.PlayerList, m.Kind);
+            Assert.Equal(OverlayColor.Cyan, m.Color);
+            var unknown = ColorResolver.ResolveUnknown(read, c);
+            Assert.Equal(MatchKind.PlayerList, unknown.Kind);
+            Assert.Equal(OverlayColor.Cyan, unknown.Color);
+        }
+
+        Assert.Equal(MatchKind.NoMatch, ColorResolver.Resolve("N2TEBIRD", Nitebird, c).Kind);
+    }
+
+    [Fact]
     public void OrgList_LowestPriorityNumberWins_SquareBrackets()
     {
         var c = Config(c =>

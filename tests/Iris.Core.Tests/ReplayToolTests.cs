@@ -133,7 +133,7 @@ public class ReplayToolTests
 
         var g = metrics.Groups["clip1"];
         Assert.Equal(2, g.Labels);
-        Assert.Equal(8, g.Reads);
+        Assert.Equal(6, g.Reads);   // 2 + 2 + 0 + 2 (the clip without labels is not counted)
         Assert.Equal(2, g.ExcludedReads);
         Assert.Equal(1, g.WrongReads);
         Assert.Equal(2, g.ExactFrames.Count);
@@ -271,6 +271,25 @@ public class ReplayToolTests
     }
 
     [Fact]
+    public void ImageFrames_AreInFrameOrderNotNameOrder()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "iris-replay-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            foreach (var name in new[] { "f10.png", "f2.png", "cover.png", "f1.png", "a_100.png" })
+                File.WriteAllBytes(Path.Combine(root, name), new byte[] { 0 });
+
+            var clip = Assert.Single(FrameSources.Discover(root));
+            Assert.Equal(new[] { "f1.png", "f2.png", "f10.png", "a_100.png", "cover.png" }, clip.Images.Select(p => Path.GetFileName(p)!));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public void GitRepositories_AreRecognized()
     {
         var root = Path.Combine(Path.GetTempPath(), "iris-replay-test-" + Guid.NewGuid().ToString("N"));
@@ -329,7 +348,8 @@ public class ReplayToolTests
             Assert.Equal(0, exit);
             var lines = File.ReadAllLines(Path.Combine(output, "detections.csv"));
             Assert.StartsWith("source,frame,track,verdict,confirmed,name,score,", lines[0]);
-            Assert.Contains(lines, l => l.StartsWith("synthetic/frame_a_3.png,") && l.Contains(",SYNTH_ALPHA,"));
+            // frame 3 is not evaluated: the track confirmed its name at frame 2 and is not re-read within ConfirmedRereadMs
+            Assert.Contains(lines, l => l.StartsWith("synthetic/frame_a_2.png,") && l.Contains(",SYNTH_ALPHA,"));
             Assert.DoesNotContain(lines, l => l.StartsWith("synthetic/frame_d_4.png,")); // stars only
             var tracks = File.ReadAllLines(Path.Combine(output, "tracks.csv"));
             Assert.StartsWith("clip,track,", tracks[0]);
@@ -337,7 +357,7 @@ public class ReplayToolTests
             Assert.Contains(tracks, l => l.Contains(",DUMMY_DELTA,DUMMY_DELTA,"));
             var text = console.ToString();
             Assert.Matches(new Regex(@"^TOTAL\s+4\s", RegexOptions.Multiline), text);   // 4 frames replayed
-            Assert.Matches(new Regex(@"^TOTAL\s+4\s+4\s+4/4\s", RegexOptions.Multiline), text);   // 4 labels, all 4 confirmed
+            Assert.Matches(new Regex(@"^TOTAL\s+4\s+4\s+\|\s+4/4\s", RegexOptions.Multiline), text);   // 4 labels, all 4 confirmed
             Assert.True(File.Exists(Path.Combine(output, "annotated", "synthetic", "frame_a_2.png")));
             Assert.False(File.Exists(Path.Combine(output, "annotated", "synthetic", "frame_d_4.png")));
         }

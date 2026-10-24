@@ -2,8 +2,8 @@ namespace Iris.Core.Detection;
 
 /// <summary>
 /// Comparison of a read name with the names that are known to be on screen, as a developer tool for judging the reader (the replay
-/// tool uses it to score a read against a label list; the app itself looks names up exactly, with the retry of
-/// <see cref="LookAlikes.NameVariants"/>). A read matches a name when the two are equal except for upper/lower case and the accuracy
+/// tool uses it to score a read against a label list; the app itself looks names up exactly; the hotkey look-alike retry
+/// with <see cref="LookAlikes.NameVariants"/> is ready but not wired in yet, step 5). A read matches a name when the two are equal except for upper/lower case and the accuracy
 /// look-alikes <c>0/O</c> and <c>1/I</c> (<see cref="LookAlikes"/>). There is NO other edit tolerance: a name with one wrong, missing
 /// or extra letter does not match.
 /// </summary>

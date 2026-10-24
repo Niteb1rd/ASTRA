@@ -79,7 +79,8 @@ public sealed record NameplateTrackerSettings
     /// <summary>At most this many tracks are kept; the least recently seen are dropped first.</summary>
     public int MaxTracks { get; init; } = 256;
 
-    /// <summary>At most this many candidates are evaluated (read) per frame; the others wait for the next frame.</summary>
+    /// <summary>At most this many candidates are evaluated (read) per frame; the others wait for the next frame.
+    /// Soft: it counts the evaluations the tracker asks for; the neighbour check of a crowd pair (<see cref="FrameEvaluator"/>) can read further pairs inside one of them.</summary>
     public int MaxEvaluationsPerFrame { get; init; } = 24;
 
     /// <summary>Returns a description of the first problem with the values, or null if they are usable.</summary>

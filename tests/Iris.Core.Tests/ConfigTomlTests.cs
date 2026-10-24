@@ -9,7 +9,7 @@ public class ConfigTomlTests
     {
         var c = new SocialConfig { Name = "Squad \"Alpha\" \\ test" };
         c.Players.Add(new PlayerEntry("Nitebird", OverlayColor.Cyan));
-        c.Players.Add(new PlayerEntry("TORIN_DEMPSEY", OverlayColor.Green));
+        c.Players.Add(new PlayerEntry("MARA_QUILLON", OverlayColor.Green));
         c.Orgs.Add(new OrgEntry("J0K3R5", 1, OverlayColor.Red));
         c.Orgs.Add(new OrgEntry("HEKATE", 3, OverlayColor.Blue));
         c.OrgRules.Add(new OrgAttributeRule(AttributeKind.Archetype, "PMC", 2, OverlayColor.Orange));

@@ -71,7 +71,7 @@ public sealed record NameplateDetectorSettings
 
     /// <summary>
     /// A line (the name and the distance) counts as isolated when there is no ink within this many line heights to its left and right
-    /// (a line height is about one character width). Text that is part of a longer text, a sign or a panel fails this.
+    /// (a line height is the height of the line's bounding box, about one character width). Text that is part of a longer text, a sign or a panel fails this.
     /// </summary>
     public double ClearLines { get; init; } = 3.0;
 
@@ -98,8 +98,9 @@ public sealed record NameplateDetectorSettings
 
     /// <summary>
     /// Work budget per frame (single frame <see cref="NameplateDetector.Detect"/>): at most this many different name lines (the upper
-    /// lines of candidate pairs) are evaluated; further pairs are ignored. The tracker has its own budget
-    /// (<see cref="NameplateTrackerSettings.MaxEvaluationsPerFrame"/>).
+    /// lines of candidate pairs) are evaluated; further pairs are ignored. The budget is soft: the neighbour check of a crowd
+    /// pair (<see cref="FrameEvaluator"/>) may read the pairs of neighbouring lines, which are not counted, so a frame can read more
+    /// pairs than this. The tracker has its own budget (<see cref="NameplateTrackerSettings.MaxEvaluationsPerFrame"/>), soft in the same way.
     /// </summary>
     public int MaxCandidateTopsPerFrame { get; init; } = 24;
 
