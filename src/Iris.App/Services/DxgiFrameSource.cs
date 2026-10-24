@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Iris.Core.Live;
 using Iris.Core.Overlay;
@@ -12,6 +13,25 @@ using Vx = Vortice.DXGI;
 
 namespace Iris.App.Services;
 
+/// <summary>What <see cref="DxgiFrameSource.AcquireNextFrame"/> found.</summary>
+public enum FrameWait
+{
+    /// <summary>The screen has a new picture; the frame is held until it is copied or released.</summary>
+    NewFrame,
+
+    /// <summary>Nothing new on screen: the wait timed out, or only the mouse pointer changed. Nothing is held.</summary>
+    Unchanged,
+
+    /// <summary>Nothing can be captured now (see <see cref="FrameArrival.Message"/>); the source sets itself up again by itself.</summary>
+    Unavailable,
+}
+
+/// <summary>
+/// The answer of <see cref="DxgiFrameSource.AcquireNextFrame"/>. <paramref name="FrameMs"/> is the time the picture was presented, on the live clock (NaN unless a new frame),
+/// <paramref name="AccumulatedFrames"/> how many updates of the screen were merged into it (1 normally, more when frames were not picked up in time).
+/// </summary>
+public readonly record struct FrameArrival(FrameWait Status, double FrameMs = double.NaN, int AccumulatedFrames = 0, string? Message = null);
+
 /// <summary>
 /// Captures rectangles of the screen with DXGI Desktop Duplication (Windows 8 and later; IRIS targets Windows 11). The picture stays on the GPU until the
 /// wanted rectangles (the scan region, a fraction of the screen, and the small search patches of the tracking) are copied into small CPU-readable staging textures and
@@ -19,10 +39,12 @@ namespace Iris.App.Services;
 /// <list type="bullet">
 /// <item>The output (monitor) is the one that holds the regions (<see cref="NativeMethods.TryGetMonitorForRect"/>, matched with the output's monitor handle); the Direct3D 11
 /// device is created on that output's adapter, as duplication requires.</item>
-/// <item>One call = <c>AcquireNextFrame</c> (wait up to <see cref="AcquireTimeoutMs"/>), one <c>CopySubresourceRegion</c> for EACH region out of that one frame,
-/// <c>ReleaseFrame</c> at once (the frame is never held across calls), then for each region: map, convert. Every region has its own slot (its own staging texture, whose size
-/// is rounded up to <see cref="StagingBucket"/> pixels so that a patch that changes by a few pixels does not make a new texture, and its own BGR Mat). A wait that times out
-/// (nothing changed on screen) is <see cref="GrabStatus.NoNewFrame"/>: a region that is still where it was keeps its previous picture, any other has none.</item>
+/// <item>Event driven, in three steps the capture loop calls itself: <see cref="AcquireNextFrame"/> (<c>AcquireNextFrame</c>: waits up to <see cref="AcquireTimeoutMs"/> for the screen
+/// to get a new picture, reports its present time and holds the frame), then EITHER <see cref="CopyHeldFrame"/> (one <c>CopySubresourceRegion</c> for EACH region out of that one frame,
+/// <c>ReleaseFrame</c> at once, then for each region: map, convert) OR <see cref="ReleaseHeldFrame"/> (the loop decided not to track this frame). The frame is never held longer than that.
+/// Every region has its own slot (its own staging texture, whose size is rounded up to <see cref="StagingBucket"/> pixels so that a patch that changes by a few pixels does not make a new
+/// texture, and its own BGR Mat). A wait that times out (nothing changed on screen) is <see cref="FrameWait.Unchanged"/>, answered by <see cref="UnchangedRegions"/> as
+/// <see cref="GrabStatus.NoNewFrame"/>: a region that is still where it was keeps its previous picture, any other has none. <see cref="GrabRegions(IReadOnlyList{Rect},bool)"/> is the three steps in one call.</item>
 /// <item>Anything else that goes wrong (access lost: a mode change, another full-screen program, the secure desktop; device removed or reset; the monitor of the game window
 /// changed; an unexpected pixel format) releases everything (device, duplication, staging textures) and the next grab sets up again, no sooner than a short pause after a
 /// failed setup (<see cref="RetryAfterFailureMs"/>).</item>
@@ -36,8 +58,12 @@ namespace Iris.App.Services;
 /// </summary>
 public sealed class DxgiFrameSource : IFrameSource
 {
-    /// <summary>How long a grab waits for the screen to change before it reports "no new frame".</summary>
-    public const int AcquireTimeoutMs = 100;
+    /// <summary>
+    /// How long <see cref="AcquireNextFrame"/> waits for the screen to get a new picture before it reports "unchanged": long enough to be idle on a still screen, short enough
+    /// that the caller looks at its stop and gate flags often. A constant on purpose: it is passed straight to Vortice's call, whose parameter is a uint or an int
+    /// depending on the version, and a constant converts to either.
+    /// </summary>
+    public const int AcquireTimeoutMs = 50;
 
     /// <summary>After a setup that failed, the next try is made no sooner than this (milliseconds).</summary>
     public const long RetryAfterFailureMs = 2000;
@@ -62,6 +88,8 @@ public sealed class DxgiFrameSource : IFrameSource
     private Vd.ID3D11Device? _device;
     private Vd.ID3D11DeviceContext? _context;
     private Vx.IDXGIOutputDuplication? _duplication;
+    private Vx.IDXGIResource? _held;              // the acquired frame that has not been copied or released yet (at most one)
+    private double _heldMs;                       // its time on the live clock
     private IntPtr _monitor;
     private PixelRect _outputBounds;
     private long _retryAtTick;
@@ -90,15 +118,116 @@ public sealed class DxgiFrameSource : IFrameSource
         if (screenRegions.Count == 0)
             return new GrabRegionsResult(GrabStatus.Ok, Array.Empty<Mat?>());
 
-        var first = ToPixelRect(screenRegions[0]);
-        if (!NativeMethods.TryGetMonitorForRect(first, out var monitor, out var bounds))
-            return GrabRegionsResult.Unavailable("the scan region is not on any screen");
-        foreach (var region in screenRegions)
+        // the one-call way: wait for a frame, copy, release (the event-driven loop of the app uses the three calls itself)
+        var arrival = AcquireCore(ToPixelRect(screenRegions[0]), "the scan region");
+        switch (arrival.Status)
+        {
+            case FrameWait.NewFrame:
+                return CopyHeldFrame(screenRegions, firstIsScan);
+            case FrameWait.Unchanged:
+                return UnchangedRegions(screenRegions, firstIsScan);
+            default:
+                return GrabRegionsResult.Unavailable(arrival.Message ?? "screen capture is not available");
+        }
+    }
+
+    /// <summary>
+    /// Waits up to <see cref="AcquireTimeoutMs"/> for the screen of the game window to get a NEW picture (Desktop Duplication wakes the call when the desktop is
+    /// updated) and, when it did, HOLDS that frame: the caller then calls <see cref="CopyHeldFrame"/> (which also releases it) or <see cref="ReleaseHeldFrame"/>, and holds it no
+    /// longer than it needs (the next acquire gives up a frame that was left). <see cref="FrameWait.Unchanged"/> is a wait that timed out, or a wake for a mouse pointer
+    /// update only (no new content: <c>AccumulatedFrames</c> and <c>LastPresentTime</c> both 0): nothing is held then. <see cref="FrameArrival.FrameMs"/> is the time the picture
+    /// was presented, on the live clock (<see cref="FrameClock"/>: the frame's <c>LastPresentTime</c> in QPC ticks, or the clock right after the acquire when that is 0 or implausible).
+    /// <paramref name="window"/> (physical screen pixels) says which monitor to duplicate.
+    /// </summary>
+    public FrameArrival AcquireNextFrame(Rect window)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return AcquireCore(ToPixelRect(window), "the game window");
+    }
+
+    /// <summary>Gives up the frame that <see cref="AcquireNextFrame"/> is holding, without copying anything. Does nothing when none is held.</summary>
+    public void ReleaseHeldFrame()
+    {
+        var resource = _held;
+        _held = null;
+        if (resource is null)
+            return;
+        ReleaseFrameQuietly();
+        resource.Dispose();
+    }
+
+    /// <summary>
+    /// The answer for a still screen: <see cref="GrabStatus.NoNewFrame"/>, where a region that is where it was keeps its previous picture of this setup and any other has none
+    /// (the detection loop reads the previous scan picture again, so that the tracks keep being seen).
+    /// </summary>
+    public GrabRegionsResult UnchangedRegions(IReadOnlyList<Rect> regions, bool firstIsScan)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var assigned = AssignSlots(regions, firstIsScan);
+        var previous = new List<Mat?>(regions.Count);
+        for (var i = 0; i < regions.Count; i++)
+        {
+            var slot = assigned[i];
+            var keep = slot is { HasPicture: true, Bgr: { IsDisposed: false } bgr } && slot.Region == regions[i] && !bgr.Empty();
+            previous.Add(keep ? slot.Bgr : null);
+        }
+
+        return new GrabRegionsResult(
+            GrabStatus.NoNewFrame, previous, previous.Exists(m => m is not null) ? null : "waiting for the first screen picture", StopwatchClock.Shared.NowMs);
+    }
+
+    /// <summary>
+    /// Copies <paramref name="regions"/> (physical screen pixels) out of the frame <see cref="AcquireNextFrame"/> holds and releases it. The result's
+    /// <see cref="GrabRegionsResult.FrameMs"/> is that frame's time. Nothing held, or a region that is not completely on the duplicated screen, is
+    /// <see cref="GrabStatus.Unavailable"/> (and the frame is released).
+    /// </summary>
+    public GrabRegionsResult CopyHeldFrame(IReadOnlyList<Rect> regions, bool firstIsScan)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var resource = _held;
+        if (resource is null || _duplication is null)
+        {
+            ReleaseHeldFrame();
+            return GrabRegionsResult.Unavailable("no screen frame was held");
+        }
+
+        var frameMs = _heldMs;
+        if (regions.Count == 0)
+        {
+            ReleaseHeldFrame();
+            return new GrabRegionsResult(GrabStatus.Ok, Array.Empty<Mat?>(), null, frameMs);
+        }
+
+        var bounds = _outputBounds;
+        foreach (var region in regions)
         {
             var rect = ToPixelRect(region);
             if (rect.X < bounds.X || rect.Y < bounds.Y || rect.Right > bounds.Right || rect.Bottom > bounds.Bottom)
+            {
+                ReleaseHeldFrame();
                 return GrabRegionsResult.Unavailable("a capture region is not completely on one screen");
+            }
         }
+
+        try
+        {
+            return CopyRegions(resource, frameMs, regions, bounds, firstIsScan); // releases the frame
+        }
+        catch (SharpGenException ex)
+        {
+            ReleaseHeldFrame();
+            Release();
+            _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
+            return GrabRegionsResult.Unavailable("screen capture failed and will be set up again: " + ex.Message);
+        }
+    }
+
+    /// <summary>Finds (and when needed sets up) the duplication of the monitor that holds <paramref name="probe"/>, then waits for and acquires the next frame.</summary>
+    private FrameArrival AcquireCore(PixelRect probe, string what)
+    {
+        ReleaseHeldFrame(); // a frame that an earlier call left unreleased
+        if (!NativeMethods.TryGetMonitorForRect(probe, out var monitor, out var bounds))
+            return new FrameArrival(FrameWait.Unavailable, Message: what + " is not on any screen");
 
         // the game window moved to another screen, or the screen's mode changed: set up again
         if (_duplication is not null && (monitor != _monitor || bounds != _outputBounds))
@@ -109,30 +238,31 @@ public sealed class DxgiFrameSource : IFrameSource
             if (_duplication is null)
             {
                 if (Environment.TickCount64 < _retryAtTick)
-                    return GrabRegionsResult.Unavailable("screen capture is waiting to retry after a failed setup");
+                    return new FrameArrival(FrameWait.Unavailable, Message: "screen capture is waiting to retry after a failed setup");
                 var problem = SetUp(monitor, bounds);
                 if (problem is not null)
                 {
                     Release();
                     _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
-                    return GrabRegionsResult.Unavailable(problem);
+                    return new FrameArrival(FrameWait.Unavailable, Message: problem);
                 }
             }
 
-            return CopyRegions(screenRegions, bounds, firstIsScan);
+            return Acquire();
         }
         catch (SharpGenException ex)
         {
             // for example DXGI_ERROR_ACCESS_LOST or DEVICE_REMOVED thrown by a call that checks its result, or DuplicateOutput refused
             Release();
             _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
-            return GrabRegionsResult.Unavailable("screen capture failed and will be set up again: " + ex.Message);
+            return new FrameArrival(FrameWait.Unavailable, Message: "screen capture failed and will be set up again: " + ex.Message);
         }
     }
 
     /// <inheritdoc />
     public void Release()
     {
+        ReleaseHeldFrame();
         foreach (var slot in AllSlots())
         {
             slot.Staging?.Dispose();
@@ -269,15 +399,24 @@ public sealed class DxgiFrameSource : IFrameSource
         return null;
     }
 
-    private GrabRegionsResult CopyRegions(IReadOnlyList<Rect> regions, PixelRect outputBounds, bool firstIsScan)
+    /// <summary>
+    /// <c>AcquireNextFrame</c> on the duplication. A frame with new content is HELD (<see cref="_held"/>, <see cref="_heldMs"/>); a timeout, or a wake with no new content
+    /// (a mouse pointer update only), is "unchanged"; a failure releases everything and the next acquire sets up again.
+    /// </summary>
+    private FrameArrival Acquire()
     {
         var duplication = _duplication!;
         // Depending on the Vortice version AcquireNextFrame returns the Result or throws a SharpGenException for a failed one (a timeout included): both are handled here.
         Result acquired;
         Vx.IDXGIResource? resource = null;
+        long presentTicks = 0;
+        long accumulated = 0;
         try
         {
-            acquired = duplication.AcquireNextFrame(AcquireTimeoutMs, out _, out resource);
+            // AcquireTimeoutMs is a constant: it converts to the uint (or int) parameter of this Vortice version
+            acquired = duplication.AcquireNextFrame(AcquireTimeoutMs, out var info, out resource);
+            presentTicks = info.LastPresentTime; // QueryPerformanceCounter ticks of the last present, 0 when only the mouse pointer changed
+            accumulated = info.AccumulatedFrames; // how many updates were merged into this frame
         }
         catch (SharpGenException ex)
         {
@@ -288,18 +427,7 @@ public sealed class DxgiFrameSource : IFrameSource
         if (acquired == Vx.ResultCode.WaitTimeout)
         {
             resource?.Dispose();
-            // nothing changed on screen: a region that is where it was keeps its previous picture of this setup, any other has none
-            var assigned = AssignSlots(regions, firstIsScan);
-            var previous = new List<Mat?>(regions.Count);
-            for (var i = 0; i < regions.Count; i++)
-            {
-                var slot = assigned[i];
-                var keep = slot is { HasPicture: true, Bgr: { IsDisposed: false } bgr } && slot.Region == regions[i] && !bgr.Empty();
-                previous.Add(keep ? slot.Bgr : null);
-            }
-
-            return new GrabRegionsResult(
-                GrabStatus.NoNewFrame, previous, previous.Exists(m => m is not null) ? null : "waiting for the first screen picture", StopwatchClock.Shared.NowMs);
+            return new FrameArrival(FrameWait.Unchanged); // nothing changed on screen
         }
 
         if (acquired.Failure || resource is null)
@@ -309,12 +437,32 @@ public sealed class DxgiFrameSource : IFrameSource
             var lost = acquired == Vx.ResultCode.AccessLost;
             Release();
             _retryAtTick = Environment.TickCount64 + (lost ? 0 : RetryAfterFailureMs);
-            return GrabRegionsResult.Unavailable(lost ? "screen capture was lost and is being set up again" : "screen capture failed: " + acquired);
+            return new FrameArrival(FrameWait.Unavailable, Message: lost ? "screen capture was lost and is being set up again" : "screen capture failed: " + acquired);
         }
 
-        // the time of this frame, and what IRIS's own windows looked like at that moment: both are taken now, before the copies (which take time), so that the masks
-        // are the ones of the picture and not of a later redraw
-        var frameMs = StopwatchClock.Shared.NowMs;
+        if (accumulated == 0 && presentTicks == 0)
+        {
+            // only the mouse pointer moved or changed shape: no new picture
+            _held = resource;
+            ReleaseHeldFrame();
+            return new FrameArrival(FrameWait.Unchanged);
+        }
+
+        // the time of the picture: when it was presented (the clock reading right after the acquire when the stamp is 0 or not plausible); never earlier than the previous frame's
+        var acquiredAtMs = StopwatchClock.Shared.NowMs;
+        var frameMs = FrameClock.FrameMs(presentTicks, StopwatchClock.Shared.OriginTimestamp, Stopwatch.Frequency, acquiredAtMs);
+        _heldMs = frameMs;
+        _held = resource;
+        return new FrameArrival(FrameWait.NewFrame, frameMs, (int)Math.Min(accumulated, int.MaxValue));
+    }
+
+    /// <summary>
+    /// Copies the regions out of the held frame <paramref name="resource"/> (taken at <paramref name="frameMs"/>), releases it, then reads the copies back.
+    /// </summary>
+    private GrabRegionsResult CopyRegions(Vx.IDXGIResource resource, double frameMs, IReadOnlyList<Rect> regions, PixelRect outputBounds, bool firstIsScan)
+    {
+        // what IRIS's own windows looked like at the time of the picture: taken now, before the copies (which take time), so that the masks are the ones of the picture and
+        // not of a later redraw
         var windows = CaptureExclusion.VisibleUnexcludedWindows();
         var brackets = windows.Count == 0 ? Array.Empty<CaptureExclusion.BracketMask[]>() : CaptureExclusion.RecentBrackets(frameMs);
         var slots = AssignSlots(regions, firstIsScan);
@@ -326,6 +474,7 @@ public sealed class DxgiFrameSource : IFrameSource
             if (description.Width != (uint)outputBounds.Width || description.Height != (uint)outputBounds.Height)
             {
                 // start from scratch at the next grab (no sooner than the retry pause, so this cannot loop tightly)
+                ReleaseHeldFrame();
                 Release();
                 _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
                 return GrabRegionsResult.Unavailable($"the screen picture is {description.Width}x{description.Height}, not the {(int)outputBounds.Width}x{(int)outputBounds.Height} of the monitor (a rotated screen is not supported)");
@@ -333,6 +482,7 @@ public sealed class DxgiFrameSource : IFrameSource
 
             if (description.Format != Vx.Format.B8G8R8A8_UNorm && description.Format != Vx.Format.R8G8B8A8_UNorm)
             {
+                ReleaseHeldFrame();
                 Release();
                 _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
                 return GrabRegionsResult.Unavailable($"the screen picture has pixel format {description.Format}, which IRIS cannot read (only 8 bit B8G8R8A8 and R8G8B8A8 are supported)");
@@ -353,8 +503,7 @@ public sealed class DxgiFrameSource : IFrameSource
         }
         finally
         {
-            ReleaseFrameQuietly(); // the frame is never kept across calls
-            resource.Dispose();
+            ReleaseHeldFrame(); // the frame is never kept across calls (releases it on the duplication and disposes the resource)
         }
 
         var images = new List<Mat?>(regions.Count);

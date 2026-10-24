@@ -17,13 +17,15 @@ namespace Iris.App.Services;
 
 /// <summary>
 /// The live detection of nameplates, in two steps: DETECT (what is on screen, and what is it called: OCR, 5 times a second) and TRACK (where is it now: template matching,
-/// 15 to 120 times a second). Threads, none of them the UI thread:
+/// on every new frame of the game, at most <see cref="AppSettings.NameplateTrackingFps"/> times a second or with no cap for Max). Threads, none of them the UI thread:
 /// <list type="number">
 /// <item><b>Capture and tracking thread</b> ("IRIS tracking"). The ONLY owner of the screen duplication (<see cref="DxgiFrameSource"/>). While <see cref="OverlayController.Gate"/> is active
-/// (Star Citizen in front and borderless, the overlay not disabled) it ticks <see cref="AppSettings.NameplateTrackingFps"/> times a second. Each tick it takes a finished
+/// (Star Citizen in front and borderless, the overlay not disabled) it is EVENT DRIVEN: it waits in <c>AcquireNextFrame</c> for the screen's next new picture and stamps it with the time
+/// it was presented (<see cref="FrameClock"/>); a frame that comes sooner than one tracking period after the last tracked one (<see cref="TrackingCap"/>) is released unused. For a
+/// frame that is tracked it takes a finished
 /// detection if there is one (<see cref="DetectionResultSlot"/>; a detection always wins: <see cref="PlateTemplateTracker.ApplyDetection"/>), asks the tracker which small search
-/// patches it needs (<see cref="PlateTemplateTracker.Plan"/>), copies those patches, and EVERY 200 ms ALSO the whole detection scan region, out of ONE acquired frame
-/// (<see cref="DxgiFrameSource.GrabRegions"/>). The scan picture is copied into the <see cref="DetectionMailbox"/> for the detection thread; the patches go to
+/// patches it needs (<see cref="PlateTemplateTracker.Plan"/>), copies those patches, and at most every 200 ms ALSO the whole detection scan region, out of that ONE acquired frame
+/// (<see cref="DxgiFrameSource.CopyHeldFrame"/>). A still screen holds the brackets where they are. The scan picture is copied into the <see cref="DetectionMailbox"/> for the detection thread; the patches go to
 /// <see cref="PlateTemplateTracker.Update"/> (template matching, velocity); the resulting <see cref="LiveSnapshot"/> goes into the <see cref="LiveSnapshotHub"/>. When the
 /// detection thread is still busy with the last picture that slot is skipped: OCR can never hold up the tracking.</item>
 /// <item><b>Detection thread</b> ("IRIS detection", below normal priority so the game wins). Waits for a picture in the mailbox, runs the <see cref="LiveDetectionEngine"/> on it
@@ -48,6 +50,13 @@ public sealed class LiveDetectionService : IDisposable
     private readonly Dispatcher _dispatcher;
     private readonly IMonotonicClock _clock = StopwatchClock.Shared; // the renderer reads the same one
     private static readonly double[] EngineRetryBackoffMs = { 5000, 30000, 300000 }; // after a failed start: 5 s, 30 s, then 5 min
+
+    /// <summary>On a still screen the plates are held, and a due detection reads the previous picture again, every this many milliseconds (the wait for the screen is the pause between).</summary>
+    private const double HoldStepMs = 50.0;
+
+    private const int UnavailablePauseMs = 20;   // nothing can be captured: look again in 20 ms
+    private const int ErrorPauseMs = 50;         // a step threw: do not loop tightly
+    private const int TooSmallPauseMs = 100;     // the game window is too small to scan
 
     private readonly LiveSettings _live = LiveSettings.Default;
 
@@ -80,6 +89,9 @@ public sealed class LiveDetectionService : IDisposable
     private LiveSnapshot _lastNotified = LiveSnapshot.Empty;
     private double _lastPublishMs;
     private double _nextDetectMs;
+    private double _lastFrameMs;       // the time of the newest frame (or hold step) so far: frame times never go back
+    private double _lastTrackedMs = double.NaN; // the time of the last tracked frame (NaN: none yet in this run)
+    private double _lastStepMs;        // the clock when the last frame was tracked or the last hold step ran
     private string? _lastCaptureProblem;
     private bool _tooSmallLogged;
 
@@ -163,7 +175,6 @@ public sealed class LiveDetectionService : IDisposable
         var running = false;
         var released = true;
         var idleSinceMs = 0.0;
-        var nextTickMs = 0.0;
 
         try
         {
@@ -198,38 +209,37 @@ public sealed class LiveDetectionService : IDisposable
                     StartRun(gate, now);
                     running = true;
                     released = false;
-                    nextTickMs = now;
                 }
 
-                if (now < nextTickMs)
-                {
-                    _wake.Wait(Math.Max(1, (int)Math.Ceiling(nextTickMs - now)));
-                    continue;
-                }
-
+                // Event driven: the wait for the screen's next new picture is INSIDE Step (AcquireNextFrame), so this loop runs once per new frame of the game (or once per
+                // timeout on a still screen), not on a timer. Step decides whether the frame is tracked (the cap) and does the work.
+                var pause = 0;
                 try
                 {
-                    Tick(gate, now);
+                    pause = Step(gate);
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
+                    _source?.ReleaseHeldFrame(); // never keep a frame across a failed step
                     var text = ex.GetType().Name + ": " + ex.Message;
                     if (text != _lastCaptureProblem)
                     {
                         _lastCaptureProblem = text;
-                        Log("Live detection: a tracking tick failed (" + text + "); it is tried again at the next one");
+                        Log("Live detection: a tracking step failed (" + text + "); it is tried again at the next one");
                     }
+
+                    pause = ErrorPauseMs; // a failing step must not become a tight loop
                 }
 
-                // the next tick; a tick that ran late is not followed by a burst of catch-up ticks
-                var tickMs = 1000.0 / TrackingFps();
-                var after = _clock.NowMs;
-                nextTickMs += tickMs;
-                if (nextTickMs <= after)
-                    nextTickMs = after;
+                if (pause > 0)
+                    _wake.Wait(pause); // a change of the gate wakes it at once
 
+                var after = _clock.NowMs;
                 if (_stats.IsDue(after, _live.SummaryEveryMs))
-                    Log(_stats.TakeSummary(after, _confirmedTracks));
+                {
+                    Log(_stats.TakeSummary(after, _confirmedTracks, TrackingCapFps()));
+                    LogRenderSummary(); // the brackets window's "Overlay render" line goes right after it, also once a minute
+                }
             }
         }
         catch (Exception ex)
@@ -256,8 +266,8 @@ public sealed class LiveDetectionService : IDisposable
         }
     }
 
-    private int TrackingFps() =>
-        Math.Clamp(_services.Settings.NameplateTrackingFps, AppSettings.NameplateTrackingFpsMin, AppSettings.NameplateTrackingFpsMax);
+    /// <summary>The tracking cap in frames a second (<see cref="AppSettings.TrackingCapFps"/>), 0 for Max: every new frame is tracked. Read at every frame: a saved change applies at once.</summary>
+    private int TrackingCapFps() => _services.Settings.TrackingCapFps;
 
     private void StartRun(CaptureGate gate, double now)
     {
@@ -267,21 +277,27 @@ public sealed class LiveDetectionService : IDisposable
         _stats = new LiveStats(now);
         _confirmedTracks = 0;
         _nextDetectMs = now;
+        _lastFrameMs = now;
+        _lastTrackedMs = double.NaN;
+        _lastStepMs = now;
         _lastCaptureProblem = null;
         _tooSmallLogged = false;
         _geometry = null;
         NativeMethods.TimeBeginPeriod(1);
         var bounds = gate.Bounds;
+        var cap = TrackingCapFps();
         Log(string.Format(
             CultureInfo.InvariantCulture,
-            "Live detection started (game window {0:0}x{1:0}; names read {2:0.#} times a second, plates tracked {3} times a second, brackets drawn at monitor refresh)",
-            bounds.Width, bounds.Height, _live.DetectionRateHz, TrackingFps()));
+            "Live detection started (game window {0:0}x{1:0}; names read {2:0.#} times a second, plates tracked on every new frame of the game{3}, brackets drawn at monitor refresh)",
+            bounds.Width, bounds.Height, _live.DetectionRateHz, cap > 0 ? $", at most {cap} times a second" : " with no cap (Max)"));
     }
 
     private void StopRun(double now)
     {
         NativeMethods.TimeEndPeriod(1);
-        Log(_stats.TakeSummary(now, _confirmedTracks));
+        _source?.ReleaseHeldFrame();
+        Log(_stats.TakeSummary(now, _confirmedTracks, TrackingCapFps()));
+        LogRenderSummary();
         _epoch = _epoch + 1; // what the detection thread is reading now belongs to the run that ended
         _tracker!.Reset();
         _mailbox.Clear();
@@ -293,8 +309,107 @@ public sealed class LiveDetectionService : IDisposable
         Log("Live detection stopped (the game is not in front and borderless, or the overlay is disabled)");
     }
 
-    /// <summary>One tracking tick: take a finished detection, copy the patches (and now and then the scan region), match, publish.</summary>
-    private void Tick(CaptureGate gate, double now)
+    /// <summary>Why a <see cref="Process"/> runs: a new frame of the game (the held frame is copied), a still screen (the previous pictures are read again), or nothing could be captured.</summary>
+    private enum StepKind
+    {
+        NewFrame,
+        Unchanged,
+        NoPicture,
+    }
+
+    /// <summary>
+    /// One step of the event-driven loop: wait for the screen's next NEW picture (<see cref="DxgiFrameSource.AcquireNextFrame"/>, up to
+    /// <see cref="DxgiFrameSource.AcquireTimeoutMs"/>), and for a new frame decide whether to track it (<see cref="TrackingCap"/>: at least 1000 / cap ms, less 1 ms, since the
+    /// last tracked frame; Max tracks every one); a frame that is not tracked is released at once and the loop waits again. The time of a frame is its own present time
+    /// (<see cref="FrameClock"/>), never earlier than the frame before. A still screen (a timeout, or a wake for the mouse pointer only) is a "hold" step every
+    /// <see cref="HoldStepMs"/>: the brackets hold where they are, the plates that were found stay seen, and the previous scan picture is read again when a detection is due.
+    /// Returns how long to pause before the next step in milliseconds (0: none, the wait for the screen is the pause).
+    /// </summary>
+    private int Step(CaptureGate gate)
+    {
+        var bounds = gate.Bounds;
+        var width = (int)Math.Round(bounds.Width);
+        var height = (int)Math.Round(bounds.Height);
+        if (!EnsureGeometry(width, height))
+        {
+            Publish(LiveSnapshot.Empty);
+            return TooSmallPauseMs;
+        }
+
+        var source = _source!;
+        var stats = _stats;
+        var arrival = source.AcquireNextFrame(new Rect((int)Math.Round(bounds.X), (int)Math.Round(bounds.Y), width, height));
+        switch (arrival.Status)
+        {
+            case FrameWait.NewFrame:
+            {
+                var frameMs = Math.Max(arrival.FrameMs, _lastFrameMs);
+                _lastFrameMs = frameMs;
+                stats.AddGameFrame(frameMs);
+                if (!TrackingCap.ShouldTrack(frameMs, _lastTrackedMs, TrackingCapFps()))
+                {
+                    source.ReleaseHeldFrame(); // not this one: wait for the next
+                    return 0;
+                }
+
+                var sinceLast = double.IsNaN(_lastTrackedMs) ? 1000.0 / 60.0 : frameMs - _lastTrackedMs;
+                _lastTrackedMs = frameMs;
+                _lastStepMs = _clock.NowMs;
+                _lastCaptureProblem = null;
+                Process(gate, frameMs, Math.Max(1.0, sinceLast), StepKind.NewFrame, null);
+                stats.AddTrackedFrame();
+                return 0;
+            }
+
+            case FrameWait.Unchanged:
+            {
+                var now = _clock.NowMs;
+                if (now - _lastStepMs < HoldStepMs)
+                    return 0; // woken early (the mouse pointer): the next wait is the pause
+                _lastStepMs = now;
+                _lastFrameMs = Math.Max(_lastFrameMs, now); // the next frame is never stamped earlier than this step
+                _lastCaptureProblem = null;
+                Process(gate, now, HoldStepMs, StepKind.Unchanged, null);
+                return 0;
+            }
+
+            default:
+            {
+                var now = _clock.NowMs;
+                _lastStepMs = now;
+                _lastFrameMs = Math.Max(_lastFrameMs, now);
+                Process(gate, now, HoldStepMs, StepKind.NoPicture, arrival.Message);
+                return UnavailablePauseMs;
+            }
+        }
+    }
+
+    /// <summary>The scan geometry for a window of this size (made again when the size changes). False, with one log line, when the window is too small to scan.</summary>
+    private bool EnsureGeometry(int width, int height)
+    {
+        if (_geometry is not null && _geometry.Matches(width, height))
+            return true;
+        if (!ScanGeometry.TryCreate(width, height, NameplateDetectorSettings.Default, out var created))
+        {
+            if (!_tooSmallLogged)
+            {
+                _tooSmallLogged = true;
+                Log($"Live detection: the game window ({width}x{height}) is too small to scan");
+            }
+
+            return false;
+        }
+
+        _geometry = created;
+        _tooSmallLogged = false;
+        return true;
+    }
+
+    /// <summary>
+    /// The work for one step at <paramref name="timeMs"/> (the frame's own time for a new frame): take a finished detection, copy the patches (and now and then the scan region)
+    /// out of the held frame, match, publish.
+    /// </summary>
+    private void Process(CaptureGate gate, double timeMs, double tickMs, StepKind kind, string? problem)
     {
         var tracker = _tracker!;
         var stats = _stats;
@@ -303,27 +418,7 @@ public sealed class LiveDetectionService : IDisposable
         var height = (int)Math.Round(bounds.Height);
         var windowX = (int)Math.Round(bounds.X);
         var windowY = (int)Math.Round(bounds.Y);
-
-        if (_geometry is null || !_geometry.Matches(width, height))
-        {
-            if (!ScanGeometry.TryCreate(width, height, NameplateDetectorSettings.Default, out var created))
-            {
-                if (!_tooSmallLogged)
-                {
-                    _tooSmallLogged = true;
-                    Log($"Live detection: the game window ({width}x{height}) is too small to scan");
-                }
-
-                Publish(LiveSnapshot.Empty);
-                return;
-            }
-
-            _geometry = created;
-            _tooSmallLogged = false;
-        }
-
         var geometry = _geometry!;
-        var tickMs = 1000.0 / TrackingFps();
         var work = 0L; // Stopwatch ticks of tracking work (without the wait for the screen)
         var mark = Stopwatch.GetTimestamp();
 
@@ -331,19 +426,20 @@ public sealed class LiveDetectionService : IDisposable
         if (_results.TryTake(out var result) && result is not null)
         {
             if (result.Epoch == _epoch && result.WindowWidth == width && result.WindowHeight == height)
-                tracker.ApplyDetection(result, now); // takes over the seeds
+                tracker.ApplyDetection(result, _clock.NowMs); // takes over the seeds
             else
                 result.Dispose(); // of a run that ended, or of another window size
         }
 
-        // 2. what to copy: the scan region when a detection is due and the detection thread is free, and a search patch for every plate that is tracked
-        var plan = tracker.Plan(now, tickMs, width, height);
-        var detectDue = now >= _nextDetectMs;
+        // 2. what to copy: the scan region when a detection is due and the detection thread is free (a new frame, or the previous picture on a still screen),
+        // and a search patch for every plate that is tracked
+        var plan = tracker.Plan(timeMs, tickMs, width, height);
+        var detectDue = kind != StepKind.NoPicture && timeMs >= _nextDetectMs;
         var detectSlot = detectDue && _mailbox.IsFree;
         if (detectDue && !detectSlot)
         {
             stats.AddSkippedSlots(1); // the detection thread is still reading the last picture: this slot is skipped, tracking goes on
-            AdvanceDetectSlot(now, countMissed: false);
+            AdvanceDetectSlot(timeMs, countMissed: false);
         }
 
         var regions = new List<Rect>(plan.Count + 1);
@@ -353,10 +449,14 @@ public sealed class LiveDetectionService : IDisposable
             regions.Add(new Rect(item.Patch.X + windowX, item.Patch.Y + windowY, item.Patch.Width, item.Patch.Height));
         work += Stopwatch.GetTimestamp() - mark;
 
-        // 3. ONE frame, all regions
-        var grab = _source!.GrabRegions(regions, detectSlot); // the scan region has its own staging slot, the patches share a stable pool
-        // the time of the picture: the frame's own, taken right after it was acquired (the copies after it took time); one clock for everything
-        var captured = double.IsNaN(grab.FrameMs) ? _clock.NowMs : grab.FrameMs;
+        // 3. ONE frame, all regions (the scan region has its own staging slot, the patches share a stable pool); the frame is released by the copy
+        GrabRegionsResult grab = kind switch
+        {
+            StepKind.NewFrame => _source!.CopyHeldFrame(regions, detectSlot),
+            StepKind.Unchanged => _source!.UnchangedRegions(regions, detectSlot),
+            _ => GrabRegionsResult.Unavailable(problem ?? "screen capture is not available"),
+        };
+        var captured = timeMs; // the time of the picture: the frame's own present time; one clock for everything
         mark = Stopwatch.GetTimestamp();
 
         TrackTick tick;
@@ -365,7 +465,7 @@ public sealed class LiveDetectionService : IDisposable
             stats.AddUnavailable();
             if (grab.Message is { } message && message != _lastCaptureProblem)
             {
-                _lastCaptureProblem = message; // logged when it changes, not at every tick
+                _lastCaptureProblem = message; // logged when it changes, not at every step
                 Log("Live detection: no picture (" + message + ")");
             }
 
@@ -373,7 +473,6 @@ public sealed class LiveDetectionService : IDisposable
         }
         else
         {
-            _lastCaptureProblem = null;
             var first = detectSlot ? 1 : 0;
             if (detectSlot)
             {
@@ -391,7 +490,7 @@ public sealed class LiveDetectionService : IDisposable
         // 4. publish what is known now; the renderer moves it on to the time of each monitor frame
         Publish(tracker.Snapshot(captured));
         work += Stopwatch.GetTimestamp() - mark;
-        if (plan.Count > 0)
+        if (plan.Count > 0 && kind == StepKind.NewFrame)
             stats.AddTrackTick(work * 1000.0 / Stopwatch.Frequency, tick.Attempts, tick.Found);
     }
 
@@ -585,6 +684,21 @@ public sealed class LiveDetectionService : IDisposable
         Interlocked.Exchange(ref _notifyPending, 0);
         if (!_disposed)
             _overlay.LiveChanged();
+    }
+
+    /// <summary>
+    /// Capture thread: asks the UI thread to write the brackets window's "Overlay render" line (its frames, redraws and cost since the last time) to the log. Called right after the
+    /// once-a-minute "Live detection" line (and the one at the end of a run), so the two lines come together and the render statistics are not written at any other time.
+    /// </summary>
+    private void LogRenderSummary()
+    {
+        if (_disposed)
+            return;
+        _dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            if (!_disposed)
+                _overlay.LogRenderSummary();
+        }));
     }
 
     private void Log(string text) => _services.Log.Write(_services.Clock.UtcNow, text);
