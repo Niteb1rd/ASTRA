@@ -33,6 +33,27 @@ public sealed record NameplateTrackerSettings
     /// </summary>
     public double ConfirmSpanMs { get; init; } = 300.0;
 
+    /// <summary>
+    /// STABLE BOX: the identical reads that confirm a name must also have the same box WIDTH, within this many pixels (measured on a frame
+    /// <see cref="ReferenceFrameHeight"/> high, scaled to the real frame height). While a plate types its name out the box grows by a letter
+    /// (about 9 px at 1440p for an average letter) per stage. On the 13 clips (10 fps), for the labeled names that a track read at least twice,
+    /// the widths of those reads spread (max minus min) by 0 or 1 px in 92 % of the cases, by 2 px in 4 % and by 3 px or more in 4 % (a plate that moves toward or away from
+    /// the camera changes its size a little: "TITANIUM" went 69, 73, 72 px in three frames). 3 px, a third of an average letter, keeps the settled
+    /// names and still rejects the growth of a typed-out name by a letter or more.
+    /// </summary>
+    public double StableWidthPx { get; init; } = 3.0;
+
+    /// <summary>The frame height <see cref="StableWidthPx"/> is given for.</summary>
+    public int ReferenceFrameHeight { get; init; } = 1440;
+
+    /// <summary>
+    /// CORRECTIONS: once a name is confirmed, only the votes of the last this-many milliseconds count. When another name meets the confirmation
+    /// rule there (enough identical reads of one box width, more reads than the confirmed name has in the window), the confirmed name switches
+    /// to it. A confirmed track whose latest read disagrees with its name is read at every frame (not only every
+    /// <see cref="ConfirmedRereadMs"/>) until it settles.
+    /// </summary>
+    public double CorrectionWindowMs { get; init; } = 4000.0;
+
     /// <summary>A track that no candidate matched for this long is closed.</summary>
     public double ExpireMs { get; init; } = 1000.0;
 
@@ -88,8 +109,10 @@ public sealed record NameplateTrackerSettings
     {
         if (ConfirmReads < 1)
             return "ConfirmReads must be at least 1.";
-        if (ExpireMs < 0 || RecheckMs < 0 || ConfirmedRereadMs < 0 || ConfirmSpanMs < 0)
+        if (ExpireMs < 0 || RecheckMs < 0 || ConfirmedRereadMs < 0 || ConfirmSpanMs < 0 || CorrectionWindowMs < 0)
             return "The times must not be negative.";
+        if (StableWidthPx < 0 || ReferenceFrameHeight < 1)
+            return "StableWidthPx must not be negative and ReferenceFrameHeight must be at least 1.";
         if (MaxFailStreak < 1 || MaxTracks < 1 || MaxEvaluationsPerFrame < 1)
             return "MaxFailStreak, MaxTracks and MaxEvaluationsPerFrame must be at least 1.";
         if (MoveLines <= 0 || WidthTolerance < 0 || SizeChange < 0)
@@ -126,6 +149,8 @@ public sealed class NameplateTrack
     private readonly List<NameRead> _reads = new();
     private readonly Dictionary<string, long> _firstReadFrame = new(StringComparer.Ordinal);
     private readonly List<(string Name, long Frame, double Ms)> _confirmations = new();
+    private readonly List<NameVote> _votes = new();
+    private readonly List<NameCorrection> _corrections = new();
 
     internal NameplateTrack(int id, Rect top, Rect bottom, long frame, double timeMs)
     {
@@ -198,7 +223,11 @@ public sealed class NameplateTrack
         }
     }
 
-    /// <summary>The confirmed name now: read at least <see cref="NameplateTrackerSettings.ConfirmReads"/> times and more often than any other. Null before, and again null if a rival catches up.</summary>
+    /// <summary>
+    /// The confirmed name now: read identically at least <see cref="NameplateTrackerSettings.ConfirmReads"/> times at one box width, over at least
+    /// <see cref="NameplateTrackerSettings.ConfirmSpanMs"/>, and more often than any other. Null before the first confirmation. Once set it is never
+    /// taken back, only SWITCHED to another name that meets the rule over the recent window (<see cref="Corrections"/>).
+    /// </summary>
     public string? ConfirmedName { get; private set; }
 
     /// <summary>The frame at which <see cref="ConfirmedName"/> was confirmed.</summary>
@@ -206,8 +235,17 @@ public sealed class NameplateTrack
 
     public double? ConfirmedMs { get; private set; }
 
-    /// <summary>Every confirmation the track made, in order (a track normally has at most one).</summary>
+    /// <summary>Every confirmation the track made, in order: the first one, and the new name of every correction (a track normally has one).</summary>
     public IReadOnlyList<(string Name, long Frame, double Ms)> Confirmations => _confirmations;
+
+    /// <summary>
+    /// Every time the confirmed name switched to another name, in order. A track with corrections showed a name that was later found wrong:
+    /// the app updates the panel when <see cref="TrackerUpdate.Corrected"/> lists the track.
+    /// </summary>
+    public IReadOnlyList<NameCorrection> Corrections => _corrections;
+
+    /// <summary>True when the latest vote disagrees with the confirmed name (the track is read at every frame until it settles).</summary>
+    public bool IsDisputed { get; private set; }
 
     /// <summary>Per name: the frame of its first vote.</summary>
     public IReadOnlyDictionary<string, long> FirstReadFrame => _firstReadFrame;
@@ -248,8 +286,11 @@ public sealed class NameplateTrack
 
     internal double CenterY => Top.Y + Top.Height / 2.0;
 
-    /// <summary>Adds a vote; returns true when this vote made a name the confirmed one.</summary>
-    internal bool Vote(string name, long frame, double timeMs, int confirmReads, double confirmSpanMs)
+    /// <summary>
+    /// Adds a vote (a name read surely enough, on a name line <paramref name="width"/> pixels wide) and tells what it changed: nothing, the
+    /// first confirmation, or a correction of the confirmed name.
+    /// </summary>
+    internal VoteOutcome Vote(string name, long frame, double timeMs, int width, NameplateTrackerSettings settings, double widthTolerance)
     {
         var index = _reads.FindIndex(r => string.Equals(r.Name, name, StringComparison.Ordinal));
         if (index < 0)
@@ -264,37 +305,121 @@ public sealed class NameplateTrack
         }
 
         ReadCount++;
+        _votes.Add(new NameVote(name, timeMs, width));
+        if (ConfirmedName is not null)
+            _votes.RemoveAll(v => v.Ms < timeMs - settings.CorrectionWindowMs); // older votes no longer count, now or later
 
-        NameRead? best = null;
-        foreach (var read in _reads)
-            if (best is null || read.Count > best.Count)
-                best = read;
+        var outcome = VoteOutcome.None;
+        var trusted = Trusted(timeMs, settings, widthTolerance);
+        if (trusted is not null && !string.Equals(trusted, ConfirmedName, StringComparison.Ordinal))
+        {
+            if (ConfirmedName is not null)
+            {
+                _corrections.Add(new NameCorrection(ConfirmedName, trusted, frame, timeMs));
+                outcome = VoteOutcome.Corrected;
+            }
+            else
+            {
+                outcome = VoteOutcome.Confirmed;
+            }
 
-        var rival = 0;
-        foreach (var read in _reads)
-            if (!ReferenceEquals(read, best) && !string.Equals(read.Name, best!.Name, StringComparison.Ordinal) && read.Count > rival)
-                rival = read.Count;
+            ConfirmedName = trusted;
+            ConfirmedFrame = frame;
+            ConfirmedMs = timeMs;
+            _confirmations.Add((trusted, frame, timeMs));
+        }
 
-        var trusted = best!.Count >= confirmReads && best.Count > rival && best.LastMs - best.FirstMs >= confirmSpanMs ? best.Name : null;
-        if (string.Equals(trusted, ConfirmedName, StringComparison.Ordinal))
-            return false;
-        ConfirmedName = trusted; // a rival that catches up takes the confirmation back
-        if (trusted is null)
-            return false;
-        ConfirmedFrame = frame;
-        ConfirmedMs = timeMs;
-        _confirmations.Add((trusted, frame, timeMs));
-        return true;
+        IsDisputed = ConfirmedName is not null && !string.Equals(name, ConfirmedName, StringComparison.Ordinal);
+        return outcome;
+    }
+
+    /// <summary>
+    /// The name that meets the confirmation rule now, or null: at least <see cref="NameplateTrackerSettings.ConfirmReads"/> identical reads at the
+    /// same box width (within <paramref name="widthTolerance"/>), spread over <see cref="NameplateTrackerSettings.ConfirmSpanMs"/>, and more reads
+    /// than any other name. Before the first confirmation every vote counts, afterwards only the votes of the last
+    /// <see cref="NameplateTrackerSettings.CorrectionWindowMs"/>.
+    /// </summary>
+    private string? Trusted(double timeMs, NameplateTrackerSettings settings, double widthTolerance)
+    {
+        var since = ConfirmedName is null ? double.NegativeInfinity : timeMs - settings.CorrectionWindowMs;
+        var byName = new Dictionary<string, List<(double Ms, int Width)>>(StringComparer.Ordinal);
+        foreach (var vote in _votes)
+        {
+            if (vote.Ms < since)
+                continue;
+            if (!byName.TryGetValue(vote.Name, out var samples))
+                byName[vote.Name] = samples = new List<(double, int)>();
+            samples.Add((vote.Ms, vote.Width));
+        }
+
+        foreach (var (name, samples) in byName)
+        {
+            var (count, first, last) = StableGroup(samples, widthTolerance);
+            var rival = 0;
+            foreach (var (other, otherSamples) in byName)
+                if (!string.Equals(other, name, StringComparison.Ordinal) && otherSamples.Count > rival)
+                    rival = otherSamples.Count;
+            if (count >= settings.ConfirmReads && count > rival && last - first >= settings.ConfirmSpanMs)
+                return name;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The largest set of reads (of one name, in time order) whose widths lie within plus or minus <paramref name="tolerance"/> of one of them (the
+    /// later set on a tie): its size and the times of its first and last read.
+    /// </summary>
+    public static (int Count, double First, double Last) StableGroup(IReadOnlyList<(double Ms, int Width)> samples, double tolerance)
+    {
+        var best = (Count: 0, First: 0.0, Last: 0.0);
+        foreach (var (_, anchor) in samples)
+        {
+            var count = 0;
+            var first = 0.0;
+            var last = 0.0;
+            foreach (var (ms, width) in samples)
+            {
+                if (Math.Abs(width - anchor) > tolerance)
+                    continue;
+                if (count == 0)
+                    first = ms;
+                last = ms;
+                count++;
+            }
+
+            if (count > best.Count || (count == best.Count && last >= best.Last))
+                best = (count, first, last);
+        }
+
+        return best;
     }
 }
+
+/// <summary>What a vote changed.</summary>
+internal enum VoteOutcome
+{
+    None,
+    Confirmed,
+    Corrected,
+}
+
+/// <summary>One vote: the name read, when (ms of video time) and how wide the name line was.</summary>
+internal readonly record struct NameVote(string Name, double Ms, int Width);
+
+/// <summary>The confirmed name of a track switched from <paramref name="From"/> to <paramref name="To"/> at this frame (ms of video time).</summary>
+public sealed record NameCorrection(string From, string To, long Frame, double Ms);
 
 /// <summary>One name a track has read: how often, and when it was first and last read (ms of video time).</summary>
 public sealed record NameRead(string Name, int Count, double FirstMs, double LastMs);
 
 /// <summary>What one <see cref="NameplateTracker.Update"/> did.</summary>
-/// <param name="Confirmed">Tracks that confirmed a name (again) in this frame.</param>
+/// <param name="Confirmed">Tracks whose confirmed name is new in this frame: a first confirmation, or a correction (their
+/// <see cref="NameplateTrack.ConfirmedName"/> is what to show now).</param>
 /// <param name="Closed">Tracks that expired in this frame (they are no longer in <see cref="NameplateTracker.Tracks"/>).</param>
-public sealed record TrackerUpdate(IReadOnlyList<NameplateTrack> Confirmed, IReadOnlyList<NameplateTrack> Closed);
+/// <param name="Corrected">The part of <paramref name="Confirmed"/> that CHANGED an already confirmed name (the last of
+/// <see cref="NameplateTrack.Corrections"/> says from what to what): the app updates the panel of that nameplate.</param>
+public sealed record TrackerUpdate(IReadOnlyList<NameplateTrack> Confirmed, IReadOnlyList<NameplateTrack> Closed, IReadOnlyList<NameplateTrack> Corrected);
 
 /// <summary>
 /// Follows candidate pairs from frame to frame, keeps a sticky verdict per track and lets the reads of a nameplate vote on its
@@ -309,9 +434,12 @@ public sealed record TrackerUpdate(IReadOnlyList<NameplateTrack> Confirmed, IRea
 /// <item>A <see cref="TrackVerdict.NotNameplate"/> track is not evaluated again until <see cref="NameplateTrackerSettings.RecheckMs"/> have
 /// passed or its box size changed notably. Junk that stays on screen (HUD word pairs, signs) is read once, not every frame.</item>
 /// <item>A <see cref="TrackVerdict.Nameplate"/> track is evaluated every frame until it has a confirmed name, then every
-/// <see cref="NameplateTrackerSettings.ConfirmedRereadMs"/>. Each evaluation that reads a name surely enough is a vote. A name is confirmed
-/// when it has <see cref="NameplateTrackerSettings.ConfirmReads"/> votes, more than any other name of the track, spread over at least
-/// <see cref="NameplateTrackerSettings.ConfirmSpanMs"/>.</item>
+/// <see cref="NameplateTrackerSettings.ConfirmedRereadMs"/> (every frame while its latest read disagrees with its name). Each evaluation that reads
+/// a name surely enough, and that does not start or end with -, is a vote. A name is confirmed when it has
+/// <see cref="NameplateTrackerSettings.ConfirmReads"/> votes at one box width (<see cref="NameplateTrackerSettings.StableWidthPx"/>), more than any
+/// other name of the track, spread over at least <see cref="NameplateTrackerSettings.ConfirmSpanMs"/>. A confirmed name is corrected, never
+/// withdrawn: when another name meets the rule over the last <see cref="NameplateTrackerSettings.CorrectionWindowMs"/> it replaces the confirmed one
+/// (<see cref="TrackerUpdate.Corrected"/>, <see cref="NameplateTrack.Corrections"/>).</item>
 /// <item>Several evaluations in a row that say "no nameplate" turn a Nameplate track back into NotNameplate.</item>
 /// <item>A track no candidate matched for <see cref="NameplateTrackerSettings.ExpireMs"/> is closed.</item>
 /// </list>
@@ -337,10 +465,14 @@ public sealed class NameplateTracker
     /// <summary>
     /// Processes one frame. <paramref name="candidates"/> are the pairs the cheap pass found; <paramref name="evaluate"/> reads one
     /// (top line, bottom line) and says whether it is a nameplate and which name it read. It is called only for the candidates that need it.
+    /// <paramref name="frameHeight"/> is the height of the frame in pixels (the stable width tolerance is given for
+    /// <see cref="NameplateTrackerSettings.ReferenceFrameHeight"/>); 0 means that height.
     /// </summary>
-    public TrackerUpdate Update(long frame, double timeMs, IReadOnlyList<TrackCandidate> candidates, Func<Rect, Rect, TrackEvaluation> evaluate)
+    public TrackerUpdate Update(long frame, double timeMs, IReadOnlyList<TrackCandidate> candidates, Func<Rect, Rect, TrackEvaluation> evaluate, int frameHeight = 0)
     {
+        var tolerance = _settings.StableWidthPx * (frameHeight > 0 ? frameHeight : _settings.ReferenceFrameHeight) / _settings.ReferenceFrameHeight;
         var confirmedNow = new List<NameplateTrack>();
+        var correctedNow = new List<NameplateTrack>();
         var evaluations = 0;
 
         // match candidates and tracks, closest first
@@ -393,7 +525,7 @@ public sealed class NameplateTracker
                     if (!(sizeChanged || timeMs - track.LastCheckedMs >= _settings.RecheckMs))
                         continue;
                 }
-                else if (track.ConfirmedName is not null && timeMs - track.LastReadMs < _settings.ConfirmedRereadMs && !sizeChanged)
+                else if (track.ConfirmedName is not null && !track.IsDisputed && timeMs - track.LastReadMs < _settings.ConfirmedRereadMs && !sizeChanged)
                 {
                     continue;
                 }
@@ -401,7 +533,7 @@ public sealed class NameplateTracker
                 if (evaluations >= _settings.MaxEvaluationsPerFrame)
                     continue;
                 evaluations++;
-                Evaluate(track, frame, timeMs, evaluate, confirmedNow, null);
+                Evaluate(track, frame, timeMs, evaluate, confirmedNow, correctedNow, tolerance, null);
             }
             else
             {
@@ -430,7 +562,7 @@ public sealed class NameplateTracker
                     _tracks.Add(track);
                 }
 
-                Evaluate(track, frame, timeMs, evaluate, confirmedNow, result);
+                Evaluate(track, frame, timeMs, evaluate, confirmedNow, correctedNow, tolerance, result);
             }
         }
 
@@ -444,7 +576,7 @@ public sealed class NameplateTracker
 
         if (closed.Count > 0)
             _tracks.RemoveAll(t => closed.Contains(t));
-        return new TrackerUpdate(confirmedNow, closed);
+        return new TrackerUpdate(confirmedNow, closed, correctedNow);
     }
 
     /// <summary>Closes every remaining track (end of a clip) and returns them.</summary>
@@ -484,7 +616,7 @@ public sealed class NameplateTracker
         return best;
     }
 
-    private void Evaluate(NameplateTrack track, long frame, double timeMs, Func<Rect, Rect, TrackEvaluation> evaluate, List<NameplateTrack> confirmedNow, TrackEvaluation? known)
+    private void Evaluate(NameplateTrack track, long frame, double timeMs, Func<Rect, Rect, TrackEvaluation> evaluate, List<NameplateTrack> confirmedNow, List<NameplateTrack> correctedNow, double tolerance, TrackEvaluation? known)
     {
         track.Evaluations++;
         track.LastCheckedMs = timeMs;
@@ -507,10 +639,13 @@ public sealed class NameplateTracker
         track.EverNameplate = true;
         track.FailStreak = 0;
         track.LastReadMs = timeMs;
-        if (result.Name is null)
-            return;
-        if (track.Vote(result.Name, frame, timeMs, _settings.ConfirmReads, _settings.ConfirmSpanMs))
+        if (result.Name is null || !NameShape.HasValidEdges(result.Name))
+            return; // a name may not start or end with -: the plate is a nameplate, the read is no vote
+        var outcome = track.Vote(result.Name, frame, timeMs, track.Top.Width, _settings, tolerance);
+        if (outcome != VoteOutcome.None)
             confirmedNow.Add(track);
+        if (outcome == VoteOutcome.Corrected)
+            correctedNow.Add(track);
     }
 
     /// <summary>The name line has about the size of the track's: height within max(2 px, 25 %), width within the tolerance (plus half a line height).</summary>

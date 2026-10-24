@@ -21,6 +21,7 @@ public class NameplateTrackerTests
         public readonly NameplateTracker Tracker;
         public long Frame;
         public int Evaluations;
+        public int FrameHeight; // 0: the reference height of the settings
         public Func<Rect, Rect, TrackEvaluation> Evaluate = (_, _) => TrackEvaluation.No;
 
         public Driver(NameplateTrackerSettings? settings = null) => Tracker = new NameplateTracker(settings ?? Fast);
@@ -31,7 +32,7 @@ public class NameplateTrackerTests
             {
                 Evaluations++;
                 return Evaluate(t, b);
-            });
+            }, FrameHeight);
             Frame++;
             return update;
         }
@@ -123,10 +124,10 @@ public class NameplateTrackerTests
     }
 
     [Fact]
-    public void ARivalThatCatchesUp_TakesTheConfirmationBack()
+    public void ARivalThatOnlyCatchesUp_DoesNotChangeTheConfirmedName()
     {
         var d = new Driver(Fast with { ConfirmedRereadMs = 0 });
-        var reads = new Queue<string>(new[] { "AAAA", "AAAA", "BBBB", "BBBB", "BBBB" });
+        var reads = new Queue<string>(new[] { "AAAA", "AAAA", "BBBB", "BBBB" });
         d.Evaluate = (_, _) => new TrackEvaluation(true, reads.Dequeue());
         var plate = Pair(Top());
 
@@ -136,13 +137,172 @@ public class NameplateTrackerTests
         Assert.Equal("AAAA", track.ConfirmedName);
 
         d.Next(plate);
-        Assert.Equal("AAAA", track.ConfirmedName); // A:2 B:1
         d.Next(plate);
-        Assert.Null(track.ConfirmedName);           // A:2 B:2, a tie: nobody is trusted
-        d.Next(plate);
-        Assert.Equal("BBBB", track.ConfirmedName);  // B:3
-        Assert.Equal(new[] { "AAAA", "BBBB" }, track.Confirmations.Select(c => c.Name));
+        Assert.Equal("AAAA", track.ConfirmedName); // A:2 B:2, a tie: the confirmed name stays (it is corrected, never withdrawn)
+        Assert.Empty(track.Corrections);
     }
+
+    [Fact]
+    public void AName_ThatIsReadMoreOftenOverTheRecentWindow_CorrectsTheConfirmedOne()
+    {
+        var d = new Driver(Fast);
+        var reads = new Queue<string>(new[] { "AAAA", "AAAA", "BBBB", "BBBB", "BBBB" });
+        d.Evaluate = (_, _) => new TrackEvaluation(true, reads.Dequeue());
+        var plate = Pair(Top());
+
+        d.Next(plate);
+        var confirming = d.Next(plate); // frame 1: A is confirmed
+        var track = d.Tracker.Tracks[0];
+        Assert.Same(track, Assert.Single(confirming.Confirmed));
+        Assert.Empty(confirming.Corrected);
+        Assert.Equal("AAAA", track.ConfirmedName);
+
+        for (var i = 0; i < 9; i++) // frames 2..10: a confirmed track is read once a second
+            d.Next(plate);
+        Assert.Equal(2, d.Evaluations);
+
+        d.Next(plate); // frame 11 (1100 ms): the first B
+        Assert.Equal("AAAA", track.ConfirmedName);
+        Assert.True(track.IsDisputed);   // its latest read disagrees: it is read at every frame now
+        d.Next(plate); // frame 12: B twice, A twice: a tie
+        Assert.Equal("AAAA", track.ConfirmedName);
+        Assert.Empty(track.Corrections);
+
+        var corrected = d.Next(plate); // frame 13: B three times against two
+        Assert.Equal(5, d.Evaluations);  // 2 + frames 11, 12 and 13
+        Assert.Same(track, Assert.Single(corrected.Confirmed));
+        Assert.Same(track, Assert.Single(corrected.Corrected));
+        Assert.Equal("BBBB", track.ConfirmedName);
+        Assert.Equal(13, track.ConfirmedFrame);
+        Assert.Equal(1300.0, track.ConfirmedMs);
+        var correction = Assert.Single(track.Corrections);
+        Assert.Equal(new NameCorrection("AAAA", "BBBB", 13, 1300.0), correction);
+        Assert.Equal(new[] { "AAAA", "BBBB" }, track.Confirmations.Select(c => c.Name));
+        Assert.False(track.IsDisputed);
+    }
+
+    [Fact]
+    public void VotesOlderThanTheWindow_DoNotCountAgainstACorrection()
+    {
+        // A is confirmed (two votes), then nothing for 1.5 seconds: B needs two votes, and A's are outside the window (with the default
+        // window of 4 seconds the two A votes would tie B)
+        var d = new Driver(Fast with { CorrectionWindowMs = 1500, ExpireMs = 100000 });
+        var name = "AAAA";
+        d.Evaluate = (_, _) => new TrackEvaluation(true, name);
+        var plate = Pair(Top());
+        for (var i = 0; i < 5; i++)
+            d.Next(plate);
+        var track = d.Tracker.Tracks[0];
+        Assert.Equal("AAAA", track.ConfirmedName);
+        for (var i = 5; i < 20; i++)
+            d.Next(); // no candidates: frames 5..19
+
+        name = "BBBB";
+        d.Next(plate); // frame 20 (2000 ms), the first B
+        Assert.Equal("AAAA", track.ConfirmedName);
+        var update = d.Next(plate); // frame 21: two B, and A's votes (last at 400 ms) are outside the window of 1500 ms
+        Assert.Same(track, Assert.Single(update.Corrected));
+        Assert.Equal("BBBB", track.ConfirmedName);
+    }
+
+    [Fact]
+    public void WithoutAWindow_AllVotesCountBeforeTheFirstConfirmation()
+    {
+        var d = new Driver(NameplateTrackerSettings.Default with { ConfirmReads = 3, ConfirmSpanMs = 0, CorrectionWindowMs = 0 });
+        var reads = new Queue<string>(new[] { "AAAA", "BBBB", "AAAA", "BBBB", "AAAA" });
+        d.Evaluate = (_, _) => new TrackEvaluation(true, reads.Dequeue());
+        var plate = Pair(Top());
+        for (var i = 0; i < 4; i++)
+            d.Next(plate);
+        Assert.Null(d.Tracker.Tracks[0].ConfirmedName); // A:2 B:2
+        d.Next(plate);
+        Assert.Equal("AAAA", d.Tracker.Tracks[0].ConfirmedName); // A:3 B:2
+    }
+
+    [Fact]
+    public void IdenticalReads_MustHaveTheSameBoxWidth_ToConfirm()
+    {
+        // the plate types its name out: the box grows while the text reads the same
+        var d = new Driver(Fast with { ConfirmReads = 3, ConfirmSpanMs = 0 });
+        d.Evaluate = (_, _) => new TrackEvaluation(true, "SYNTH_AL");
+
+        d.Next(Pair(Top(w: 80)));
+        d.Next(Pair(Top(w: 90)));
+        d.Next(Pair(Top(w: 100)));
+        var track = d.Tracker.Tracks[0];
+        Assert.Equal(3, track.ReadCount);
+        Assert.Null(track.ConfirmedName); // three identical reads, three widths
+
+        d.Next(Pair(Top(w: 100)));
+        Assert.Null(track.ConfirmedName); // two at 100
+        d.Next(Pair(Top(w: 103))); // within 3 px of 100: the same width
+        Assert.Equal("SYNTH_AL", track.ConfirmedName);
+    }
+
+    [Fact]
+    public void TheWidthTolerance_IsScaledToTheFrameHeight()
+    {
+        TrackerUpdate Run(int frameHeight)
+        {
+            var d = new Driver(Fast with { ConfirmReads = 3, ConfirmSpanMs = 0 }) { FrameHeight = frameHeight };
+            d.Evaluate = (_, _) => new TrackEvaluation(true, "SYNTH_AL");
+            d.Next(Pair(Top(w: 80)));
+            d.Next(Pair(Top(w: 84)));
+            return d.Next(Pair(Top(w: 88)));  // 80, 84 and 88: each 4 px from the middle one
+        }
+
+        Assert.Empty(Run(0).Confirmed);         // 1440 high: 3 px
+        Assert.Empty(Run(1440).Confirmed);
+        Assert.Single(Run(2880).Confirmed);     // twice as high: 6 px
+    }
+
+    [Fact]
+    public void StableGroup_IsTheLargestSetWithinTheToleranceOfOneRead()
+    {
+        var samples = new List<(double Ms, int Width)> { (0, 80), (100, 90), (200, 91), (300, 100), (400, 90) };
+
+        Assert.Equal((3, 100.0, 400.0), NameplateTrack.StableGroup(samples, 2.0));   // 90, 91 and 90
+        Assert.Equal((1, 0.0, 0.0), NameplateTrack.StableGroup(new List<(double, int)> { (0, 80) }, 2.0));
+        Assert.Equal((0, 0.0, 0.0), NameplateTrack.StableGroup(new List<(double, int)>(), 2.0));
+        // a tie goes to the later group
+        Assert.Equal((2, 300.0, 400.0), NameplateTrack.StableGroup(new List<(double, int)> { (0, 80), (100, 80), (300, 120), (400, 120) }, 2.0));
+    }
+
+    [Theory]
+    [InlineData("-LOCKED0N", false)]
+    [InlineData("ABCDEF-", false)]
+    [InlineData("UNKNOWK_", true)]      // an underscore may start and end a name
+    [InlineData("_ABCDEF", true)]
+    [InlineData("RAVEN-202", true)]
+    [InlineData("B4DGER_117", true)]
+    public void ANameThatStartsOrEndsWithAHyphen_IsNoVote(string name, bool confirmed)
+    {
+        var d = new Driver(Fast);
+        d.Evaluate = (_, _) => new TrackEvaluation(true, name);
+        var plate = Pair(Top());
+
+        for (var i = 0; i < 5; i++)
+            d.Next(plate);
+
+        var track = d.Tracker.Tracks[0];
+        Assert.Equal(TrackVerdict.Nameplate, track.Verdict); // the plate is still a nameplate
+        Assert.True(track.EverNameplate);
+        Assert.Equal(confirmed ? name : null, track.ConfirmedName);
+        Assert.Equal(confirmed ? 2 : 0, track.ReadCount); // a confirmed track is read once a second: two reads in these five frames
+        if (!confirmed)
+            Assert.Null(track.BestName);
+    }
+
+    [Theory]
+    [InlineData("ABCD", true)]
+    [InlineData("A-B_C", true)]
+    [InlineData("-ABCD", false)]
+    [InlineData("_ABCD", true)]
+    [InlineData("ABCD-", false)]
+    [InlineData("ABCD_", true)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void NameShape_HasValidEdges(string? name, bool expected) => Assert.Equal(expected, NameShape.HasValidEdges(name));
 
     [Fact]
     public void AnEvaluationWithoutAName_KeepsTheVerdictButAddsNoVote()
@@ -456,6 +616,9 @@ public class NameplateTrackerTests
     {
         Assert.Equal(3, NameplateTrackerSettings.Default.ConfirmReads);
         Assert.Equal(300.0, NameplateTrackerSettings.Default.ConfirmSpanMs);
+        Assert.Equal(3.0, NameplateTrackerSettings.Default.StableWidthPx);
+        Assert.Equal(1440, NameplateTrackerSettings.Default.ReferenceFrameHeight);
+        Assert.Equal(4000.0, NameplateTrackerSettings.Default.CorrectionWindowMs);
     }
 
     [Fact]
@@ -486,6 +649,9 @@ public class NameplateTrackerTests
         Assert.NotNull((NameplateTrackerSettings.Default with { MaxGateLines = 0 }).Validate());
         Assert.NotNull((NameplateTrackerSettings.Default with { IdenticalMs = -1 }).Validate());
         Assert.NotNull((NameplateTrackerSettings.Default with { MaxSpeedDtMs = -1 }).Validate());
+        Assert.NotNull((NameplateTrackerSettings.Default with { StableWidthPx = -1 }).Validate());
+        Assert.NotNull((NameplateTrackerSettings.Default with { ReferenceFrameHeight = 0 }).Validate());
+        Assert.NotNull((NameplateTrackerSettings.Default with { CorrectionWindowMs = -1 }).Validate());
         Assert.Throws<ArgumentException>(() => new NameplateTracker(NameplateTrackerSettings.Default with { ConfirmReads = 0 }));
     }
 }
