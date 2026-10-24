@@ -22,7 +22,12 @@ public readonly record struct NameplateRead(string Text, double Score)
 public readonly record struct ReadPiece(int Start, int End, string Text, double Score, double FreeScore);
 
 /// <summary>A line read piece by piece: the pieces and the capital height of the line in mask pixels.</summary>
-public sealed record PieceRead(IReadOnlyList<ReadPiece> Pieces, int CapHeight);
+/// <param name="Pieces">The pieces.</param>
+/// <param name="CapHeight">The capital height in mask pixels.</param>
+/// <param name="CharacterSpans">For every character of the pieces' text, in order, the mask columns [Start, End) the reader cut it from (a piece that was cut apart gives one span per letter;
+/// a failed cut gives none, so the count then differs from the text length). Null when not recorded.</param>
+/// <param name="Mask">The mask the line was read from (null when the caller gave only the pieces).</param>
+public sealed record PieceRead(IReadOnlyList<ReadPiece> Pieces, int CapHeight, IReadOnlyList<(int Start, int End)>? CharacterSpans = null, LineMask? Mask = null);
 
 /// <summary>
 /// Reads the name on one nameplate line with the trained <see cref="LetterModel"/>: mask, cut at blank columns, classify each
@@ -105,9 +110,9 @@ public sealed class NameplateReader
     /// <paramref name="minInk"/> is the noise limit (see <see cref="NameMinInk"/>); the distance mode of the detector passes a smaller one
     /// so that the period of "5.8km" is kept.
     /// </summary>
-    public PieceRead? ReadPieces(Mat bgr, Rect box, bool[]? allowed = null, double minInk = NameMinInk)
+    public PieceRead? ReadPieces(Mat bgr, Rect box, bool[]? allowed = null, double minInk = NameMinInk, bool keepColors = false)
     {
-        var mask = NameplateFeatures.CreateMask(bgr, box);
+        var mask = NameplateFeatures.CreateMask(bgr, box, keepColors: keepColors);
         return mask is null ? null : ReadPieces(mask, allowed, minInk);
     }
 
@@ -117,15 +122,16 @@ public sealed class NameplateReader
         if (allowed is not null && allowed.Length != _model.ClassCount)
             throw new ArgumentException("The alphabet has to have one entry per character of the model.", nameof(allowed));
         var pieces = new List<ReadPiece>();
-        ReadCore(m, allowed, true, minInk, pieces, out var cap);
-        return new PieceRead(pieces, cap);
+        var spans = new List<(int Start, int End)>();
+        ReadCore(m, allowed, true, minInk, pieces, out var cap, spans);
+        return new PieceRead(pieces, cap, spans, m);
     }
 
     /// <summary>
     /// <c>read_mask</c> with two additions that the plain <see cref="ReadMask"/> leaves out: an optional restriction of the
     /// alphabet, (<paramref name="limitWork"/>) the work limits for runs of ink that are too wide to be text, and the noise limit <paramref name="minInk"/>.
     /// </summary>
-    private NameplateRead ReadCore(LineMask m, bool[]? allowed, bool limitWork, double minInk, List<ReadPiece>? pieces, out int capHeight)
+    private NameplateRead ReadCore(LineMask m, bool[]? allowed, bool limitWork, double minInk, List<ReadPiece>? pieces, out int capHeight, List<(int Start, int End)>? spans = null)
     {
         var band = NameplateFeatures.FindCapBand(m);
         var cap = band.Bottom - band.Top + 1;
@@ -163,6 +169,7 @@ public sealed class NameplateReader
                 var best = ArgMax(lp, allowed);
                 text.Append(_model.Charset[best]);
                 total += lp[best];
+                spans?.Add((a, b));
                 if (pieces is not null)
                 {
                     var free = allowed is null ? best : ArgMax(lp, null);
@@ -171,7 +178,7 @@ public sealed class NameplateReader
             }
             else
             {
-                var (piece, score) = Split(m, a, b, band, allowed, limitWork, vector, lp, network, scratch);
+                var (piece, score) = Split(m, a, b, band, allowed, limitWork, vector, lp, network, scratch, spans);
                 text.Append(piece);
                 total += score;
                 pieces?.Add(new ReadPiece(a, b, piece, score, score));
@@ -182,7 +189,7 @@ public sealed class NameplateReader
     }
 
     /// <summary>Best way to cut columns [x0, x1) into letters (<c>_split</c>).</summary>
-    private (string Text, double Score) Split(LineMask m, int x0, int x1, CapBand band, bool[]? allowed, bool limitWork, Span<double> vector, Span<double> lp, Span<double> network, GlyphScratch scratch)
+    private (string Text, double Score) Split(LineMask m, int x0, int x1, CapBand band, bool[]? allowed, bool limitWork, Span<double> vector, Span<double> lp, Span<double> network, GlyphScratch scratch, List<(int Start, int End)>? spansOut = null)
     {
         var cap = band.Bottom - band.Top + 1;
         var width = x1 - x0;
@@ -276,14 +283,18 @@ public sealed class NameplateReader
             return ("", SplitFailureScore);
 
         var letters = new List<char>();
+        var letterSpans = new List<(int, int)>();
         var at = end;
         while (at != 0 && backFrom[at] >= 0)
         {
             letters.Add(_model.Charset[backChar[at]]);
+            letterSpans.Add((x0 + cand[backFrom[at]], x0 + cand[at])); // mask columns of this letter
             at = backFrom[at];
         }
 
         letters.Reverse();
+        letterSpans.Reverse();
+        spansOut?.AddRange(letterSpans);
         return (new string(letters.ToArray()), score[end]);
     }
 

@@ -21,6 +21,15 @@ namespace Iris.Core.Detection;
 /// ANCHOR (one word gap after the unit may be followed by the <c>[</c> of a speed group, which is then ignored). Only then the upper line is read with the name alphabet; it must be ONE word of 4 to 64 characters A-Z 0-9 - _ that does not start or end with - (such a read is a nameplate without a vote; "_" may stand anywhere). If it is also read
 /// surely enough (score per letter at least <see cref="NameplateDetectorSettings.MinNameScore"/>) the evaluation carries a
 /// <see cref="NameplateDetection"/>, which is one vote for that name.</item>
+/// <item><b>Multi-row names</b>. The game wraps a long handle onto up to three centered rows above the distance line. In the cheap pass every pair also gets the rows
+/// stacked above its name line (<see cref="FindStacks"/>, a port of <c>stack_rows</c> of the Python reference): a row is stacked when the gap to the row below is 1 pixel to
+/// <see cref="NameplateDetectorSettings.RowGapMax"/> line heights, the top-to-top pitch is <see cref="NameplateDetectorSettings.RowPitchMin"/> to
+/// <see cref="NameplateDetectorSettings.RowPitchMax"/> line heights, the heights match, the row is at least <see cref="NameplateDetectorSettings.RowMinCaps"/> line heights wide
+/// (every row above the last is a full row) and the x ranges overlap; it is joinable when it is also centered on the distance line (within the center tolerance). The chain goes up
+/// while a joinable row exists, at most <see cref="NameplateDetectorSettings.MaxRows"/> rows. <see cref="Evaluate"/> reads every row as ONE word and joins the words into the name (4 to 64
+/// characters, no <c>-</c> at either end); a row that is not a word of name characters drops the stack (the name line is read alone, as before); a name-like line above the top row
+/// that cannot join (off center, or a 4th row) makes the plate a nameplate without a name. The detection carries the row boxes, the whole plate box and the plate colour
+/// (<see cref="PlateColors"/>).</item>
 /// <item><b>Track</b> (<see cref="NameplateTracker"/>). Reads are not trusted one by one: the tracker confirms a name after it was read identically
 /// several times and does not re-read what it has judged not to be a nameplate.</item>
 /// </list>
@@ -122,37 +131,110 @@ public sealed class NameplateDetector : IDisposable
 
     /// <summary>
     /// The expensive part for one candidate pair (the boxes come from <see cref="FindCandidates"/>): reads the lower line as a distance
-    /// anchor, then the upper line as a name. See the class remarks.
+    /// anchor, then the upper line(s) as a name. See the class remarks. <paramref name="stack"/> is <see cref="NameplateCandidates.StackOf"/> of the
+    /// pair: the rows of a multi-row name (the last one is <paramref name="top"/>) and the lines that could not join them; null: a single row. Port of <c>evaluate_pair</c>.
     /// </summary>
-    public PairEvaluation Evaluate(Mat bgr, Rect top, Rect bottom)
+    public PairEvaluation Evaluate(Mat bgr, Rect top, Rect bottom, PlateStack? stack = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var maskOrNull = NameplateFeatures.CreateMask(bgr, bottom);
-        if (maskOrNull is null)
-            return PairEvaluation.No;
-        LineMask distanceMask = maskOrNull;
-        var distanceRead = _reader.ReadPieces(distanceMask, _distanceAlphabet, _settings.DistanceMinInk);
-        var distance = DistanceLineRule.Evaluate(
-            distanceRead, _settings, piece => _reader.IsOpenBracket(distanceMask, piece.Start, piece.End, _settings.BracketMinScore));
+        var distance = ReadDistance(bgr, bottom);
         if (distance is null)
             return PairEvaluation.No;
 
-        var nameRead = _reader.ReadPieces(bgr, top, _nameAlphabet);
-        if (nameRead is null || nameRead.Pieces.Count == 0)
+        // the name line itself is always read (and must be a word); the rows above it only when there is a stack
+        var nameLine = ReadNameWord(bgr, top);
+        if (nameLine is null)
+            return PairEvaluation.No; // a stack made of words needs its last row to be one too, and a single row needs it anyway
+
+        IReadOnlyList<Rect> rows = new[] { top };
+        IReadOnlyList<Rect> blockers = stack?.Blockers ?? Array.Empty<Rect>();
+        var words = new List<NameWord>();
+        if (stack is not null && stack.Rows.Count > 1 && stack.Rows[stack.Rows.Count - 1] == top)
+        {
+            var ok = true;
+            for (var i = 0; i < stack.Rows.Count - 1 && ok; i++)
+            {
+                var word = ReadNameWord(bgr, stack.Rows[i]);
+                if (word is null)
+                    ok = false;
+                else
+                    words.Add(word);
+            }
+
+            if (ok)
+            {
+                rows = stack.Rows;
+            }
+            else
+            {
+                words.Clear(); // the stack is not made of words: the name line alone, exactly as before multi-row names
+                blockers = Array.Empty<Rect>();
+            }
+        }
+
+        words.Add(nameLine);
+        var text = string.Concat(words.Select(w => w.Text));
+        var score = 0.0;
+        foreach (var word in words)
+            score += word.Score;
+        if (text.Length < _settings.MinNameLength || text.Length > _settings.MaxNameLength)
             return PairEvaluation.No;
 
-        var text = string.Concat(nameRead.Pieces.Select(p => p.Text));
-        var score = 0.0;
-        foreach (var piece in nameRead.Pieces)
-            score += piece.Score;
-        if (!IsOneWord(nameRead) || !IsName(text))
-            return PairEvaluation.No;
+        // a name-like line above the top row that does not join (off center, or a 4th row): a partial stack, a nameplate but no name
+        foreach (var blocker in blockers)
+        {
+            if (ReadNameWord(bgr, blocker) is not null && ReadDistance(bgr, blocker) is null)
+                return new PairEvaluation(true, null);
+        }
+
         if (!NameShape.HasValidEdges(text))
             return new PairEvaluation(true, null); // a nameplate, but a name may not start or end with -: no vote
         if (score / text.Length < _settings.MinNameScore)
             return new PairEvaluation(true, null); // a nameplate, but this read is too unsure to vote
 
-        return new PairEvaluation(true, new NameplateDetection(text, score, top, bottom, distance.Value.Text, distance.Value.HasSpeedGroup));
+        var color = PlateColors.Classify(words.Select(w => w.Mask), _settings.PlateColorRules);
+        return new PairEvaluation(true, new NameplateDetection(
+            text, score, top, bottom, distance.Value.Text, distance.Value.HasSpeedGroup,
+            rows, color?.Color, color?.Hue ?? 0.0, color?.Saturation ?? 0.0));
+    }
+
+    /// <summary>One row of a name read as one word: the characters, the sum of their log probabilities and the line mask (with the colours of its ink).</summary>
+    private sealed record NameWord(string Text, double Score, LineMask Mask);
+
+    /// <summary>
+    /// The line in <paramref name="box"/> read with the name alphabet, when it is ONE word of name characters (A-Z, 0-9, <c>-</c>, <c>_</c>); otherwise null
+    /// (<c>_name_word</c> of the Python reference). No length limit: a row of a multi-row name may be short.
+    /// </summary>
+    private NameWord? ReadNameWord(Mat bgr, Rect box)
+    {
+        var mask = NameplateFeatures.CreateMask(bgr, box, keepColors: true);
+        if (mask is null)
+            return null;
+        var read = _reader.ReadPieces(mask, _nameAlphabet);
+        if (read.Pieces.Count == 0 || !IsOneWord(read))
+            return null;
+        var text = string.Concat(read.Pieces.Select(p => p.Text));
+        if (text.Length == 0)
+            return null;
+        foreach (var ch in text)
+            if (!(ch is >= 'A' and <= 'Z' or >= '0' and <= '9' or '_' or '-'))
+                return null;
+        var score = 0.0;
+        foreach (var piece in read.Pieces)
+            score += piece.Score;
+        if (_settings.SubPixelO0Rule)
+            text = O0Rule.Correct(bgr, read, text); // the letter O or the digit 0: measured on the glyph's own pixels (names only, never distance lines)
+        return new NameWord(text, score, mask);
+    }
+
+    /// <summary>The line in <paramref name="box"/> read in distance mode, when it is a distance anchor (<see cref="DistanceLineRule"/>); otherwise null.</summary>
+    private DistanceReading? ReadDistance(Mat bgr, Rect box)
+    {
+        var mask = NameplateFeatures.CreateMask(bgr, box);
+        if (mask is null)
+            return null;
+        var read = _reader.ReadPieces(mask, _distanceAlphabet, _settings.DistanceMinInk);
+        return DistanceLineRule.Evaluate(read, _settings, piece => _reader.IsOpenBracket(mask, piece.Start, piece.End, _settings.BracketMinScore));
     }
 
     /// <summary>
@@ -207,11 +289,22 @@ public sealed class NameplateDetector : IDisposable
         for (var i = 0; i < clear.Length; i++)
             clear[i] = IsClear(local[i], scaleHeight);
 
-        var (pairs, loose, crowd) = SortPairs(local, clear, PairLines(local, scaleHeight, realCount), realCount);
+        var allPairs = PairLines(local, scaleHeight, realCount);
+        var stacks = FindStacks(local, allPairs, realCount, scaleHeight);
+        var (pairs, loose, crowd) = SortPairs(local, clear, allPairs, realCount);
         var boxes = new Rect[local.Count];
         for (var i = 0; i < boxes.Length; i++)
             boxes[i] = new Rect(local[i].X + px0, local[i].Y + y0, local[i].Width, local[i].Height);
-        return new NameplateCandidates(boxes, pairs, loose, crowd);
+        Rect Shift(Rect r) => new(r.X + px0, r.Y + y0, r.Width, r.Height);
+        Dictionary<(Rect Top, Rect Bottom), PlateStack>? shifted = null;
+        if (stacks.Count > 0)
+        {
+            shifted = new Dictionary<(Rect Top, Rect Bottom), PlateStack>();
+            foreach (var ((t, b), (rows, blockers)) in stacks)
+                shifted[(Shift(t), Shift(b))] = new PlateStack(rows.Select(Shift).ToList(), blockers.Select(Shift).ToList());
+        }
+
+        return new NameplateCandidates(boxes, pairs, loose, crowd, shifted);
     }
 
     public void Dispose()
@@ -516,6 +609,180 @@ public sealed class NameplateDetector : IDisposable
     }
 
     /// <summary>
+    /// The rows stacked above the name line of every pair (<c>row_candidates</c> and <c>stack_rows</c> of the Python reference), keyed by the
+    /// (name line, line below) boxes in mask pixels. Only pairs with more than one row, or with a blocker, are in the result.
+    /// </summary>
+    private Dictionary<(Rect Top, Rect Bottom), (List<Rect> Rows, List<Rect> Blockers)> FindStacks(
+        List<Rect> boxes, List<(int Top, int Bottom)> pairs, int realCount, int frameHeight)
+    {
+        var stacks = new Dictionary<(Rect, Rect), (List<Rect>, List<Rect>)>();
+        if (pairs.Count == 0)
+            return stacks;
+        var pool = RowCandidates(boxes, realCount, frameHeight);
+        foreach (var (t, b) in pairs)
+        {
+            var (rows, blockers) = StackRows(pool, boxes[t], boxes[b], frameHeight);
+            if (rows.Count > 1 || blockers.Count > 0)
+                stacks[(boxes[t], boxes[b])] = (rows, blockers);
+        }
+
+        return stacks;
+    }
+
+    /// <summary>
+    /// The lines that can be a row of a stacked name: the real boxes, except that the pieces of ONE line that the line joiner left apart (a letter next to an
+    /// underscore on the line below it can break the 8-connectivity) are replaced by their union. Pieces: the same row (top within 2 px, height within 3 px), x ranges
+    /// overlapping or at most 4 px apart (all at 1440 high). Used for the rows above the name line only; the name line itself and the anchor are always real boxes.
+    /// </summary>
+    private List<Rect> RowCandidates(List<Rect> boxes, int realCount, int frameHeight)
+    {
+        var s2 = Scaled(frameHeight, 2);
+        var s3 = Scaled(frameHeight, 3);
+        var s4 = Scaled(frameHeight, 4);
+        var parent = new int[realCount];
+        for (var i = 0; i < realCount; i++)
+            parent[i] = i;
+
+        int Find(int i)
+        {
+            while (parent[i] != i)
+            {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+
+            return i;
+        }
+
+        for (var i = 0; i < realCount; i++)
+        {
+            var a = boxes[i];
+            for (var j = i + 1; j < realCount; j++)
+            {
+                var c = boxes[j];
+                if (Math.Abs(a.Y - c.Y) <= s2 && Math.Abs(a.Height - c.Height) <= s3 && c.X <= a.X + a.Width + s4 && a.X <= c.X + c.Width + s4)
+                    parent[Find(j)] = Find(i);
+            }
+        }
+
+        var order = new List<int>(); // the groups in the order of their first member
+        var members = new Dictionary<int, List<int>>();
+        for (var i = 0; i < realCount; i++)
+        {
+            var root = Find(i);
+            if (!members.TryGetValue(root, out var group))
+            {
+                members[root] = group = new List<int>();
+                order.Add(root);
+            }
+
+            group.Add(i);
+        }
+
+        var pool = new List<Rect>(order.Count);
+        foreach (var root in order)
+        {
+            var group = members[root];
+            if (group.Count == 1)
+            {
+                pool.Add(boxes[group[0]]);
+                continue;
+            }
+
+            var x0 = group.Min(i => boxes[i].X);
+            var y0 = group.Min(i => boxes[i].Y);
+            var x1 = group.Max(i => boxes[i].X + boxes[i].Width);
+            var y1 = group.Max(i => boxes[i].Y + boxes[i].Height);
+            pool.Add(new Rect(x0, y0, x1 - x0, y1 - y0));
+        }
+
+        return pool;
+    }
+
+    /// <summary>
+    /// The rows stacked above the name line <paramref name="top"/> of the pair (<paramref name="top"/>, <paramref name="anchor"/>): the rows top to bottom with
+    /// <paramref name="top"/> last, and the blockers. See the class remarks for the rules; this is <c>stack_rows</c> of the Python reference. A left aligned stacked row
+    /// is a HUD label column: it neither joins nor blocks.
+    /// </summary>
+    private (List<Rect> Rows, List<Rect> Blockers) StackRows(List<Rect> pool, Rect top, Rect anchor, int frameHeight)
+    {
+        var heightTolerance = Scaled(frameHeight, 4);
+        var centerTolerance = Scaled(frameHeight, _settings.CenterTolerance);
+        var leftTolerance = Scaled(frameHeight, _settings.LeftTolerance);
+        var leftWidthDifference = Scaled(frameHeight, _settings.LeftWidthDifference);
+        var anchorCenter = anchor.X + anchor.Width / 2.0;
+        var chain = new List<Rect> { top };
+        var current = top;
+        while (true)
+        {
+            var joinable = new List<(int Gap, Rect Row)>();
+            var broken = new List<Rect>();
+            foreach (var row in pool)
+            {
+                if (row == anchor || chain.Contains(row))
+                    continue;
+                var gap = current.Y - (row.Y + row.Height);
+                if (!(gap >= 1 && gap <= _settings.RowGapMax * current.Height))
+                    continue;
+                var pitch = current.Y - row.Y;
+                if (!(_settings.RowPitchMin * current.Height <= pitch && pitch <= _settings.RowPitchMax * current.Height))
+                    continue;
+                if (Math.Abs(row.Height - current.Height) > Math.Max(heightTolerance, current.Height * 0.45))
+                    continue;
+                if (row.Width < _settings.RowMinCaps * row.Height)
+                    continue; // a short line above is no wrapped row (the rows above the last one are full width)
+                if (row.X >= current.X + current.Width || row.X + row.Width <= current.X)
+                    continue; // no horizontal overlap: beside, not above
+                if (Math.Abs(row.X - current.X) <= leftTolerance && Math.Abs(row.Width - current.Width) >= leftWidthDifference)
+                    continue; // a left aligned label column
+                if (Math.Abs(row.X + row.Width / 2.0 - anchorCenter) > centerTolerance)
+                {
+                    broken.Add(row);
+                    continue;
+                }
+
+                joinable.Add((gap, row));
+            }
+
+            if (joinable.Count == 0)
+            {
+                chain.Reverse();
+                return (chain, broken);
+            }
+
+            // nearest first; equal gaps: the smaller box (x, y, width, height), as Python's min over (gap, box) tuples
+            var best = joinable[0];
+            foreach (var candidate in joinable)
+                if (CompareJoinable(candidate, best) < 0)
+                    best = candidate;
+            if (chain.Count >= _settings.MaxRows)
+            {
+                chain.Reverse();
+                broken.Add(best.Row);
+                return (chain, broken);
+            }
+
+            chain.Add(best.Row);
+            current = best.Row;
+        }
+    }
+
+    private static int CompareJoinable((int Gap, Rect Row) a, (int Gap, Rect Row) b)
+    {
+        var byGap = a.Gap.CompareTo(b.Gap);
+        if (byGap != 0)
+            return byGap;
+        var byX = a.Row.X.CompareTo(b.Row.X);
+        if (byX != 0)
+            return byX;
+        var byY = a.Row.Y.CompareTo(b.Row.Y);
+        if (byY != 0)
+            return byY;
+        var byWidth = a.Row.Width.CompareTo(b.Row.Width);
+        return byWidth != 0 ? byWidth : a.Row.Height.CompareTo(b.Row.Height);
+    }
+
+    /// <summary>
     /// Sorts the geometric pairs. STRICT: both lines isolated. CROWD (when <see cref="NameplateDetectorSettings.CrowdException"/> is on): the lines are
     /// isolated except for ink that lies inside the boxes of other text lines, and every one of those lines belongs to another geometric pair
     /// (a line over a line): such a pair can be a nameplate in a crowd, valid once the neighbours read as nameplates themselves
@@ -644,17 +911,6 @@ public sealed class NameplateDetector : IDisposable
         var pieces = read.Pieces;
         for (var i = 0; i + 1 < pieces.Count; i++)
             if (pieces[i + 1].Start - pieces[i].End > _settings.WordGap * read.CapHeight)
-                return false;
-        return true;
-    }
-
-    /// <summary>The structure of a handle: 4 to 64 characters of A-Z, 0-9, "-" and "_" (the edge rule is <see cref="NameShape"/>).</summary>
-    private bool IsName(string text)
-    {
-        if (text.Length < _settings.MinNameLength || text.Length > _settings.MaxNameLength)
-            return false;
-        foreach (var ch in text)
-            if (!(ch is >= 'A' and <= 'Z' or >= '0' and <= '9' or '_' or '-'))
                 return false;
         return true;
     }

@@ -32,5 +32,8 @@ training-data/
 # Same for the nameplate detector's synthetic frames (drawn text on generated backgrounds, nothing from the game).
 !tests/Iris.Core.Tests/Fixtures/detector/**
 
+# And the multi-row and plate colour frames (Hershey text on generated backgrounds, made-up words).
+!tests/Iris.Core.Tests/Fixtures/plates/**
+
 # Copies of RSI pages captured by tools/Iris.CaptureFixtures. Third-party content: keep local.
 tests/Iris.Core.Tests/Fixtures/rsi/

@@ -11,6 +11,9 @@ public sealed class OpenCvFactAttribute : FactAttribute
 {
     private static readonly Lazy<string?> Problem = new(CheckNativeLibrary);
 
+    /// <summary>Why the native OpenCV library cannot be used on this system, or null when it can (other test attributes use it to skip the same way).</summary>
+    internal static string? NativeLibraryProblem => Problem.Value;
+
     public OpenCvFactAttribute()
     {
         var problem = Problem.Value;
