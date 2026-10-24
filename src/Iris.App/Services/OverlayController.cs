@@ -13,15 +13,26 @@ using Iris.Core.Social;
 namespace Iris.App.Services;
 
 /// <summary>
+/// Whether screen capture and reading (OCR) may run right now, and over which rectangle: <see cref="Active"/> only while Star Citizen is in front, borderless
+/// (<see cref="GameWindowState.Ready"/>), the overlay is not disabled and no test overlay is running. <see cref="Bounds"/> is the game window in screen pixels.
+/// The detection loop (<see cref="LiveDetectionService"/>) follows it; nothing is captured while it is <see cref="Off"/>.
+/// </summary>
+public sealed record CaptureGate(bool Active, PixelRect Bounds)
+{
+    public static readonly CaptureGate Off = new(false, default);
+}
+
+/// <summary>
 /// Decides when the overlay window is shown and what it shows. Two sources feed it:
-/// - the live model (<see cref="SetLiveModel"/>; Phase 3 will put real detections here), shown only while Star Citizen is in front and
-///   borderless (<see cref="GameWindowTracker"/>), the overlay is not disabled, and there is something to draw;
-/// - the test overlay (<see cref="StartTest"/>), shown for 15 seconds whatever is in front.
+/// - the live model (<see cref="SetLiveModel"/>; the detection loop puts the brackets and panel of the confirmed nameplates here, up to 120 times a second),
+///   shown only while Star Citizen is in front and borderless (<see cref="GameWindowTracker"/>), the overlay is not disabled, and there is something to draw.
+///   It is drawn by two small windows, one for the brackets and one for the panel and the confirmation text (see <see cref="OverlayWindow"/>);
+/// - the test overlay (<see cref="StartTest"/>), shown for 15 seconds whatever is in front, in one window of the whole size.
 /// "Disable Overlay" (<see cref="IsOverlayDisabled"/>) and "Disable Info Panel" (the <c>panel_enabled</c> setting) are toggled from the tray
 /// (<see cref="ToggleFromTray"/>) and from the global hotkeys (<see cref="Hotkeys"/>); the hotkeys also show a short on-screen
 /// confirmation (just above the panel) while the game is in front and borderless, even when the overlay is disabled (then only that text is drawn).
-/// The window is created the first time it is needed and afterwards only hidden. While the game is not in front the only work is the
-/// tracker's 250 ms foreground check.
+/// The windows are created the first time they are needed and afterwards only hidden. While the game is not in front the only work is the
+/// tracker's 250 ms foreground check. <see cref="Gate"/> tells the detection loop when it may capture.
 /// </summary>
 public sealed class OverlayController : IDisposable
 {
@@ -34,8 +45,11 @@ public sealed class OverlayController : IDisposable
     private readonly BorderlessNoticeTracker _notice = new();
     private readonly DispatcherTimer _testTimer = new() { Interval = TimeSpan.FromSeconds(1) };
 
-    private OverlayWindow? _window;
+    private OverlayWindow? _testWindow;
+    private OverlayWindow? _bracketWindow;
+    private OverlayWindow? _panelWindow;
     private OverlayModel _liveModel = OverlayModel.Empty;
+    private volatile CaptureGate _gate = CaptureGate.Off; // read by the detection thread
     private bool _disposed;
 
     // the on-screen confirmation ("Overlay off"), shown for ToastSeconds over the game
@@ -69,8 +83,8 @@ public sealed class OverlayController : IDisposable
     public event EventHandler? TestStateChanged;
 
     /// <summary>
-    /// True while "Disable Overlay" is on: nothing is drawn and no screen reading may happen. The future capture loop checks this (or listens to
-    /// <see cref="OverlayDisabledChanged"/>); only the 250 ms foreground check keeps running.
+    /// True while "Disable Overlay" is on: nothing is drawn and no screen capture or reading (OCR) happens: <see cref="Gate"/> is off then, and the detection loop
+    /// follows it; only the 250 ms foreground check keeps running.
     /// </summary>
     public bool IsOverlayDisabled => _services.IsOverlayDisabled;
 
@@ -95,6 +109,15 @@ public sealed class OverlayController : IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether the detection loop may capture and read the screen now, and where the game window is. Changes are announced by <see cref="GateChanged"/>
+    /// (on the UI thread). The loop reads this from its own thread: the value is an immutable record in a volatile field.
+    /// </summary>
+    public CaptureGate Gate => _gate;
+
+    /// <summary>Raised on the UI thread when <see cref="Gate"/> changed (the game came to the front or left, the overlay was disabled or enabled, the window moved).</summary>
+    public event EventHandler? GateChanged;
+
     /// <summary>Starts watching the game window.</summary>
     public void Start()
     {
@@ -102,7 +125,10 @@ public sealed class OverlayController : IDisposable
         _tracker.Start();
     }
 
-    /// <summary>Gives the overlay the detections to show while the game is in front (Phase 3). The empty model hides the overlay.</summary>
+    /// <summary>
+    /// Gives the overlay the detections to show while the game is in front: call it on the UI thread. The loop only calls it when the model changed (a new
+    /// instance), up to 120 times a second; the windows redraw only what changed. The empty model hides the overlay.
+    /// </summary>
     public void SetLiveModel(OverlayModel model)
     {
         _liveModel = model;
@@ -318,7 +344,7 @@ public sealed class OverlayController : IDisposable
         Evaluate();
     }
 
-    /// <summary>Looks at everything that decides visibility and shows or hides the window. Cheap when nothing changed.</summary>
+    /// <summary>Looks at everything that decides visibility and shows or hides the windows. Cheap when nothing changed.</summary>
     private void Evaluate()
     {
         if (_disposed)
@@ -326,41 +352,71 @@ public sealed class OverlayController : IDisposable
 
         if (_testModel is not null && _testSettings is not null)
         {
-            EnsureWindow().Present(_testModel, _testBounds, _testSettings);
+            // the test overlay covers the screen instead of the live one, and nothing may be captured meanwhile
+            SetGate(CaptureGate.Off);
+            _bracketWindow?.HideOverlay();
+            _panelWindow?.HideOverlay();
+            EnsureTestWindow().Present(_testModel, _testBounds, _testSettings);
             return;
         }
 
+        _testWindow?.HideOverlay();
+
         var snapshot = _tracker.Current;
         var settings = _services.Settings;
-        if (snapshot.State != GameWindowState.Ready)
+        var ready = snapshot.State == GameWindowState.Ready;
+        // capture and OCR only while the overlay could be shown: Disable Overlay stops them entirely
+        SetGate(ready && !settings.OverlayDisabled ? new CaptureGate(true, snapshot.Bounds) : CaptureGate.Off);
+
+        if (!ready)
         {
-            _window?.HideOverlay();
+            HideLive();
             return;
         }
 
         if (settings.OverlayDisabled)
         {
             // everything is off, except the confirmation "Overlay off" for its two seconds
+            _bracketWindow?.HideOverlay();
             if (_toastText is null)
-                _window?.HideOverlay();
+                _panelWindow?.HideOverlay();
             else
-                EnsureWindow().Present(OverlayModel.Empty, snapshot.Bounds, settings, _toastText);
+                EnsurePanelWindow().Present(OverlayModel.Empty, snapshot.Bounds, settings, _toastText);
             return;
         }
 
-        if (_toastText is null && !HasSomethingToDraw(_liveModel, settings))
-        {
-            _window?.HideOverlay();
-            return;
-        }
+        if (_liveModel.Brackets.Count > 0)
+            EnsureBracketWindow().Present(_liveModel, snapshot.Bounds, settings);
+        else
+            _bracketWindow?.HideOverlay();
 
-        EnsureWindow().Present(_liveModel, snapshot.Bounds, settings, _toastText);
+        if (_toastText is not null || (settings.PanelEnabled && _liveModel.Panel.Count > 0))
+            EnsurePanelWindow().Present(_liveModel, snapshot.Bounds, settings, _toastText);
+        else
+            _panelWindow?.HideOverlay();
     }
 
-    private static bool HasSomethingToDraw(OverlayModel model, AppSettings settings) =>
-        model.Brackets.Count > 0 || (settings.PanelEnabled && model.Panel.Count > 0);
+    private void SetGate(CaptureGate gate)
+    {
+        if (gate == _gate)
+            return;
+        _gate = gate;
+        GateChanged?.Invoke(this, EventArgs.Empty);
+    }
 
-    private OverlayWindow EnsureWindow() => _window ??= new OverlayWindow();
+    private void HideLive()
+    {
+        _bracketWindow?.HideOverlay();
+        _panelWindow?.HideOverlay();
+    }
+
+    private void WarnWindow(string text) => _services.Log.Write(_services.Clock.UtcNow, text);
+
+    private OverlayWindow EnsureTestWindow() => _testWindow ??= new OverlayWindow(OverlayLayer.All, WarnWindow);
+
+    private OverlayWindow EnsureBracketWindow() => _bracketWindow ??= new OverlayWindow(OverlayLayer.Brackets, WarnWindow);
+
+    private OverlayWindow EnsurePanelWindow() => _panelWindow ??= new OverlayWindow(OverlayLayer.Panel, WarnWindow);
 
     public void Dispose()
     {
@@ -378,10 +434,10 @@ public sealed class OverlayController : IDisposable
         _tracker.Dispose();
         _testTimer.Stop();
         _testTimer.Tick -= OnTestTick;
-        if (_window is not null)
-        {
-            _window.Close();
-            _window = null;
-        }
+        foreach (var window in new[] { _testWindow, _bracketWindow, _panelWindow })
+            window?.Close();
+        _testWindow = null;
+        _bracketWindow = null;
+        _panelWindow = null;
     }
 }

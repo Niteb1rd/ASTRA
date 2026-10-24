@@ -301,6 +301,18 @@ public sealed class NameplateTrack
         return ((_last.X - _previous.X) / dt, (_last.Y - _previous.Y) / dt);
     }
 
+    /// <summary>
+    /// Where and when the track was last associated with a candidate, and how fast it moves: what a caller needs to PREDICT the track's position
+    /// between two frames (constant velocity, see <see cref="TrackMotion"/>). The velocity comes from the last two associations, and is (0, 0)
+    /// when there is only one or they are more than <paramref name="maxDtMs"/> apart (<see cref="NameplateTrackerSettings.MaxSpeedDtMs"/>): the
+    /// same rule the tracker's own gate uses.
+    /// </summary>
+    public TrackMotion Motion(double maxDtMs)
+    {
+        var (vx, vy) = Velocity(maxDtMs);
+        return new TrackMotion(_hasLast ? _last.Ms : LastSeenMs, vx, vy);
+    }
+
     internal double CenterX => Top.X + Top.Width / 2.0;
 
     internal double CenterY => Top.Y + Top.Height / 2.0;
@@ -453,6 +465,13 @@ public sealed class NameplateTrack
         return best;
     }
 }
+
+/// <summary>
+/// The motion of a track: the time (ms of the caller's clock) of its last association, and its velocity in pixels per millisecond
+/// (from the centers of the name line at its last two associations). The position at a later time t is the position at
+/// <see cref="AtMs"/> plus the velocity times (t - AtMs); see <see cref="NameplateTrack.Motion"/>.
+/// </summary>
+public readonly record struct TrackMotion(double AtMs, double VxPerMs, double VyPerMs);
 
 /// <summary>What a vote changed.</summary>
 internal enum VoteOutcome

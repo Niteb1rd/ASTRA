@@ -31,6 +31,7 @@ public partial class App : Application
     private CacheUpdater? _updater;
     private HostedConfigAutoChecker? _hostedChecker;
     private OverlayController? _overlay;
+    private LiveDetectionService? _live;
     private bool _shuttingDown;
 
     private const string AnswerFirstText = "Answer the open IRIS question first.";
@@ -84,11 +85,17 @@ public partial class App : Application
         updater.FillMissingFinished += (_, message) => ShowStatus(message);
         tray.SettingsRequested += (_, _) => OpenSettings();
 
-        // The overlay: watches the game window every 250 ms and shows or hides the overlay window (nothing is drawn until Phase 3 feeds it detections;
-        // the Settings tab's test overlay uses it already).
+        // The overlay: watches the game window every 250 ms and shows or hides the overlay windows (the live detection below feeds them;
+        // the Settings tab's test overlay uses them as well).
         var overlay = new OverlayController(services, imports);
         _overlay = overlay;
         overlay.Start();
+
+        // Live detection: background threads that read the screen (5 times a second) and move the brackets (15 to 120 times a second), but only while
+        // Star Citizen is in front and borderless and the overlay is not disabled (the overlay controller's gate). Created on the UI thread.
+        var live = new LiveDetectionService(services, overlay);
+        _live = live;
+        live.Start();
 
         // "Disable Overlay" / "Disable Info Panel": the tray only asks; the check marks always follow the saved settings
         // (also when a hotkey or the Settings tab changed them).
@@ -169,6 +176,8 @@ public partial class App : Application
     {
         _hostedChecker?.Dispose();
         _hostedChecker = null;
+        _live?.Dispose(); // before the overlay and the services: its threads use both
+        _live = null;
         _overlay?.Dispose();
         _overlay = null;
         _tray?.Dispose();

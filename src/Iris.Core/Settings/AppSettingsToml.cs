@@ -49,6 +49,7 @@ public sealed class AppSettingsLoadResult
 /// panel_text_size = 18           # 10 to 40, pixels at 1440p
 /// panel_right_gap_percent = 10   # 0 to 40
 /// panel_top_gap_percent = 15     # 0 to 60
+/// nameplate_tracking_fps = 30    # 15 to 120: how often the brackets are moved (the screen is read 5 times a second regardless)
 /// overlay_disabled = false       # "Disable Overlay": hide everything and stop screen reading
 /// hotkey_toggle_overlay = ""     # e.g. "Ctrl+Shift+O"; empty = none
 /// hotkey_toggle_panel = ""
@@ -64,6 +65,7 @@ public static class AppSettingsToml
         "format_version", "cache_ttl_days", "session_log_enabled", "check_for_updates", "hosted_config_url", "hosted_config_last_hash",
         "hosted_config_auto_check", "hosted_config_last_check",
         "panel_enabled", "panel_width_percent", "panel_text_size", "panel_right_gap_percent", "panel_top_gap_percent",
+        "nameplate_tracking_fps",
         "overlay_disabled", "hotkey_toggle_overlay", "hotkey_toggle_panel",
     };
 
@@ -90,6 +92,7 @@ public static class AppSettingsToml
         sb.AppendLine($"panel_text_size = {Math.Clamp(settings.PanelTextSize, AppSettings.PanelTextSizeMin, AppSettings.PanelTextSizeMax)}");
         sb.AppendLine($"panel_right_gap_percent = {Math.Clamp(settings.PanelRightGapPercent, AppSettings.PanelRightGapPercentMin, AppSettings.PanelRightGapPercentMax)}");
         sb.AppendLine($"panel_top_gap_percent = {Math.Clamp(settings.PanelTopGapPercent, AppSettings.PanelTopGapPercentMin, AppSettings.PanelTopGapPercentMax)}");
+        sb.AppendLine($"nameplate_tracking_fps = {Math.Clamp(settings.NameplateTrackingFps, AppSettings.NameplateTrackingFpsMin, AppSettings.NameplateTrackingFpsMax)}");
         sb.AppendLine($"overlay_disabled = {Bool(settings.OverlayDisabled)}");
         sb.AppendLine($"hotkey_toggle_overlay = {SocialConfigToml.Quote(HotkeyText.Normalize(settings.HotkeyToggleOverlay))}");
         sb.AppendLine($"hotkey_toggle_panel = {SocialConfigToml.Quote(HotkeyText.Normalize(settings.HotkeyTogglePanel))}");
@@ -238,6 +241,9 @@ public static class AppSettingsToml
         var panelTopGap = ReadInt(root, "panel_top_gap_percent", defaults.PanelTopGapPercent,
             AppSettings.PanelTopGapPercentMin, AppSettings.PanelTopGapPercentMax, warnings);
 
+        var trackingFps = ReadInt(root, "nameplate_tracking_fps", defaults.NameplateTrackingFps,
+            AppSettings.NameplateTrackingFpsMin, AppSettings.NameplateTrackingFpsMax, warnings);
+
         var overlayDisabled = ReadBool(root, "overlay_disabled", defaults.OverlayDisabled, warnings);
         var hotkeyOverlay = ReadHotkey(root, "hotkey_toggle_overlay", warnings);
         var hotkeyPanel = ReadHotkey(root, "hotkey_toggle_panel", warnings);
@@ -252,6 +258,7 @@ public static class AppSettingsToml
             PanelTextSize = panelText,
             PanelRightGapPercent = panelRightGap,
             PanelTopGapPercent = panelTopGap,
+            NameplateTrackingFps = trackingFps,
             CacheTtlDays = ttl,
             SessionLogEnabled = logEnabled,
             CheckForUpdates = checkUpdates,

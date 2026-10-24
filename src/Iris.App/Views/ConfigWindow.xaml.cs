@@ -111,6 +111,7 @@ public partial class ConfigWindow : Window, IImportHost
         ConfigureSlider(PanelTextSizeSlider, AppSettings.PanelTextSizeMin, AppSettings.PanelTextSizeMax);
         ConfigureSlider(PanelRightGapSlider, AppSettings.PanelRightGapPercentMin, AppSettings.PanelRightGapPercentMax);
         ConfigureSlider(PanelTopGapSlider, AppSettings.PanelTopGapPercentMin, AppSettings.PanelTopGapPercentMax);
+        ConfigureSlider(TrackingFpsSlider, AppSettings.NameplateTrackingFpsMin, AppSettings.NameplateTrackingFpsMax);
 
         PlayersList.ItemsSource = _players;
         OrgsList.ItemsSource = _orgs;
@@ -880,6 +881,7 @@ public partial class ConfigWindow : Window, IImportHost
         PanelTextSizeSlider.Value = settings.PanelTextSize;
         PanelRightGapSlider.Value = settings.PanelRightGapPercent;
         PanelTopGapSlider.Value = settings.PanelTopGapPercent;
+        TrackingFpsSlider.Value = settings.NameplateTrackingFps;
         LogEnabledCheck.IsChecked = settings.SessionLogEnabled;
         CheckUpdatesCheck.IsChecked = settings.CheckForUpdates;
         HostedUrlBox.Text = settings.HostedConfigUrl;
@@ -904,6 +906,7 @@ public partial class ConfigWindow : Window, IImportHost
         PanelTextSize = (int)Math.Round(PanelTextSizeSlider.Value),
         PanelRightGapPercent = (int)Math.Round(PanelRightGapSlider.Value),
         PanelTopGapPercent = (int)Math.Round(PanelTopGapSlider.Value),
+        NameplateTrackingFps = (int)Math.Round(TrackingFpsSlider.Value),
         SessionLogEnabled = LogEnabledCheck.IsChecked == true,
         CheckForUpdates = CheckUpdatesCheck.IsChecked == true,
         HostedConfigUrl = HostedUrlBox.Text.Trim(),

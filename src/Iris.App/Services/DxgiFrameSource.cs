@@ -1,0 +1,416 @@
+using System;
+using System.Collections.Generic;
+using Iris.Core.Live;
+using Iris.Core.Overlay;
+using Iris.Core.Social;
+using OpenCvSharp;
+using SharpGen.Runtime;
+using Vc = Vortice.Direct3D;
+using Vd = Vortice.Direct3D11;
+using Vx = Vortice.DXGI;
+
+namespace Iris.App.Services;
+
+/// <summary>
+/// Captures a rectangle of the screen with DXGI Desktop Duplication (Windows 8 and later; IRIS targets Windows 11). The picture stays on the GPU until the
+/// wanted rectangle (only the scan region, a fraction of the screen) is copied into a small CPU-readable staging texture and from there into a reusable
+/// BGR <see cref="Mat"/>; the rest of the screen is never read back.
+/// <list type="bullet">
+/// <item>The output (monitor) is the one that holds the region (<see cref="NativeMethods.TryGetMonitorForRect"/>, matched with the output's monitor handle); the Direct3D 11
+/// device is created on that output's adapter, as duplication requires.</item>
+/// <item>One call = <c>AcquireNextFrame</c> (wait up to <see cref="AcquireTimeoutMs"/>), <c>CopySubresourceRegion</c> of the region, <c>ReleaseFrame</c> at once (the frame is
+/// never held across reads), map, convert. A wait that times out (nothing changed on screen) is <see cref="GrabStatus.NoNewFrame"/>: the previous picture is still in the Mat.</item>
+/// <item>Anything else that goes wrong (access lost: a mode change, another full-screen program, the secure desktop; device removed or reset; the monitor of the game window
+/// changed; an unexpected pixel format) releases everything (device, duplication, staging texture) and the next grab sets up again, no sooner than a short pause after a
+/// failed setup (<see cref="RetryAfterFailureMs"/>). The staging texture is made again when the region's size changes.</item>
+/// </list>
+/// <c>DuplicateOutput</c> always delivers 8 bit B8G8R8A8, also while HDR is on for the monitor (Windows then converts the picture; the 16 bit float formats need
+/// <c>DuplicateOutput1</c>, which IRIS does not use). So HDR does not stop the capture, but the converted colors can lower the detection quality. R8G8B8A8 is accepted too,
+/// although <c>DuplicateOutput</c> is not known to produce it; any other format is reported as unsupported. Not thread safe: one thread (the detection loop) calls everything.
+/// The Vortice calls are the only place IRIS touches Direct3D or DXGI.
+/// </summary>
+public sealed class DxgiFrameSource : IFrameSource
+{
+    /// <summary>How long a grab waits for the screen to change before it reports "no new frame".</summary>
+    public const int AcquireTimeoutMs = 100;
+
+    /// <summary>After a setup that failed, the next try is made no sooner than this (milliseconds).</summary>
+    public const long RetryAfterFailureMs = 2000;
+
+    private Vd.ID3D11Device? _device;
+    private Vd.ID3D11DeviceContext? _context;
+    private Vx.IDXGIOutputDuplication? _duplication;
+    private Vd.ID3D11Texture2D? _staging;
+    private int _stagingWidth;
+    private int _stagingHeight;
+    private Vx.Format _stagingFormat;
+    private IntPtr _monitor;
+    private PixelRect _outputBounds;
+    private Mat? _bgr;
+    private bool _hasPicture; // _bgr holds a picture of the current setup (false after Release and after the staging texture was made again)
+    private long _retryAtTick;
+    private bool _disposed;
+
+    /// <inheritdoc />
+    public GrabResult Grab(Rect screenRegion)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var region = new PixelRect(screenRegion.X, screenRegion.Y, screenRegion.Width, screenRegion.Height);
+        if (!NativeMethods.TryGetMonitorForRect(region, out var monitor, out var bounds))
+            return GrabResult.Unavailable("the scan region is not on any screen");
+        if (region.X < bounds.X || region.Y < bounds.Y || region.Right > bounds.Right || region.Bottom > bounds.Bottom)
+            return GrabResult.Unavailable("the scan region is not completely on one screen");
+
+        // the game window moved to another screen, or the screen's mode changed: set up again
+        if (_duplication is not null && (monitor != _monitor || bounds != _outputBounds))
+            Release();
+
+        try
+        {
+            if (_duplication is null)
+            {
+                if (Environment.TickCount64 < _retryAtTick)
+                    return GrabResult.Unavailable("screen capture is waiting to retry after a failed setup");
+                var problem = SetUp(monitor, bounds);
+                if (problem is not null)
+                {
+                    Release();
+                    _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
+                    return GrabResult.Unavailable(problem);
+                }
+            }
+
+            return CopyRegion(screenRegion, bounds);
+        }
+        catch (SharpGenException ex)
+        {
+            // for example DXGI_ERROR_ACCESS_LOST or DEVICE_REMOVED thrown by a call that checks its result, or DuplicateOutput refused
+            Release();
+            _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
+            return GrabResult.Unavailable("screen capture failed and will be set up again: " + ex.Message);
+        }
+    }
+
+    /// <inheritdoc />
+    public void Release()
+    {
+        _staging?.Dispose();
+        _staging = null;
+        _stagingWidth = 0;
+        _stagingHeight = 0;
+        _hasPicture = false;
+        _duplication?.Dispose(); // disposing the duplication also gives up a frame that may still be held
+        _duplication = null;
+        _context?.Dispose();
+        _context = null;
+        _device?.Dispose();
+        _device = null;
+        _monitor = IntPtr.Zero;
+        _outputBounds = default;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+        Release();
+        _bgr?.Dispose();
+        _bgr = null;
+        _disposed = true;
+    }
+
+    /// <summary>Finds the output of <paramref name="monitor"/>, creates the device on its adapter and duplicates the output. Returns null, or why it failed.</summary>
+    private string? SetUp(IntPtr monitor, PixelRect bounds)
+    {
+        if (Vx.DXGI.CreateDXGIFactory1<Vx.IDXGIFactory1>(out var factory).Failure || factory is null)
+            return "DXGI could not be started";
+        using (factory)
+        {
+            // The indexes are uint in Vortice 3.x. If the build says "cannot convert uint to int" (an older Vortice), use int for a and o instead.
+            for (uint a = 0; factory.EnumAdapters1(a, out var adapter).Success; a++)
+            {
+                using (adapter)
+                {
+                    for (uint o = 0; adapter.EnumOutputs(o, out var output).Success; o++)
+                    {
+                        using (output)
+                        {
+                            if (output.Description.Monitor != monitor)
+                                continue;
+                            return Duplicate(adapter, output, monitor, bounds);
+                        }
+                    }
+                }
+            }
+        }
+
+        return "DXGI has no output for the monitor that shows the game";
+    }
+
+    private string? Duplicate(Vx.IDXGIAdapter1 adapter, Vx.IDXGIOutput output, IntPtr monitor, PixelRect bounds)
+    {
+        var levels = new[] { Vc.FeatureLevel.Level_11_1, Vc.FeatureLevel.Level_11_0, Vc.FeatureLevel.Level_10_1, Vc.FeatureLevel.Level_10_0 };
+        if (Vd.D3D11.D3D11CreateDevice(adapter, Vc.DriverType.Unknown, Vd.DeviceCreationFlags.BgraSupport, levels, out Vd.ID3D11Device? device).Failure || device is null)
+            return "a Direct3D 11 device could not be created on the graphics adapter of the game's monitor";
+        _device = device;
+        _context = device.ImmediateContext;
+
+        using var output1 = output.QueryInterface<Vx.IDXGIOutput1>();
+        _duplication = output1.DuplicateOutput(device); // throws a SharpGenException when refused (access denied, not available, unsupported)
+        _monitor = monitor;
+        _outputBounds = bounds;
+        return null;
+    }
+
+    private GrabResult CopyRegion(Rect region, PixelRect outputBounds)
+    {
+        var duplication = _duplication!;
+        // Depending on the Vortice version AcquireNextFrame returns the Result or throws a SharpGenException for a failed one (a timeout included): both are handled here.
+        Result acquired;
+        Vx.IDXGIResource? resource = null;
+        try
+        {
+            acquired = duplication.AcquireNextFrame(AcquireTimeoutMs, out _, out resource);
+        }
+        catch (SharpGenException ex)
+        {
+            acquired = ex.ResultCode;
+            resource = null;
+        }
+
+        if (acquired == Vx.ResultCode.WaitTimeout)
+        {
+            resource?.Dispose();
+            // nothing changed on screen: the previous picture stands, but only if there is one of this setup
+            if (_hasPicture && _bgr is { IsDisposed: false } && !_bgr.Empty())
+                return new GrabResult(GrabStatus.NoNewFrame, _bgr);
+            return new GrabResult(GrabStatus.NoNewFrame, null, "waiting for the first screen picture");
+        }
+
+        if (acquired.Failure || resource is null)
+        {
+            resource?.Dispose();
+            // access lost (mode change, secure desktop, another full-screen program) and everything else: start from scratch next time
+            var lost = acquired == Vx.ResultCode.AccessLost;
+            Release();
+            _retryAtTick = Environment.TickCount64 + (lost ? 0 : RetryAfterFailureMs);
+            return GrabResult.Unavailable(lost ? "screen capture was lost and is being set up again" : "screen capture failed: " + acquired);
+        }
+
+        try
+        {
+            using var frame = resource.QueryInterface<Vd.ID3D11Texture2D>();
+            var description = frame.Description;
+            if (description.Width != (uint)outputBounds.Width || description.Height != (uint)outputBounds.Height)
+            {
+                // start from scratch at the next grab (no sooner than the retry pause, so this cannot loop tightly)
+                Release();
+                _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
+                return GrabResult.Unavailable($"the screen picture is {description.Width}x{description.Height}, not the {(int)outputBounds.Width}x{(int)outputBounds.Height} of the monitor (a rotated screen is not supported)");
+            }
+
+            if (description.Format != Vx.Format.B8G8R8A8_UNorm && description.Format != Vx.Format.R8G8B8A8_UNorm)
+            {
+                Release();
+                _retryAtTick = Environment.TickCount64 + RetryAfterFailureMs;
+                return GrabResult.Unavailable($"the screen picture has pixel format {description.Format}, which IRIS cannot read (only 8 bit B8G8R8A8 and R8G8B8A8 are supported)");
+            }
+
+            EnsureStaging(region.Width, region.Height, description.Format);
+            var left = region.X - (int)outputBounds.X;
+            var top = region.Y - (int)outputBounds.Y;
+            // Vortice 3.x keeps Box in Vortice.Mathematics (int fields), not in Vortice.Direct3D11.
+            var box = new Vortice.Mathematics.Box(left, top, 0, left + region.Width, top + region.Height, 1);
+            _context!.CopySubresourceRegion(_staging!, 0, 0, 0, 0, frame, 0, box);
+        }
+        finally
+        {
+            ReleaseFrameQuietly(); // the frame is never kept across reads
+            resource.Dispose();
+        }
+
+        var result = ReadStaging(region.Width, region.Height);
+        MaskOwnWindows(region);
+        return result;
+    }
+
+    private void EnsureStaging(int width, int height, Vx.Format format)
+    {
+        if (_staging is not null && _stagingWidth == width && _stagingHeight == height && _stagingFormat == format)
+            return;
+        _staging?.Dispose();
+        _staging = null;
+        _hasPicture = false; // the Mat belongs to the old region size
+        var description = new Vd.Texture2DDescription
+        {
+            Width = (uint)width, // uint in Vortice 3.x (int in older versions: then drop the casts)
+            Height = (uint)height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = format,
+            SampleDescription = new Vx.SampleDescription(1, 0),
+            Usage = Vd.ResourceUsage.Staging,
+            BindFlags = Vd.BindFlags.None,
+            CPUAccessFlags = Vd.CpuAccessFlags.Read,
+            MiscFlags = Vd.ResourceOptionFlags.None,
+        };
+        _staging = _device!.CreateTexture2D(description);
+        _stagingWidth = width;
+        _stagingHeight = height;
+        _stagingFormat = format;
+    }
+
+    /// <summary>Maps the staging texture, converts BGRA (or RGBA) to BGR into the reusable Mat and unmaps.</summary>
+    private GrabResult ReadStaging(int width, int height)
+    {
+        var staging = _staging!;
+        var context = _context!;
+        var mapped = context.Map(staging, 0, Vd.MapMode.Read, Vd.MapFlags.None);
+        try
+        {
+            _bgr ??= new Mat();
+            using var source = Mat.FromPixelData(height, width, MatType.CV_8UC4, mapped.DataPointer, mapped.RowPitch);
+            var code = _stagingFormat == Vx.Format.B8G8R8A8_UNorm ? ColorConversionCodes.BGRA2BGR : ColorConversionCodes.RGBA2BGR;
+            Cv2.CvtColor(source, _bgr, code);
+        }
+        finally
+        {
+            context.Unmap(staging, 0);
+        }
+
+        _hasPicture = true;
+        return new GrabResult(GrabStatus.Ok, _bgr);
+    }
+
+    /// <summary>
+    /// Second layer against IRIS capturing its own overlay: windows that could not be excluded from capture (<see cref="CaptureExclusion"/>) are painted black in
+    /// the picture, so that brackets and panel colors never reach the detector. Nothing to do (the usual case) when every overlay window is excluded by Windows.
+    /// </summary>
+    private void MaskOwnWindows(Rect region)
+    {
+        if (_bgr is null || _bgr.Empty())
+            return;
+        var bracketsMasked = false;
+        foreach (var mask in CaptureExclusion.VisibleUnexcludedWindows())
+        {
+            if (mask.BracketsOnly)
+            {
+                // The brackets window's rectangle also holds nameplates: painting all of it black would hide them (and make the brackets flicker in the picture).
+                // Only the outlines of the brackets are painted out.
+                if (!bracketsMasked)
+                {
+                    MaskBracketOutlines(region);
+                    bracketsMasked = true;
+                }
+
+                continue;
+            }
+
+            var window = mask.Rect;
+            var left = Math.Max(window.Left, region.X) - region.X;
+            var top = Math.Max(window.Top, region.Y) - region.Y;
+            var right = Math.Min(window.Right, region.X + region.Width) - region.X;
+            var bottom = Math.Min(window.Bottom, region.Y + region.Height) - region.Y;
+            if (right <= left || bottom <= top)
+                continue;
+            Cv2.Rectangle(_bgr, new Rect(left, top, right - left, bottom - top), new Scalar(0, 0, 0), -1);
+        }
+    }
+
+    /// <summary>Extra thickness (pixels) of the black outline over the drawn brackets, so that the antialiased edges and rounding never leave a colored rim.</summary>
+    private const int BracketMaskExtra = 4;
+
+    /// <summary>
+    /// Paints the bracket shapes black, each as a line as thick as the widest thing drawn for it (the dark outline: colored stroke plus the outline on both sides)
+    /// plus <see cref="BracketMaskExtra"/>. The boxes are those of the last model the brackets window drew, in screen pixels as the window draws them; the Mat is
+    /// the capture region, so drawing outside it is clipped by OpenCV.
+    /// </summary>
+    private void MaskBracketOutlines(Rect region)
+    {
+        var bgr = _bgr!;
+        var black = new Scalar(0, 0, 0);
+        foreach (var item in CaptureExclusion.LatestBrackets())
+        {
+            var box = item.ScreenBox;
+            var m = BracketMetrics.For(box);
+            var extent = m.Extent(box);
+            if (extent.Right < region.X || extent.X > region.X + region.Width || extent.Bottom < region.Y || extent.Y > region.Y + region.Height)
+                continue; // nothing of it in the picture
+            var thickness = (int)Math.Ceiling(m.Stroke + 2 * m.Outline) + BracketMaskExtra;
+            Cv2.Polylines(bgr, new[] { BracketPoints(item.Kind, m.LeftX(box), m.Top, m.Width, m.Height, false, region) }, false, black, thickness, LineTypes.Link8);
+            Cv2.Polylines(bgr, new[] { BracketPoints(item.Kind, m.RightX(box), m.Top, m.Width, m.Height, true, region) }, false, black, thickness, LineTypes.Link8);
+        }
+    }
+
+    /// <summary>
+    /// The points (picture pixels, relative to <paramref name="region"/>) of one bracket as an open line: the same shape the overlay draws (OverlayCanvas.BracketShape;
+    /// keep the two in step), with the curves cut into short straight pieces.
+    /// </summary>
+    private static Point[] BracketPoints(MatchKind kind, double x, double y, double width, double height, bool mirrored, Rect region)
+    {
+        var points = new List<Point>(24);
+        (double U, double V) current = (1, 0);
+
+        void Add(double u, double v) =>
+            points.Add(new Point(
+                (int)Math.Round((mirrored ? x + (1 - u) * width : x + u * width) - region.X),
+                (int)Math.Round(y + v * height - region.Y)));
+
+        void Line(double u, double v)
+        {
+            Add(u, v);
+            current = (u, v);
+        }
+
+        void Curve(double cu, double cv, double u, double v)
+        {
+            const int steps = 6;
+            for (var i = 1; i <= steps; i++)
+            {
+                var t = (double)i / steps;
+                var s = 1 - t;
+                Add(s * s * current.U + 2 * s * t * cu + t * t * u, s * s * current.V + 2 * s * t * cv + t * t * v);
+            }
+
+            current = (u, v);
+        }
+
+        Add(1, 0);
+        switch (kind)
+        {
+            case MatchKind.PlayerList: // curly: end, spine, tip in the middle, spine, end
+                Curve(0.5, 0, 0.5, 0.12);
+                Line(0.5, 0.38);
+                Curve(0.5, 0.5, 0, 0.5);
+                Curve(0.5, 0.5, 0.5, 0.62);
+                Line(0.5, 0.88);
+                Curve(0.5, 1, 1, 1);
+                break;
+
+            case MatchKind.OrgList: // square
+                Line(0, 0);
+                Line(0, 1);
+                Line(1, 1);
+                break;
+
+            default: // angle: OrgAttribute and NoMatch
+                Line(0, 0.5);
+                Line(1, 1);
+                break;
+        }
+
+        return points.ToArray();
+    }
+
+    private void ReleaseFrameQuietly()
+    {
+        try
+        {
+            _duplication?.ReleaseFrame();
+        }
+        catch (SharpGenException)
+        {
+            // there was no frame to release (or the duplication was lost): nothing to do
+        }
+    }
+}

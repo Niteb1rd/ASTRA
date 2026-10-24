@@ -33,6 +33,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Screen capture with DXGI Desktop Duplication: Vortice.Windows (MIT licence), thin bindings to Direct3D 11 and DXGI. Only Services\DxgiFrameSource.cs uses them.
+         Vortice.Direct3D11 depends on Vortice.DXGI; both are listed so that the version of each is explicit. -->
+    <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Iris.Core\Iris.Core.csproj" />
   </ItemGroup>
 

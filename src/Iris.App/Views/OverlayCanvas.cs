@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
@@ -8,10 +9,21 @@ using Iris.Core.Social;
 
 namespace Iris.App.Views;
 
+/// <summary>What one overlay window draws. The live overlay uses two windows (brackets, and panel with the confirmation text) so that each can be
+/// as small as what it draws; the test overlay draws everything in one.</summary>
+public enum OverlayLayer
+{
+    All,
+    Brackets,
+    Panel,
+}
+
 /// <summary>
 /// The surface the overlay is drawn on. It draws only in <see cref="OnRender"/> (no child elements), and only when the model or the
 /// layout changes (<see cref="SetContent"/>); between changes WPF keeps the recorded drawing, so an idle overlay costs nothing.
 /// Everything is drawn in physical pixels: a transform undoes the window's DPI scaling, so the model's pixel rectangles are used as they are.
+/// The model's coordinates are game-window pixels; the window may cover only a part of the game window (<see cref="OverlayWindowFit"/>), and
+/// <c>origin</c> of <see cref="SetContent"/> is where that part starts, so the drawing is shifted by it.
 /// </summary>
 public sealed class OverlayCanvas : FrameworkElement
 {
@@ -24,6 +36,7 @@ public sealed class OverlayCanvas : FrameworkElement
     private PanelLayoutResult _panel = PanelLayoutResult.Empty;
     private ToastLayout? _toastLayout;
     private string? _toastText;
+    private PixelRect _origin;
 
     static OverlayCanvas()
     {
@@ -40,35 +53,55 @@ public sealed class OverlayCanvas : FrameworkElement
         IsHitTestVisible = false;
     }
 
-    /// <summary>Replaces what is drawn and redraws once.</summary>
-    public void SetContent(OverlayModel model, PanelLayoutResult panel, ToastLayout? toastLayout, string? toastText)
+    /// <summary>Which parts this surface draws (set once, before the first <see cref="SetContent"/>).</summary>
+    public OverlayLayer Layer { get; set; } = OverlayLayer.All;
+
+    /// <summary>
+    /// Replaces what is drawn and redraws once. <paramref name="origin"/> is the top-left corner (game-window pixels) of the part of the game window that
+    /// this surface covers; only its X and Y are used.
+    /// </summary>
+    public void SetContent(OverlayModel model, PanelLayoutResult panel, ToastLayout? toastLayout, string? toastText, PixelRect origin = default)
     {
         _model = model;
         _panel = panel;
         _toastLayout = toastLayout;
         _toastText = toastText;
+        _origin = origin;
         InvalidateVisual();
     }
 
     protected override void OnRender(DrawingContext dc)
     {
         base.OnRender(dc);
-        if (_model.IsEmpty && _toastText is null)
+        var drawBrackets = Layer != OverlayLayer.Panel && _model.Brackets.Count > 0;
+        var drawPanel = Layer != OverlayLayer.Brackets && (!_panel.IsEmpty || _toastText is not null);
+        if (!drawBrackets && !drawPanel)
             return;
 
         var dpi = VisualTreeHelper.GetDpi(this);
         var undoDpi = new ScaleTransform(1.0 / dpi.DpiScaleX, 1.0 / dpi.DpiScaleY);
         undoDpi.Freeze();
         dc.PushTransform(undoDpi);
+        var shift = new TranslateTransform(-_origin.X, -_origin.Y);
+        shift.Freeze();
+        dc.PushTransform(shift);
         try
         {
-            foreach (var item in _model.Brackets)
-                DrawBrackets(dc, item);
-            DrawPanel(dc);
-            DrawToast(dc);
+            if (drawBrackets)
+            {
+                foreach (var item in _model.Brackets)
+                    DrawBrackets(dc, item);
+            }
+
+            if (drawPanel)
+            {
+                DrawPanel(dc);
+                DrawToast(dc);
+            }
         }
         finally
         {
+            dc.Pop();
             dc.Pop();
         }
     }
@@ -79,17 +112,14 @@ public sealed class OverlayCanvas : FrameworkElement
 
     private static void DrawBrackets(DrawingContext dc, BracketItem item)
     {
+        // the sizes live in BracketMetrics, which also tells the window how much room the brackets need
         var box = item.Box;
-        var padding = box.Height * 0.12;                 // the brackets are a little taller than the nameplate
-        var height = box.Height + 2 * padding;
-        var top = box.Y - padding;
-        var width = height * 0.24;
-        var gap = box.Height * 0.18;                      // air between the nameplate and the bracket
-        var stroke = Math.Max(2.0, height * 0.06);
-        var outline = Math.Max(1.0, stroke * 0.5);        // the dark edge sticks out this far on each side of the colored line
+        var m = BracketMetrics.For(box);
+        var stroke = m.Stroke;
+        var outline = m.Outline;                          // the dark edge sticks out this far on each side of the colored line
 
-        var left = BracketShape(item.Kind, box.X - gap - width, top, width, height, mirrored: false);
-        var right = BracketShape(item.Kind, box.Right + gap, top, width, height, mirrored: true);
+        var left = BracketShape(item.Kind, m.LeftX(box), m.Top, m.Width, m.Height, mirrored: false);
+        var right = BracketShape(item.Kind, m.RightX(box), m.Top, m.Width, m.Height, mirrored: true);
 
         var darkPen = RoundPen(DarkBrush, stroke + 2 * outline);
         var colorPen = RoundPen(ColorBrushes[(int)item.Color], stroke);
@@ -101,8 +131,13 @@ public sealed class OverlayCanvas : FrameworkElement
         dc.DrawGeometry(null, colorPen, right);
     }
 
+    // The brackets are redrawn up to 120 times a second with the same few pen sizes: the pens are kept (this surface lives on the UI thread only).
+    private static readonly Dictionary<(Brush Brush, double Thickness), Pen> Pens = new();
+
     private static Pen RoundPen(Brush brush, double thickness)
     {
+        if (Pens.TryGetValue((brush, thickness), out var known))
+            return known;
         var pen = new Pen(brush, thickness)
         {
             StartLineCap = PenLineCap.Round,
@@ -110,6 +145,9 @@ public sealed class OverlayCanvas : FrameworkElement
             LineJoin = PenLineJoin.Round,
         };
         pen.Freeze(); // frozen drawing resources are cheaper for WPF to keep and render (their brush is frozen too)
+        if (Pens.Count >= 64)
+            Pens.Clear(); // a plate that grows keeps changing the thickness; do not collect them forever
+        Pens[(brush, thickness)] = pen;
         return pen;
     }
 

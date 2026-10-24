@@ -2,7 +2,7 @@ namespace Iris.Core.Detection;
 
 /// <summary>
 /// The tunable numbers of <see cref="NameplateDetector"/>. The defaults were tuned on gameplay footage at 3440x1440 (see the
-/// README section "Phase 3, step 3: the detector v2 and the tracker"); every pixel size below is given for a frame
+/// README section "Phase 3, step 2: the nameplate detector (v2), the tracker and the replay tool"); every pixel size below is given for a frame
 /// 1440 pixels high and is scaled with the real frame height (see <see cref="ReferenceHeight"/>).
 /// </summary>
 public sealed record NameplateDetectorSettings
@@ -30,6 +30,30 @@ public sealed record NameplateDetectorSettings
     /// letters relative to their own capital height, so it copes with other sizes by itself, but its model was trained at 1440.
     /// </summary>
     public int ReferenceHeight { get; init; } = 1440;
+
+    /// <summary>
+    /// The frame height that the pixel constants are scaled with (see <see cref="ReferenceHeight"/>). 0, the default, means the height of the image
+    /// given to the detector, which is right for a whole frame. The live loop gives the detector only a CROP of the screen (the scan region plus the
+    /// <see cref="ContextPadding"/> around it) and sets this to the height of the game window, so that the constants are scaled by the real screen
+    /// and not by the crop. Everything else (the scan region fractions) stays relative to the image given.
+    /// </summary>
+    public int ScaleHeight { get; init; }
+
+    /// <summary>The height the pixel constants are scaled with for an image <paramref name="imageHeight"/> pixels high (<see cref="ScaleHeight"/> or the image's).</summary>
+    public int EffectiveScaleHeight(int imageHeight) => ScaleHeight > 0 ? ScaleHeight : imageHeight;
+
+    /// <summary>
+    /// Pixels of context the cheap pass looks at beside the scan region (to see obstacles next to a line near the region's edge): three of the
+    /// tallest letter lines plus 4 plus 2, scaled with <paramref name="scaleHeight"/> (the height of the whole frame or window). A caller that
+    /// crops the frame itself must keep this much around the region, otherwise the lines at the region's edge are judged on less context than in a whole frame.
+    /// </summary>
+    public int ContextPadding(int scaleHeight) => 3 * Scale(scaleHeight, 22) + Scale(scaleHeight, 4) + 2;
+
+    /// <summary>
+    /// Pixels of context needed above and below the scan region: the colour mask's morphological kernel (about 11 pixels at the reference height) reads
+    /// the pixels around each pixel, so a caller that crops must keep half a kernel plus a margin above and below the region to treat its edge like the rest of the frame (the padding is cheap, and harmless where the detector would not have needed it).
+    /// </summary>
+    public int VerticalContextPadding(int scaleHeight) => Scale(scaleHeight, 11) + 2;
 
     /// <summary>A name read from a nameplate has 4 to 64 characters (letters, digits, "-" and "_"); a read that starts or ends with "-" is no vote (<see cref="NameShape"/>).</summary>
     public int MinNameLength { get; init; } = 4;
@@ -135,6 +159,8 @@ public sealed record NameplateDetectorSettings
             return "The scan region needs 0 <= top < bottom <= 1.";
         if (ReferenceHeight <= 0)
             return "ReferenceHeight must be positive.";
+        if (ScaleHeight < 0)
+            return "ScaleHeight must not be negative (0 = the height of the image).";
         if (MinNameLength < 1 || MaxNameLength < MinNameLength)
             return "The name length limits are not usable.";
         if (MaxCandidateTopsPerFrame < 1)
