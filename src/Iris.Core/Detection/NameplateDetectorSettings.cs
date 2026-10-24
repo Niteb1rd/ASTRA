@@ -75,6 +75,13 @@ public sealed record NameplateDetectorSettings
     /// </summary>
     public double ClearLines { get; init; } = 3.0;
 
+    /// <summary>
+    /// The crowd exception: ink beside a line does not break its isolation when it is inside the box of another text line that is itself part of a
+    /// candidate pair, and that pair reads as a real nameplate (a name over a valid distance). Nameplates drift close together; HUD clutter and
+    /// multi-word text beside a line still reject it.
+    /// </summary>
+    public bool CrowdException { get; init; } = true;
+
     /// <summary>Shapes of at most this many pixels (at 1440 high) are specks (stars, noise), not obstacles for the isolation check.</summary>
     public double SpeckArea { get; init; } = 4.0;
 

@@ -82,17 +82,18 @@ public sealed class NameplateDetector : IDisposable
     public IReadOnlyList<NameplateDetection> Detect(Mat bgr)
     {
         var candidates = FindCandidates(bgr);
+        var evaluator = CreateEvaluator(bgr, candidates);
         var found = new List<NameplateDetection>();
         var confirmed = new HashSet<int>();
         var tops = new HashSet<int>();
-        foreach (var (top, bottom) in candidates.Pairs)
+        foreach (var (top, bottom) in candidates.Pairs.Concat(candidates.CrowdPairs.Select(c => (c.Top, c.Bottom))))
         {
             if (confirmed.Contains(top))
                 continue;
             if (!tops.Contains(top) && tops.Count >= _settings.MaxCandidateTopsPerFrame)
                 continue;
             tops.Add(top);
-            var evaluation = Evaluate(bgr, candidates.Boxes[top], candidates.Boxes[bottom]);
+            var evaluation = evaluator.Evaluate(candidates.Boxes[top], candidates.Boxes[bottom]);
             if (evaluation.IsNameplate && evaluation.Detection is not null)
             {
                 found.Add(evaluation.Detection);
@@ -102,6 +103,12 @@ public sealed class NameplateDetector : IDisposable
 
         return found;
     }
+
+    /// <summary>
+    /// An evaluator for the candidate pairs of one frame (see <see cref="FrameEvaluator"/>): strict pairs are evaluated with
+    /// <see cref="Evaluate"/>, crowd pairs also need the nameplates beside them to be real. The frame must stay unchanged while it is used.
+    /// </summary>
+    public FrameEvaluator CreateEvaluator(Mat bgr, NameplateCandidates candidates) => new(this, bgr, candidates);
 
     /// <summary>
     /// The expensive part for one candidate pair (the boxes come from <see cref="FindCandidates"/>): reads the lower line as a distance
@@ -148,7 +155,7 @@ public sealed class NameplateDetector : IDisposable
         var x1 = Math.Min(width, (int)(_settings.RegionRight * width));
         var y0 = (int)(_settings.RegionTop * height);
         var y1 = Math.Min(height, (int)(_settings.RegionBottom * height));
-        var empty = new NameplateCandidates(Array.Empty<Rect>(), Array.Empty<(int, int)>(), Array.Empty<(int, int)>());
+        var empty = new NameplateCandidates(Array.Empty<Rect>(), Array.Empty<(int, int)>(), Array.Empty<(int, int)>(), Array.Empty<CrowdPair>());
         if (x1 <= x0 || y1 <= y0)
             return empty;
 
@@ -176,11 +183,11 @@ public sealed class NameplateDetector : IDisposable
         for (var i = 0; i < clear.Length; i++)
             clear[i] = IsClear(local[i], height);
 
-        var (pairs, loose) = PairLines(local, clear, height);
+        var (pairs, loose, crowd) = SortPairs(local, clear, PairLines(local, height));
         var boxes = new Rect[local.Count];
         for (var i = 0; i < boxes.Length; i++)
             boxes[i] = new Rect(local[i].X + px0, local[i].Y + y0, local[i].Width, local[i].Height);
-        return new NameplateCandidates(boxes, pairs, loose);
+        return new NameplateCandidates(boxes, pairs, loose, crowd);
     }
 
     public void Dispose()
@@ -401,17 +408,15 @@ public sealed class NameplateDetector : IDisposable
 
     /// <summary>
     /// A name line above a distance line: centered on each other, the same height, the gap up to 1.4 line heights, and not a left aligned
-    /// label column (equal left edges while the widths differ). Strict pairs have both lines isolated; loose pairs pass every other test but
-    /// at least one line has ink near it (they may only continue a track that is already a nameplate).
+    /// label column (equal left edges while the widths differ). Every such pair is returned, whether or not its lines are isolated.
     /// </summary>
-    private (List<(int Top, int Bottom)> Strict, List<(int Top, int Bottom)> Loose) PairLines(List<Rect> boxes, bool[] clear, int frameHeight)
+    private List<(int Top, int Bottom)> PairLines(List<Rect> boxes, int frameHeight)
     {
         var heightTolerance = Scaled(frameHeight, 4);
         var centerTolerance = Scaled(frameHeight, _settings.CenterTolerance);
         var leftTolerance = Scaled(frameHeight, _settings.LeftTolerance);
         var leftWidthDifference = Scaled(frameHeight, _settings.LeftWidthDifference);
         var pairs = new List<(int, int)>();
-        var loose = new List<(int, int)>();
         for (var t = 0; t < boxes.Count; t++)
         {
             var top = boxes[t];
@@ -431,11 +436,132 @@ public sealed class NameplateDetector : IDisposable
                     continue;
                 if (Math.Abs(top.X - bottom.X) <= leftTolerance && Math.Abs(top.Width - bottom.Width) >= leftWidthDifference)
                     continue;
-                (clear[t] && clear[b] ? pairs : loose).Add((t, b));
+                pairs.Add((t, b));
             }
         }
 
-        return (pairs, loose);
+        return pairs;
+    }
+
+    /// <summary>
+    /// Sorts the geometric pairs. STRICT: both lines isolated. CROWD (when <see cref="NameplateDetectorSettings.CrowdException"/> is on): the lines are
+    /// isolated except for ink that lies inside the boxes of other text lines, and every one of those lines belongs to another geometric pair
+    /// (a line over a line): such a pair can be a nameplate in a crowd, valid once the neighbours read as nameplates themselves
+    /// (<see cref="FrameEvaluator"/>). LOOSE: everything else.
+    /// </summary>
+    private (List<(int Top, int Bottom)> Strict, List<(int Top, int Bottom)> Loose, List<CrowdPair> Crowd) SortPairs(
+        List<Rect> boxes, bool[] clear, List<(int Top, int Bottom)> all)
+    {
+        var strict = new List<(int, int)>();
+        var loose = new List<(int, int)>();
+        var crowd = new List<CrowdPair>();
+        var pairsOfLine = new Dictionary<int, List<(int Top, int Bottom)>>();
+        foreach (var pair in all)
+        {
+            foreach (var line in new[] { pair.Top, pair.Bottom })
+            {
+                if (!pairsOfLine.TryGetValue(line, out var list))
+                    pairsOfLine[line] = list = new List<(int, int)>();
+                list.Add(pair);
+            }
+        }
+
+        var neighbourCache = new Dictionary<int, List<int>?>();
+        foreach (var (t, b) in all)
+        {
+            if (clear[t] && clear[b])
+            {
+                strict.Add((t, b));
+                continue;
+            }
+
+            if (_settings.CrowdException)
+            {
+                var need = new HashSet<int>();
+                var blocked = false;
+                foreach (var line in new[] { t, b })
+                {
+                    if (!neighbourCache.TryGetValue(line, out var near))
+                        neighbourCache[line] = near = clear[line] ? new List<int>() : Neighbours(boxes, line);
+                    if (near is null)
+                    {
+                        blocked = true;
+                        break;
+                    }
+
+                    need.UnionWith(near);
+                }
+
+                if (!blocked)
+                {
+                    need.Remove(t);
+                    need.Remove(b);
+                    if (need.Count > 0 && need.All(k => pairsOfLine.TryGetValue(k, out var others) && others.Any(o => o.Top != t && o.Top != b && o.Bottom != t && o.Bottom != b)))
+                    {
+                        crowd.Add(new CrowdPair(t, b, need.OrderBy(k => k).ToList()));
+                        continue;
+                    }
+                }
+            }
+
+            loose.Add((t, b));
+        }
+
+        return (strict, loose, crowd);
+    }
+
+    /// <summary>
+    /// The text lines whose boxes hold the obstacle ink within <see cref="NameplateDetectorSettings.ClearLines"/> line heights to the left and right of
+    /// line <paramref name="index"/> (in the rows of the line), sorted; empty when there is no such ink; null when some of that ink lies outside every
+    /// other line's box (a ship, a HUD arc, a panel: the line is not isolated for good).
+    /// </summary>
+    private List<int>? Neighbours(List<Rect> boxes, int index)
+    {
+        var box = boxes[index];
+        var reach = (int)Math.Ceiling(_settings.ClearLines * box.Height);
+        var rowStart = Math.Max(0, box.Y);
+        var rowEnd = Math.Min(_obstacle.Rows, box.Y + box.Height);
+        var found = new SortedSet<int>();
+        if (rowEnd <= rowStart)
+            return new List<int>();
+
+        var sides = new[]
+        {
+            (Start: Math.Max(0, box.X - reach), End: box.X),
+            (Start: box.X + box.Width, End: Math.Min(_obstacle.Cols, box.X + box.Width + reach)),
+        };
+        foreach (var (start, end) in sides)
+        {
+            if (end <= start)
+                continue;
+            using var window = new Mat(_obstacle, new Rect(start, rowStart, end - start, rowEnd - rowStart));
+            if (Cv2.CountNonZero(window) == 0)
+                continue;
+            using var rest = window.Clone();
+            for (var k = 0; k < boxes.Count; k++)
+            {
+                if (k == index)
+                    continue;
+                var other = boxes[k];
+                if (other.X >= end || other.X + other.Width <= start || other.Y >= rowEnd || other.Y + other.Height <= rowStart)
+                    continue;
+                var x0 = Math.Max(start, other.X);
+                var x1 = Math.Min(end, other.X + other.Width);
+                var y0 = Math.Max(rowStart, other.Y);
+                var y1 = Math.Min(rowEnd, other.Y + other.Height);
+                var overlap = new Rect(x0 - start, y0 - rowStart, x1 - x0, y1 - y0);
+                using (var part = new Mat(window, overlap))
+                    if (Cv2.CountNonZero(part) > 0)
+                        found.Add(k);
+                using (var restPart = new Mat(rest, overlap))
+                    restPart.SetTo(Scalar.All(0));
+            }
+
+            if (Cv2.CountNonZero(rest) > 0)
+                return null;
+        }
+
+        return found.ToList();
     }
 
     // ------------------------------------------------------------------------------------------------ stage 4: reading

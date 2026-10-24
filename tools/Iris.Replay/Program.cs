@@ -138,15 +138,12 @@ public static class Program
 
                     var watch = Stopwatch.StartNew();
                     var candidates = detector.FindCandidates(image);
-                    var list = new List<TrackCandidate>(candidates.Pairs.Count + candidates.LoosePairs.Count);
-                    foreach (var (t, b) in candidates.Pairs)
-                        list.Add(new TrackCandidate(candidates.Boxes[t], candidates.Boxes[b], true));
-                    foreach (var (t, b) in candidates.LoosePairs)
-                        list.Add(new TrackCandidate(candidates.Boxes[t], candidates.Boxes[b], false));
+                    var evaluator = detector.CreateEvaluator(image, candidates);
+                    var list = evaluator.TrackCandidates();
                     var evaluated = new Dictionary<Rect, PairEvaluation>();
                     var update = tracker.Update(frame.Number, frame.TimeMs, list, (top, bottom) =>
                     {
-                        var evaluation = detector.Evaluate(image, top, bottom);
+                        var evaluation = evaluator.Evaluate(top, bottom);
                         evaluated[top] = evaluation;
                         return new TrackEvaluation(evaluation.IsNameplate, evaluation.Detection?.Name);
                     });

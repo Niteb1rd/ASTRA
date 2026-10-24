@@ -9,7 +9,7 @@ namespace Iris.Core.Tests;
 /// PARITY WITH PYTHON for the nameplate detector. The frames are synthetic (made-up names drawn with a Hershey font on generated
 /// backgrounds, plus decoys: single lines, a speed line, a name over a solid bar, a HUD word pair, a left aligned label column,
 /// a distance without a decimal, two words, a neighbor too close, a reticle ring, a nameplate outside the scan region, frames of two
-/// sizes and one with a bright sky); the expected values come from the Python reference (detector_ref.py v2 with OpenCV 5.0 in
+/// sizes, one with a bright sky and one with a crowd: nameplates side by side, a plate beside a HUD word pair, a plate beside a ring); the expected values come from the Python reference (detector_ref.py v2 with OpenCV 5.0 in
 /// Python, OpenCvSharp 4.11 here). Boxes may differ by a pixel if another OpenCV build rounds differently; names and the text read
 /// from the distance line must be equal.
 /// </summary>
@@ -33,11 +33,12 @@ public class NameplateDetectorTests
     {
         var frames = DetectorFixtures.Load();
 
-        Assert.Equal(4, frames.Count);
+        Assert.Equal(5, frames.Count);
         Assert.All(frames, f => Assert.True(File.Exists(f.ImagePath), f.ImagePath));
         Assert.Contains(frames, f => f.Default.Detections.Length == 0);
         Assert.Contains(frames, f => f.Height != 1440); // a frame that needs the scaled constants
         Assert.Contains(frames, f => f.WholeFrame.LoosePairs.Length > 0); // a pair that fails only the isolation test
+        Assert.Contains(frames, f => f.WholeFrame.CrowdPairs.Length > 0); // a pair that is isolated but for the text of other pairs
     }
 
     /// <summary>The numbers the reference used to make the fixtures are the numbers of <see cref="NameplateDetectorSettings.Default"/>.</summary>
@@ -67,6 +68,7 @@ public class NameplateDetectorTests
         Assert.Equal(s.LeftTolerance, p.GetProperty("left_tol").GetDouble());
         Assert.Equal(s.LeftWidthDifference, p.GetProperty("left_width_diff").GetDouble());
         Assert.Equal(s.DistanceMinInk, p.GetProperty("dist_min_ink").GetDouble());
+        Assert.Equal(s.CrowdException, p.GetProperty("crowd_exception").GetBoolean());
     }
 
     [Fact]
@@ -134,7 +136,8 @@ public class NameplateDetectorTests
     }
 
     /// <summary>
-    /// The evaluation of every candidate pair (strict and loose) equals the reference: whether it is a nameplate, and which name it read.
+    /// The evaluation of every candidate pair (strict, crowd and loose) equals the reference: its kind, whether the pair alone is a nameplate,
+    /// whether it is one for the frame evaluator (a crowd pair needs real nameplates beside it), and which name it read.
     /// </summary>
     [OpenCvFact]
     public void Evaluations_MatchPython()
@@ -148,14 +151,18 @@ public class NameplateDetectorTests
             {
                 using var detector = new NameplateDetector(reader, settings);
                 var candidates = detector.FindCandidates(image);
-                var pairs = candidates.Pairs.Select(p => (p, true)).Concat(candidates.LoosePairs.Select(p => (p, false))).ToList();
+                var evaluator = detector.CreateEvaluator(image, candidates);
+                var pairs = candidates.Pairs.Select(p => (p.Top, p.Bottom, Kind: "strict"))
+                    .Concat(candidates.CrowdPairs.Select(p => (p.Top, p.Bottom, Kind: "crowd")))
+                    .Concat(candidates.LoosePairs.Select(p => (p.Top, p.Bottom, Kind: "loose")))
+                    .ToList();
                 if (pairs.Count != expected.Evaluations.Length)
                 {
                     problems.Add($"{frame.File} {label}: {pairs.Count} pairs to evaluate, Python {expected.Evaluations.Length}");
                     continue;
                 }
 
-                foreach (var ((top, bottom), strict) in pairs)
+                foreach (var (top, bottom, kind) in pairs)
                 {
                     var topBox = candidates.Boxes[top];
                     var bottomBox = candidates.Boxes[bottom];
@@ -166,9 +173,12 @@ public class NameplateDetectorTests
                         continue;
                     }
 
-                    var actual = detector.Evaluate(image, topBox, bottomBox);
-                    if (reference.Strict != strict)
-                        problems.Add($"{frame.File} {label}: {topBox} strict={strict}, Python {reference.Strict}");
+                    var alone = detector.Evaluate(image, topBox, bottomBox);
+                    var actual = evaluator.Evaluate(topBox, bottomBox);
+                    if (reference.Kind != kind)
+                        problems.Add($"{frame.File} {label}: {topBox} is {kind}, Python {reference.Kind}");
+                    else if (reference.PairIsNameplate != alone.IsNameplate)
+                        problems.Add($"{frame.File} {label}: {topBox} pair alone nameplate={alone.IsNameplate}, Python {reference.PairIsNameplate}");
                     else if (reference.IsNameplate != actual.IsNameplate)
                         problems.Add($"{frame.File} {label}: {topBox} nameplate={actual.IsNameplate}, Python {reference.IsNameplate}");
                     else if (reference.Name != actual.Detection?.Name)
@@ -255,6 +265,93 @@ public class NameplateDetectorTests
         Assert.True(evaluation.IsNameplate);
         Assert.Equal("NEIGHBOR_ONE", evaluation.Detection?.Name);
         Assert.DoesNotContain(detector.Detect(image), d => d.Name == "NEIGHBOR_ONE");
+    }
+
+    // ------------------------------------------------------------------------------------------------ the crowd exception (frame_e)
+
+    private static (Mat Image, NameplateDetector Detector, NameplateCandidates Candidates, FrameEvaluator Evaluator) CrowdFrame(NameplateDetectorSettings settings)
+    {
+        var frame = DetectorFixtures.Load().First(f => f.File == "frame_e.png");
+        var image = Cv2.ImRead(frame.ImagePath, ImreadModes.Color);
+        var detector = new NameplateDetector(new NameplateReader(Model), settings);
+        var candidates = detector.FindCandidates(image);
+        return (image, detector, candidates, detector.CreateEvaluator(image, candidates));
+    }
+
+    /// <summary>Two real nameplates side by side (each isolated except for the other's text) are both found; the lone plate too.</summary>
+    [OpenCvFact]
+    public void NameplatesSideBySide_AreBothFound()
+    {
+        var (image, detector, candidates, _) = CrowdFrame(WholeFrame);
+        using (image)
+        using (detector)
+        {
+            var names = detector.Detect(image).Select(d => d.Name).ToList();
+
+            Assert.Contains("CROWD_LEFT", names);
+            Assert.Contains("CROWD_RIGHT", names);
+            Assert.Contains("LONE_PLATE", names);
+            Assert.Equal(4, candidates.CrowdPairs.Count); // the two real plates, and the plate and HUD word pair of the next test
+            Assert.All(candidates.CrowdPairs, c => Assert.Single(c.Neighbours)); // each has one line of text beside it
+        }
+    }
+
+    /// <summary>
+    /// A plate beside a HUD word pair (no distance anchor) is a crowd candidate, but the neighbour is no nameplate, so it is rejected
+    /// although it reads as a nameplate on its own. A plate beside a ring is not a crowd candidate at all (a ring is no text line): it stays loose.
+    /// </summary>
+    [OpenCvFact]
+    public void ClutterBesideALine_DoesNotMakeItACrowd()
+    {
+        var (image, detector, candidates, evaluator) = CrowdFrame(WholeFrame);
+        using (image)
+        using (detector)
+        {
+            var names = detector.Detect(image).Select(d => d.Name).ToList();
+            Assert.DoesNotContain("BESIDE_HUD", names);
+            Assert.DoesNotContain("HUDWORD1", names);
+            Assert.DoesNotContain("RINGSIDE_ONE", names);
+
+            var besideHud = candidates.CrowdPairs.Select(c => (candidates.Boxes[c.Top], candidates.Boxes[c.Bottom]))
+                .Single(p => Near(p.Item1, new Rect(343, 454, 113, 14)));
+            Assert.True(detector.Evaluate(image, besideHud.Item1, besideHud.Item2).IsNameplate); // on its own it is a nameplate ...
+            Assert.False(evaluator.Evaluate(besideHud.Item1, besideHud.Item2).IsNameplate);     // ... but the crowd around it is not
+
+            var ring = Assert.Single(candidates.LoosePairs);
+            Assert.True(Near(candidates.Boxes[ring.Top], new Rect(336, 654, 128, 14)));
+            Assert.True(detector.Evaluate(image, candidates.Boxes[ring.Top], candidates.Boxes[ring.Bottom]).IsNameplate);
+        }
+    }
+
+    /// <summary>With the exception switched off the crowd pairs are loose pairs again (the v2 rule): nothing in the crowd starts a track.</summary>
+    [OpenCvFact]
+    public void CrowdException_CanBeSwitchedOff()
+    {
+        var (image, detector, candidates, _) = CrowdFrame(WholeFrame with { CrowdException = false });
+        using (image)
+        using (detector)
+        {
+            Assert.Empty(candidates.CrowdPairs);
+            Assert.Equal(5, candidates.LoosePairs.Count); // 4 former crowd pairs and the ring
+            var names = detector.Detect(image).Select(d => d.Name).ToList();
+            Assert.Equal(new[] { "LONE_PLATE" }, names);
+        }
+    }
+
+    /// <summary>The tracker driver sees crowd pairs as strict candidates (their evaluation checks the neighbours), loose pairs as non-strict.</summary>
+    [OpenCvFact]
+    public void TrackCandidates_ListStrictCrowdAndLoosePairs()
+    {
+        var (image, detector, candidates, evaluator) = CrowdFrame(WholeFrame);
+        using (image)
+        using (detector)
+        {
+            var list = evaluator.TrackCandidates();
+
+            Assert.Equal(candidates.Pairs.Count + candidates.CrowdPairs.Count + candidates.LoosePairs.Count, list.Count);
+            Assert.Equal(candidates.Pairs.Count + candidates.CrowdPairs.Count, list.Count(c => c.Strict));
+            Assert.Equal(candidates.LoosePairs.Count, list.Count(c => !c.Strict));
+        }
     }
 
     [OpenCvFact]
@@ -386,6 +483,10 @@ public class NameplateDetectorTests
         var actualPairs = actual.Pairs.Select(p => (actualRank[p.Top], actualRank[p.Bottom])).OrderBy(p => p).ToArray();
         if (!expectedPairs.SequenceEqual(actualPairs))
             problems.Add($"{where}: pairs {string.Join(",", actualPairs)}, Python {string.Join(",", expectedPairs)}");
+        var expectedCrowd = expected.CrowdPairs.Select(p => (expectedRank[p.Top], expectedRank[p.Bottom], string.Join("+", p.Neighbours.Select(n => expectedRank[n]).OrderBy(n => n)))).OrderBy(p => p).ToArray();
+        var actualCrowd = actual.CrowdPairs.Select(p => (actualRank[p.Top], actualRank[p.Bottom], string.Join("+", p.Neighbours.Select(n => actualRank[n]).OrderBy(n => n)))).OrderBy(p => p).ToArray();
+        if (!expectedCrowd.SequenceEqual(actualCrowd))
+            problems.Add($"{where}: crowd pairs {string.Join(",", actualCrowd)}, Python {string.Join(",", expectedCrowd)}");
         var expectedLoose = expected.LoosePairs.Select(p => (expectedRank[p.Top], expectedRank[p.Bottom])).OrderBy(p => p).ToArray();
         var actualLoose = actual.LoosePairs.Select(p => (actualRank[p.Top], actualRank[p.Bottom])).OrderBy(p => p).ToArray();
         if (!expectedLoose.SequenceEqual(actualLoose))

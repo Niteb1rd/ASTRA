@@ -20,7 +20,8 @@
   "center_tol": 5.0,
   "left_tol": 2.0,
   "left_width_diff": 8.0,
-  "dist_min_ink": 0.003
+  "dist_min_ink": 0.003,
+  "crowd_exception": true
  },
  "frames": [
   {
@@ -208,6 +209,7 @@
       22
      ]
     ],
+    "crowd": [],
     "evaluations": [
      {
       "top": [
@@ -222,7 +224,8 @@
        55,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "SYNTH_ALPHA",
       "score": -0.19528714814043283,
@@ -241,7 +244,8 @@
        152,
        17
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": false,
       "is_nameplate": false,
       "name": null,
       "score": 0.0,
@@ -260,7 +264,8 @@
        68,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "SYNTH_BRAVO",
       "score": -0.1627348378339592,
@@ -279,7 +284,8 @@
        53,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": false,
       "is_nameplate": false,
       "name": null,
       "score": 0.0,
@@ -298,7 +304,8 @@
        54,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "DUMMY_DELTA",
       "score": -0.08312095680855223,
@@ -317,7 +324,8 @@
        55,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "FIXTURE_ECHO",
       "score": -0.40188059591319575,
@@ -336,7 +344,8 @@
        55,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": false,
       "is_nameplate": false,
       "name": null,
       "score": 0.0,
@@ -355,7 +364,8 @@
        50,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": false,
       "is_nameplate": false,
       "name": null,
       "score": 0.0,
@@ -374,7 +384,8 @@
        55,
        13
       ],
-      "strict": false,
+      "kind": "loose",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "NEIGHBOR_ONE",
       "score": -0.7886170734497601,
@@ -649,6 +660,7 @@
       24
      ]
     ],
+    "crowd": [],
     "evaluations": [
      {
       "top": [
@@ -663,7 +675,8 @@
        55,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "SYNTH_ALPHA",
       "score": -0.19528714814043283,
@@ -682,7 +695,8 @@
        152,
        17
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": false,
       "is_nameplate": false,
       "name": null,
       "score": 0.0,
@@ -701,7 +715,8 @@
        55,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "TESTPLATE1",
       "score": -0.06387466192577235,
@@ -720,7 +735,8 @@
        68,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "SYNTH_BRAVO",
       "score": -0.1627348378339592,
@@ -739,7 +755,8 @@
        53,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": false,
       "is_nameplate": false,
       "name": null,
       "score": 0.0,
@@ -758,7 +775,8 @@
        54,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "DUMMY_DELTA",
       "score": -0.08312095680855223,
@@ -777,7 +795,8 @@
        55,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "FIXTURE_ECHO",
       "score": -0.40188059591319575,
@@ -796,7 +815,8 @@
        55,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": false,
       "is_nameplate": false,
       "name": null,
       "score": 0.0,
@@ -815,7 +835,8 @@
        50,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": false,
       "is_nameplate": false,
       "name": null,
       "score": 0.0,
@@ -834,7 +855,8 @@
        55,
        13
       ],
-      "strict": false,
+      "kind": "loose",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "NEIGHBOR_ONE",
       "score": -0.7886170734497601,
@@ -1006,6 +1028,7 @@
      ]
     ],
     "loose": [],
+    "crowd": [],
     "evaluations": [
      {
       "top": [
@@ -1020,7 +1043,8 @@
        43,
        11
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "SYNTH_ALPHA",
       "score": -0.15195071820689418,
@@ -1039,7 +1063,8 @@
        54,
        11
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "SYNTH_BRAVO",
       "score": -0.16213126650521809,
@@ -1058,7 +1083,8 @@
        43,
        11
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "DUMMY_DELTA",
       "score": -0.0662424557860949,
@@ -1191,6 +1217,7 @@
      ]
     ],
     "loose": [],
+    "crowd": [],
     "evaluations": [
      {
       "top": [
@@ -1205,7 +1232,8 @@
        43,
        11
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "SYNTH_ALPHA",
       "score": -0.15195071820689418,
@@ -1224,7 +1252,8 @@
        54,
        11
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "SYNTH_BRAVO",
       "score": -0.16213126650521809,
@@ -1243,7 +1272,8 @@
        43,
        11
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "DUMMY_DELTA",
       "score": -0.0662424557860949,
@@ -1331,6 +1361,7 @@
      ]
     ],
     "loose": [],
+    "crowd": [],
     "evaluations": [
      {
       "top": [
@@ -1345,7 +1376,8 @@
        55,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "DUMMY_DELTA",
       "score": -0.3732806550351536,
@@ -1394,6 +1426,7 @@
      ]
     ],
     "loose": [],
+    "crowd": [],
     "evaluations": [
      {
       "top": [
@@ -1408,7 +1441,8 @@
        55,
        13
       ],
-      "strict": true,
+      "kind": "strict",
+      "pair_is_nameplate": true,
       "is_nameplate": true,
       "name": "DUMMY_DELTA",
       "score": -0.3732806550351536,
@@ -1444,6 +1478,7 @@
     "boxes": [],
     "pairs": [],
     "loose": [],
+    "crowd": [],
     "evaluations": [],
     "detections": []
    },
@@ -1451,8 +1486,600 @@
     "boxes": [],
     "pairs": [],
     "loose": [],
+    "crowd": [],
     "evaluations": [],
     "detections": []
+   }
+  },
+  {
+   "file": "frame_e.png",
+   "width": 1280,
+   "height": 1440,
+   "default": {
+    "boxes": [
+     [
+      340,
+      254,
+      120,
+      14
+     ],
+     [
+      482,
+      254,
+      128,
+      14
+     ],
+     [
+      372,
+      282,
+      55,
+      13
+     ],
+     [
+      518,
+      282,
+      55,
+      13
+     ],
+     [
+      343,
+      454,
+      113,
+      14
+     ],
+     [
+      479,
+      454,
+      99,
+      13
+     ],
+     [
+      372,
+      482,
+      55,
+      13
+     ],
+     [
+      502,
+      482,
+      53,
+      13
+     ],
+     [
+      336,
+      654,
+      128,
+      14
+     ],
+     [
+      372,
+      682,
+      55,
+      13
+     ],
+     [
+      642,
+      854,
+      115,
+      14
+     ],
+     [
+      672,
+      882,
+      55,
+      13
+     ]
+    ],
+    "pairs": [
+     [
+      10,
+      11
+     ]
+    ],
+    "loose": [
+     [
+      8,
+      9
+     ]
+    ],
+    "crowd": [
+     [
+      0,
+      2,
+      [
+       1
+      ]
+     ],
+     [
+      1,
+      3,
+      [
+       0
+      ]
+     ],
+     [
+      4,
+      6,
+      [
+       5
+      ]
+     ],
+     [
+      5,
+      7,
+      [
+       4
+      ]
+     ]
+    ],
+    "evaluations": [
+     {
+      "top": [
+       642,
+       854,
+       115,
+       14
+      ],
+      "bottom": [
+       672,
+       882,
+       55,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "LONE_PLATE",
+      "score": -0.3151281126863273,
+      "dist_text": "8.8km"
+     },
+     {
+      "top": [
+       340,
+       254,
+       120,
+       14
+      ],
+      "bottom": [
+       372,
+       282,
+       55,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "CROWD_LEFT",
+      "score": -0.3746478165506259,
+      "dist_text": "6.1km"
+     },
+     {
+      "top": [
+       482,
+       254,
+       128,
+       14
+      ],
+      "bottom": [
+       518,
+       282,
+       55,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "CROWD_RIGHT",
+      "score": -0.9829433583951718,
+      "dist_text": "6.3km"
+     },
+     {
+      "top": [
+       343,
+       454,
+       113,
+       14
+      ],
+      "bottom": [
+       372,
+       482,
+       55,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": true,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       479,
+       454,
+       99,
+       13
+      ],
+      "bottom": [
+       502,
+       482,
+       53,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": false,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       336,
+       654,
+       128,
+       14
+      ],
+      "bottom": [
+       372,
+       682,
+       55,
+       13
+      ],
+      "kind": "loose",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "RINGSIDE_ONE",
+      "score": -1.0183480831340386,
+      "dist_text": "2.2km"
+     }
+    ],
+    "detections": [
+     {
+      "name": "LONE_PLATE",
+      "score": -0.3151281126863273,
+      "name_box": [
+       642,
+       854,
+       115,
+       14
+      ],
+      "dist_box": [
+       672,
+       882,
+       55,
+       13
+      ],
+      "dist_text": "8.8km"
+     },
+     {
+      "name": "CROWD_LEFT",
+      "score": -0.3746478165506259,
+      "name_box": [
+       340,
+       254,
+       120,
+       14
+      ],
+      "dist_box": [
+       372,
+       282,
+       55,
+       13
+      ],
+      "dist_text": "6.1km"
+     },
+     {
+      "name": "CROWD_RIGHT",
+      "score": -0.9829433583951718,
+      "name_box": [
+       482,
+       254,
+       128,
+       14
+      ],
+      "dist_box": [
+       518,
+       282,
+       55,
+       13
+      ],
+      "dist_text": "6.3km"
+     }
+    ]
+   },
+   "whole": {
+    "boxes": [
+     [
+      340,
+      254,
+      120,
+      14
+     ],
+     [
+      482,
+      254,
+      128,
+      14
+     ],
+     [
+      372,
+      282,
+      55,
+      13
+     ],
+     [
+      518,
+      282,
+      55,
+      13
+     ],
+     [
+      343,
+      454,
+      113,
+      14
+     ],
+     [
+      479,
+      454,
+      99,
+      13
+     ],
+     [
+      372,
+      482,
+      55,
+      13
+     ],
+     [
+      502,
+      482,
+      53,
+      13
+     ],
+     [
+      336,
+      654,
+      128,
+      14
+     ],
+     [
+      372,
+      682,
+      55,
+      13
+     ],
+     [
+      642,
+      854,
+      115,
+      14
+     ],
+     [
+      672,
+      882,
+      55,
+      13
+     ]
+    ],
+    "pairs": [
+     [
+      10,
+      11
+     ]
+    ],
+    "loose": [
+     [
+      8,
+      9
+     ]
+    ],
+    "crowd": [
+     [
+      0,
+      2,
+      [
+       1
+      ]
+     ],
+     [
+      1,
+      3,
+      [
+       0
+      ]
+     ],
+     [
+      4,
+      6,
+      [
+       5
+      ]
+     ],
+     [
+      5,
+      7,
+      [
+       4
+      ]
+     ]
+    ],
+    "evaluations": [
+     {
+      "top": [
+       642,
+       854,
+       115,
+       14
+      ],
+      "bottom": [
+       672,
+       882,
+       55,
+       13
+      ],
+      "kind": "strict",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "LONE_PLATE",
+      "score": -0.3151281126863273,
+      "dist_text": "8.8km"
+     },
+     {
+      "top": [
+       340,
+       254,
+       120,
+       14
+      ],
+      "bottom": [
+       372,
+       282,
+       55,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "CROWD_LEFT",
+      "score": -0.3746478165506259,
+      "dist_text": "6.1km"
+     },
+     {
+      "top": [
+       482,
+       254,
+       128,
+       14
+      ],
+      "bottom": [
+       518,
+       282,
+       55,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "CROWD_RIGHT",
+      "score": -0.9829433583951718,
+      "dist_text": "6.3km"
+     },
+     {
+      "top": [
+       343,
+       454,
+       113,
+       14
+      ],
+      "bottom": [
+       372,
+       482,
+       55,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": true,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       479,
+       454,
+       99,
+       13
+      ],
+      "bottom": [
+       502,
+       482,
+       53,
+       13
+      ],
+      "kind": "crowd",
+      "pair_is_nameplate": false,
+      "is_nameplate": false,
+      "name": null,
+      "score": 0.0,
+      "dist_text": ""
+     },
+     {
+      "top": [
+       336,
+       654,
+       128,
+       14
+      ],
+      "bottom": [
+       372,
+       682,
+       55,
+       13
+      ],
+      "kind": "loose",
+      "pair_is_nameplate": true,
+      "is_nameplate": true,
+      "name": "RINGSIDE_ONE",
+      "score": -1.0183480831340386,
+      "dist_text": "2.2km"
+     }
+    ],
+    "detections": [
+     {
+      "name": "LONE_PLATE",
+      "score": -0.3151281126863273,
+      "name_box": [
+       642,
+       854,
+       115,
+       14
+      ],
+      "dist_box": [
+       672,
+       882,
+       55,
+       13
+      ],
+      "dist_text": "8.8km"
+     },
+     {
+      "name": "CROWD_LEFT",
+      "score": -0.3746478165506259,
+      "name_box": [
+       340,
+       254,
+       120,
+       14
+      ],
+      "dist_box": [
+       372,
+       282,
+       55,
+       13
+      ],
+      "dist_text": "6.1km"
+     },
+     {
+      "name": "CROWD_RIGHT",
+      "score": -0.9829433583951718,
+      "name_box": [
+       482,
+       254,
+       128,
+       14
+      ],
+      "dist_box": [
+       518,
+       282,
+       55,
+       13
+      ],
+      "dist_text": "6.3km"
+     }
+    ]
    }
   }
  ]
