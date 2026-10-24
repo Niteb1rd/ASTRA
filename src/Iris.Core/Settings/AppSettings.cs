@@ -60,20 +60,37 @@ public sealed record AppSettings
 
     // ---- Live detection (Phase 3) ----
 
-    public const int NameplateTrackingFpsMin = 15;
-    public const int NameplateTrackingFpsMax = 120;
-    public const int NameplateTrackingFpsStep = 5;
-    public const int NameplateTrackingFpsDefault = 30;
+    /// <summary>The lowest tracking rate (a smaller number in the file becomes this one).</summary>
+    public const int NameplateTrackingFpsMin = 30;
+
+    /// <summary>The highest tracking rate that is a number; one step above it is "Max".</summary>
+    public const int NameplateTrackingFpsHighest = 90;
 
     /// <summary>
-    /// "Nameplate Tracking Tickrate": how many times a second the nameplates are TRACKED (15 to 120, the Settings tab slider goes in steps of 5).
-    /// The detector (the OCR) reads the screen only 5 times a second (not a setting) and decides what is on screen and what it is called; in between,
-    /// a tracking tick at this rate copies a small patch of the screen around each known nameplate and finds the nameplate's text in it again
-    /// (template matching), which moves the bracket. Tracking never reads or changes names. A higher number follows fast turns more closely and costs
-    /// more screen copies and processor time (the log's minute line has the real numbers); the brackets themselves are drawn at the monitor's refresh rate regardless.
-    /// The file accepts any whole number in the range.
+    /// The value of <see cref="NameplateTrackingFps"/> that stands for "Max" (every new frame of the game, no cap): the last stop of the Settings tab slider, one step
+    /// above <see cref="NameplateTrackingFpsHighest"/>. It is written to the file as the text "max".
+    /// </summary>
+    public const int NameplateTrackingFpsMax = NameplateTrackingFpsHighest + NameplateTrackingFpsStep;
+
+    public const int NameplateTrackingFpsStep = 5;
+    public const int NameplateTrackingFpsDefault = 60;
+
+    /// <summary>
+    /// "Nameplate Tracking Tickrate": the most times a second the nameplates are TRACKED, 30 to 90 in steps of 5, or <see cref="NameplateTrackingFpsMax"/> for "Max"
+    /// (the file says <c>"max"</c>; a number above 90 in an old file means Max, too). The detector (the OCR) reads the screen only 5 times a second (not a setting) and
+    /// decides what is on screen and what it is called; in between, every NEW frame of the game that is at least 1000 / this many milliseconds after the last tracked one
+    /// is tracked: IRIS copies a small patch of the screen around each known nameplate and finds the nameplate's text in it again (template matching), which moves
+    /// the bracket. Max tracks every new frame (the game's own frame rate, no other cap). Tracking never reads or changes names. A higher number follows fast turns
+    /// more closely and costs more screen copies and processor time (the log's minute line has the real numbers); the brackets themselves are drawn at the monitor's
+    /// refresh rate regardless.
     /// </summary>
     public int NameplateTrackingFps { get; init; } = NameplateTrackingFpsDefault;
+
+    /// <summary>True when the tracking rate is "Max": every new frame is tracked.</summary>
+    public bool IsTrackingMax => NameplateTrackingFps > NameplateTrackingFpsHighest;
+
+    /// <summary>The cap for <see cref="Iris.Core.Live.TrackingCap"/>: tracked frames a second, or 0 for Max (no cap).</summary>
+    public int TrackingCapFps => IsTrackingMax ? 0 : Math.Max(NameplateTrackingFpsMin, NameplateTrackingFps);
 
     /// <summary>
     /// "Show overlay in screenshots and recordings" (<c>overlay_visible_in_capture</c>, off by default). Off: the overlay windows are left out of every screen capture

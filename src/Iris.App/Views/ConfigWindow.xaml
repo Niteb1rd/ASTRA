@@ -485,12 +485,11 @@
                                        Text="{Binding Value, ElementName=PanelTopGapSlider, StringFormat='{}{0:0}%'}" />
 
                             <TextBlock Grid.Row="4" Grid.Column="0" Text="Nameplate Tracking Tickrate" VerticalAlignment="Center"
-                                       ToolTip="How many times a second IRIS follows each nameplate on screen (15 to 120). The names are read only about 5 times a second; between two reads IRIS follows each nameplate by matching its text in a small part of the screen, and the brackets are drawn at your monitor's refresh rate. A higher number follows fast turns more closely; it costs a little more processor and graphics work." />
+                                       ToolTip="The most times a second IRIS follows each nameplate on screen (30 to 90, or Max). It follows the new frames of the game: at 60, a game that runs at 144 frames a second is followed on every third frame; Max follows every new frame. The names are read only about 5 times a second; between two reads IRIS follows each nameplate by matching its text in a small part of the screen, and the brackets are drawn at your monitor's refresh rate. A higher number follows fast turns more closely; it costs a little more processor and graphics work." />
                             <Slider x:Name="TrackingFpsSlider" Grid.Row="4" Grid.Column="1" Margin="0,3" VerticalAlignment="Center"
                                     TickFrequency="5" IsSnapToTickEnabled="True" SmallChange="5" LargeChange="15"
-                                    ValueChanged="OnOverlaySliderChanged" />
-                            <TextBlock Grid.Row="4" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center"
-                                       Text="{Binding Value, ElementName=TrackingFpsSlider, StringFormat='{}{0:0} fps'}" />
+                                    ValueChanged="OnTrackingFpsSliderChanged" />
+                            <TextBlock x:Name="TrackingFpsLabel" Grid.Row="4" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center" />
                         </Grid>
                         <CheckBox x:Name="OverlayVisibleInCaptureCheck" Content="Show overlay in screenshots and recordings" Margin="0,0,0,8"
                                   Checked="OnSettingChanged" Unchecked="OnSettingChanged"

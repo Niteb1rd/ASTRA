@@ -49,7 +49,7 @@ public sealed class AppSettingsLoadResult
 /// panel_text_size = 18           # 10 to 40, pixels at 1440p
 /// panel_right_gap_percent = 10   # 0 to 40
 /// panel_top_gap_percent = 15     # 0 to 60
-/// nameplate_tracking_fps = 30    # 15 to 120: how often the nameplates are tracked (the screen is read for names 5 times a second regardless)
+/// nameplate_tracking_fps = 60    # 30 to 90 in steps of 5, or "max": the most times a second the nameplates are tracked (the screen is read for names 5 times a second regardless)
 /// overlay_visible_in_capture = false   # true: screenshots and recordings show the overlay (IRIS blacks it out in its own captures)
 /// overlay_disabled = false      # "Disable Overlay": hide everything and stop screen reading
 /// hotkey_toggle_overlay = ""     # e.g. "Ctrl+Shift+O"; empty = none
@@ -93,7 +93,7 @@ public static class AppSettingsToml
         sb.AppendLine($"panel_text_size = {Math.Clamp(settings.PanelTextSize, AppSettings.PanelTextSizeMin, AppSettings.PanelTextSizeMax)}");
         sb.AppendLine($"panel_right_gap_percent = {Math.Clamp(settings.PanelRightGapPercent, AppSettings.PanelRightGapPercentMin, AppSettings.PanelRightGapPercentMax)}");
         sb.AppendLine($"panel_top_gap_percent = {Math.Clamp(settings.PanelTopGapPercent, AppSettings.PanelTopGapPercentMin, AppSettings.PanelTopGapPercentMax)}");
-        sb.AppendLine($"nameplate_tracking_fps = {Math.Clamp(settings.NameplateTrackingFps, AppSettings.NameplateTrackingFpsMin, AppSettings.NameplateTrackingFpsMax)}");
+        sb.AppendLine($"nameplate_tracking_fps = {WriteTrackingFps(settings.NameplateTrackingFps)}");
         sb.AppendLine($"overlay_visible_in_capture = {Bool(settings.OverlayVisibleInCapture)}");
         sb.AppendLine($"overlay_disabled = {Bool(settings.OverlayDisabled)}");
         sb.AppendLine($"hotkey_toggle_overlay = {SocialConfigToml.Quote(HotkeyText.Normalize(settings.HotkeyToggleOverlay))}");
@@ -102,6 +102,16 @@ public static class AppSettingsToml
     }
 
     private static string Bool(bool value) => value ? "true" : "false";
+
+    /// <summary>The file text of a tracking rate: <c>"max"</c> for Max, else a number from 30 to 90 on a step of 5 (a value in between is rounded to the nearest step).</summary>
+    private static string WriteTrackingFps(int fps)
+    {
+        if (fps > AppSettings.NameplateTrackingFpsHighest)
+            return "\"max\"";
+        var step = AppSettings.NameplateTrackingFpsStep;
+        var rounded = (int)Math.Round((double)fps / step, MidpointRounding.AwayFromZero) * step;
+        return Math.Clamp(rounded, AppSettings.NameplateTrackingFpsMin, AppSettings.NameplateTrackingFpsHighest).ToString(CultureInfo.InvariantCulture);
+    }
 
     // ------------------------------------------------------------------ read
 
@@ -243,8 +253,7 @@ public static class AppSettingsToml
         var panelTopGap = ReadInt(root, "panel_top_gap_percent", defaults.PanelTopGapPercent,
             AppSettings.PanelTopGapPercentMin, AppSettings.PanelTopGapPercentMax, warnings);
 
-        var trackingFps = ReadInt(root, "nameplate_tracking_fps", defaults.NameplateTrackingFps,
-            AppSettings.NameplateTrackingFpsMin, AppSettings.NameplateTrackingFpsMax, warnings);
+        var trackingFps = ReadTrackingFps(root, defaults.NameplateTrackingFps, warnings);
 
         var visibleInCapture = ReadBool(root, "overlay_visible_in_capture", defaults.OverlayVisibleInCapture, warnings);
         var overlayDisabled = ReadBool(root, "overlay_disabled", defaults.OverlayDisabled, warnings);
@@ -326,6 +335,36 @@ public static class AppSettingsToml
             return (int)value;
         warnings.Add($"{key}: must be a whole number from {min} to {max}; using {fallback}.");
         return fallback;
+    }
+
+    /// <summary>
+    /// Reads <c>nameplate_tracking_fps</c>: a whole number from 30 to 90 on a step of 5, or the text "max" (any case). A number above 90 (old files allowed up to 120) means
+    /// Max; a number below 30 becomes 30 with a warning; anything else (text, a fraction, a number between the steps) is a warning and the default.
+    /// </summary>
+    private static int ReadTrackingFps(TomlTable root, int fallback, List<string> warnings)
+    {
+        const string Key = "nameplate_tracking_fps";
+        if (!root.TryGetValue(Key, out var raw))
+            return fallback;
+
+        var min = AppSettings.NameplateTrackingFpsMin;
+        var highest = AppSettings.NameplateTrackingFpsHighest;
+        var step = AppSettings.NameplateTrackingFpsStep;
+        switch (raw)
+        {
+            case long value when value > highest:
+                return AppSettings.NameplateTrackingFpsMax;
+            case long value when value < min:
+                warnings.Add($"{Key}: {value} is below {min}; using {min}.");
+                return min;
+            case long value when value % step == 0:
+                return (int)value;
+            case string text when text.Trim().Equals("max", StringComparison.OrdinalIgnoreCase):
+                return AppSettings.NameplateTrackingFpsMax;
+            default:
+                warnings.Add($"{Key}: must be a whole number from {min} to {highest} in steps of {step}, or \"max\"; using {fallback}.");
+                return fallback;
+        }
     }
 
     /// <summary>Reads a hotkey text (normalised). Empty or missing is "no hotkey"; anything invalid is a warning and no hotkey.</summary>

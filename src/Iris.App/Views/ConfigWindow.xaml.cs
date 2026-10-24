@@ -882,6 +882,7 @@ public partial class ConfigWindow : Window, IImportHost
         PanelRightGapSlider.Value = settings.PanelRightGapPercent;
         PanelTopGapSlider.Value = settings.PanelTopGapPercent;
         TrackingFpsSlider.Value = settings.NameplateTrackingFps;
+        UpdateTrackingFpsLabel();
         OverlayVisibleInCaptureCheck.IsChecked = settings.OverlayVisibleInCapture;
         LogEnabledCheck.IsChecked = settings.SessionLogEnabled;
         CheckUpdatesCheck.IsChecked = settings.CheckForUpdates;
@@ -991,6 +992,24 @@ public partial class ConfigWindow : Window, IImportHost
 
     /// <summary>A panel slider changed: the Save button follows, and a running test overlay shows the new values at once.</summary>
     private void OnOverlaySliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e) => OverlayValuesChanged();
+
+    /// <summary>The tickrate slider moved: its label shows the value ("60 fps") or "Max" at the last stop, then the same as for the other overlay sliders.</summary>
+    private void OnTrackingFpsSliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        UpdateTrackingFpsLabel();
+        OverlayValuesChanged();
+    }
+
+    /// <summary>Sets the text next to the tickrate slider. The slider's events fire while the window is still being built, before the label exists.</summary>
+    private void UpdateTrackingFpsLabel()
+    {
+        if (TrackingFpsLabel is null || TrackingFpsSlider is null)
+            return;
+        var value = (int)Math.Round(TrackingFpsSlider.Value);
+        TrackingFpsLabel.Text = value > AppSettings.NameplateTrackingFpsHighest
+            ? "Max"
+            : value.ToString(CultureInfo.InvariantCulture) + " fps";
+    }
 
     private void OverlayValuesChanged()
     {

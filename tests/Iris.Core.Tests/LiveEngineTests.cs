@@ -21,56 +21,115 @@ public class LiveEngineTests : IDisposable
     // ----- nameplate_tracking_fps -----
 
     [Fact]
-    public void TrackingFps_DefaultsTo30WithTheSpecifiedRange()
+    public void TrackingFps_DefaultsTo60WithTheSpecifiedRange()
     {
-        Assert.Equal(30, new AppSettings().NameplateTrackingFps);
-        Assert.Equal(15, AppSettings.NameplateTrackingFpsMin);
-        Assert.Equal(120, AppSettings.NameplateTrackingFpsMax);
+        Assert.Equal(60, new AppSettings().NameplateTrackingFps);
+        Assert.Equal(30, AppSettings.NameplateTrackingFpsMin);
+        Assert.Equal(90, AppSettings.NameplateTrackingFpsHighest);
+        Assert.Equal(95, AppSettings.NameplateTrackingFpsMax); // the slider's "Max" stop
         Assert.Equal(5, AppSettings.NameplateTrackingFpsStep);
-        Assert.Equal(30, AppSettings.NameplateTrackingFpsDefault);
+        Assert.Equal(60, AppSettings.NameplateTrackingFpsDefault);
+        Assert.False(new AppSettings().IsTrackingMax);
+        Assert.Equal(60, new AppSettings().TrackingCapFps);
     }
 
-    [Fact]
-    public void TrackingFps_SaveThenLoadRoundTrips()
+    [Theory]
+    [InlineData(30)]
+    [InlineData(60)]
+    [InlineData(75)]
+    [InlineData(90)]
+    public void TrackingFps_SaveThenLoadRoundTrips(int fps)
     {
         var path = _dir.File("settings.toml");
-        var settings = new AppSettings { NameplateTrackingFps = 75 };
+        var settings = new AppSettings { NameplateTrackingFps = fps };
 
         var saved = AppSettingsToml.Save(path, settings);
         var loaded = AppSettingsToml.Load(path);
 
         Assert.True(saved.Success, saved.Error);
         Assert.Empty(loaded.Warnings);
-        Assert.Equal(75, loaded.Settings.NameplateTrackingFps);
-        Assert.Contains("nameplate_tracking_fps = 75", File.ReadAllText(path));
+        Assert.Equal(fps, loaded.Settings.NameplateTrackingFps);
+        Assert.False(loaded.Settings.IsTrackingMax);
+        Assert.Equal(fps, loaded.Settings.TrackingCapFps);
+        Assert.Contains($"nameplate_tracking_fps = {fps}", File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void TrackingFps_MaxIsWrittenAsTheTextAndReadBack()
+    {
+        var path = _dir.File("settings.toml");
+        var settings = new AppSettings { NameplateTrackingFps = AppSettings.NameplateTrackingFpsMax };
+
+        var saved = AppSettingsToml.Save(path, settings);
+        var loaded = AppSettingsToml.Load(path);
+
+        Assert.True(saved.Success, saved.Error);
+        Assert.Empty(loaded.Warnings);
+        Assert.True(loaded.Settings.IsTrackingMax);
+        Assert.Equal(0, loaded.Settings.TrackingCapFps); // 0 = no cap
+        Assert.Contains("nameplate_tracking_fps = \"max\"", File.ReadAllText(path));
     }
 
     [Theory]
-    [InlineData(15)]
-    [InlineData(120)]
-    [InlineData(60)]
-    public void TrackingFps_RangeLimitsAreAccepted(int fps)
+    [InlineData("30", 30)]
+    [InlineData("60", 60)]
+    [InlineData("90", 90)]
+    public void TrackingFps_NumbersOnTheStepsAreAccepted(string value, int expected)
     {
-        var result = AppSettingsToml.Read($"nameplate_tracking_fps = {fps}\n");
+        var result = AppSettingsToml.Read($"nameplate_tracking_fps = {value}\n");
 
         Assert.Empty(result.Warnings);
-        Assert.Equal(fps, result.Settings.NameplateTrackingFps);
+        Assert.Equal(expected, result.Settings.NameplateTrackingFps);
+        Assert.False(result.Settings.IsTrackingMax);
     }
 
     [Theory]
-    [InlineData("nameplate_tracking_fps = 14")]
-    [InlineData("nameplate_tracking_fps = 121")]
-    [InlineData("nameplate_tracking_fps = 0")]
-    [InlineData("nameplate_tracking_fps = -30")]
-    [InlineData("nameplate_tracking_fps = \"60\"")]
-    [InlineData("nameplate_tracking_fps = 45.5")]
-    public void TrackingFps_OutOfRangeOrWrongTypeBecomesTheDefaultWithAWarning(string line)
+    [InlineData("95")]
+    [InlineData("120")]
+    [InlineData("100000")]
+    [InlineData("\"max\"")]
+    [InlineData("\"MAX\"")]
+    [InlineData("\" Max \"")]
+    public void TrackingFps_AboveNinetyOrTheTextMaxMeansMax_WithoutAWarning(string value)
     {
-        var result = AppSettingsToml.Read("format_version = 1\n" + line + "\nsession_log_enabled = false\n");
+        var result = AppSettingsToml.Read($"nameplate_tracking_fps = {value}\n");
+
+        Assert.Empty(result.Warnings);
+        Assert.True(result.Settings.IsTrackingMax);
+        Assert.Equal(AppSettings.NameplateTrackingFpsMax, result.Settings.NameplateTrackingFps);
+        Assert.Equal(0, result.Settings.TrackingCapFps);
+    }
+
+    [Theory]
+    [InlineData("10")]
+    [InlineData("15")]
+    [InlineData("29")]
+    [InlineData("0")]
+    [InlineData("-30")]
+    public void TrackingFps_BelowThirtyBecomesThirtyWithAWarning(string value)
+    {
+        var result = AppSettingsToml.Read($"format_version = 1\nnameplate_tracking_fps = {value}\nsession_log_enabled = false\n");
 
         Assert.True(result.IsValid);
         Assert.StartsWith("nameplate_tracking_fps", Assert.Single(result.Warnings));
         Assert.Equal(30, result.Settings.NameplateTrackingFps);
+        Assert.False(result.Settings.SessionLogEnabled);
+    }
+
+    [Theory]
+    [InlineData("\"abc\"")]
+    [InlineData("\"60\"")]
+    [InlineData("\"\"")]
+    [InlineData("45.5")]
+    [InlineData("true")]
+    [InlineData("47")] // a whole number in range, but not on a step of 5
+    public void TrackingFps_AnythingElseBecomesTheDefaultWithAWarning(string value)
+    {
+        var result = AppSettingsToml.Read($"format_version = 1\nnameplate_tracking_fps = {value}\nsession_log_enabled = false\n");
+
+        Assert.True(result.IsValid);
+        Assert.StartsWith("nameplate_tracking_fps", Assert.Single(result.Warnings));
+        Assert.Equal(60, result.Settings.NameplateTrackingFps);
         Assert.False(result.Settings.SessionLogEnabled);
     }
 
@@ -82,7 +141,7 @@ public class LiveEngineTests : IDisposable
 
         Assert.Empty(known.Warnings);
         Assert.Empty(missing.Warnings);
-        Assert.Equal(30, missing.Settings.NameplateTrackingFps);
+        Assert.Equal(60, missing.Settings.NameplateTrackingFps);
     }
 
     // ----- overlay_visible_in_capture -----
